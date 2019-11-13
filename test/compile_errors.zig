@@ -3,6 +3,33 @@ const builtin = @import("builtin");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
+        "atomic orderings of atomicStore Acquire or AcqRel",
+        \\export fn entry() void {
+        \\    var x: u32 = 0;
+        \\    @atomicStore(u32, &x, 1, .Acquire);
+        \\}
+    ,
+        "tmp.zig:3:30: error: @atomicStore atomic ordering must not be Acquire or AcqRel",
+    );
+
+    cases.add(
+        "missing const in slice with nested array type",
+        \\const Geo3DTex2D = struct { vertices: [][2]f32 };
+        \\pub fn getGeo3DTex2D() Geo3DTex2D {
+        \\    return Geo3DTex2D{
+        \\        .vertices = [_][2]f32{
+        \\            [_]f32{ -0.5, -0.5},
+        \\        },
+        \\    };
+        \\}
+        \\export fn entry() void {
+        \\    var geo_data = getGeo3DTex2D();
+        \\}
+    ,
+        "tmp.zig:4:30: error: expected type '[][2]f32', found '[1][2]f32'",
+    );
+
+    cases.add(
         "slicing of global undefined pointer",
         \\var buf: *[1]u8 = undefined;
         \\export fn entry() void {
@@ -216,9 +243,9 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    const obj = AstObject{ .lhsExpr = lhsExpr };
         \\}
     ,
-        "tmp.zig:4:19: error: union 'AstObject' depends on itself",
-        "tmp.zig:2:5: note: while checking this field",
+        "tmp.zig:1:17: error: struct 'LhsExpr' depends on itself",
         "tmp.zig:5:5: note: while checking this field",
+        "tmp.zig:2:5: note: while checking this field",
     );
 
     cases.add(
@@ -2096,8 +2123,8 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
             \\
             \\fn bar(x: *b.Foo) void {}
         ,
-            "tmp.zig:6:10: error: expected type '*b.Foo', found '*a.Foo'",
-            "tmp.zig:6:10: note: pointer type child 'a.Foo' cannot cast into pointer type child 'b.Foo'",
+            "tmp.zig:6:9: error: expected type '*b.Foo', found '*a.Foo'",
+            "tmp.zig:6:9: note: pointer type child 'a.Foo' cannot cast into pointer type child 'b.Foo'",
             "a.zig:1:17: note: a.Foo declared here",
             "b.zig:1:17: note: b.Foo declared here",
         );
@@ -4961,7 +4988,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\
         \\export fn entry() usize { return @sizeOf(@typeOf(foo)); }
     ,
-        "tmp.zig:8:26: error: expected type '*const u3', found '*align(:3:1) const u3'",
+        "tmp.zig:8:16: error: expected type '*const u3', found '*align(:3:1) const u3'",
     );
 
     cases.add(
@@ -5658,7 +5685,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    x.* += 1;
         \\}
     ,
-        "tmp.zig:8:13: error: expected type '*u32', found '*align(1) u32'",
+        "tmp.zig:8:9: error: expected type '*u32', found '*align(1) u32'",
     );
 
     cases.add(

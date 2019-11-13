@@ -1699,6 +1699,10 @@ static void gen_var_debug_decl(CodeGen *g, ZigVar *var) {
 }
 
 static LLVMValueRef ir_llvm_value(CodeGen *g, IrInstruction *instruction) {
+    Error err;
+    if ((err = type_resolve(g, instruction->value.type, ResolveStatusZeroBitsKnown))) {
+        codegen_report_errors_and_exit(g);
+    }
     if (!type_has_bits(instruction->value.type))
         return nullptr;
     if (!instruction->llvm_value) {
@@ -3618,9 +3622,14 @@ static void gen_undef_init(CodeGen *g, uint32_t ptr_align_bytes, ZigType *value_
 }
 
 static LLVMValueRef ir_render_store_ptr(CodeGen *g, IrExecutable *executable, IrInstructionStorePtr *instruction) {
+    Error err;
+
     ZigType *ptr_type = instruction->ptr->value.type;
     assert(ptr_type->id == ZigTypeIdPointer);
-    if (!type_has_bits(ptr_type))
+    bool ptr_type_has_bits;
+    if ((err = type_has_bits2(g, ptr_type, &ptr_type_has_bits)))
+        codegen_report_errors_and_exit(g);
+    if (!ptr_type_has_bits)
         return nullptr;
     if (instruction->ptr->ref_count == 0) {
         // In this case, this StorePtr instruction should be elided. Something happened like this:
@@ -5646,6 +5655,17 @@ static LLVMValueRef ir_render_atomic_load(CodeGen *g, IrExecutable *executable,
     return load_inst;
 }
 
+static LLVMValueRef ir_render_atomic_store(CodeGen *g, IrExecutable *executable,
+        IrInstructionAtomicStore *instruction)
+{
+    LLVMAtomicOrdering ordering = to_LLVMAtomicOrdering(instruction->resolved_ordering);
+    LLVMValueRef ptr = ir_llvm_value(g, instruction->ptr);
+    LLVMValueRef value = ir_llvm_value(g, instruction->value);
+    LLVMValueRef store_inst = gen_store(g, value, ptr, instruction->ptr->value.type);
+    LLVMSetOrdering(store_inst, ordering);
+    return nullptr;
+}
+
 static LLVMValueRef ir_render_float_op(CodeGen *g, IrExecutable *executable, IrInstructionFloatOp *instruction) {
     LLVMValueRef op = ir_llvm_value(g, instruction->op1);
     assert(instruction->base.value.type->id == ZigTypeIdFloat);
@@ -6249,6 +6269,8 @@ static LLVMValueRef ir_render_instruction(CodeGen *g, IrExecutable *executable, 
             return ir_render_atomic_rmw(g, executable, (IrInstructionAtomicRmw *)instruction);
         case IrInstructionIdAtomicLoad:
             return ir_render_atomic_load(g, executable, (IrInstructionAtomicLoad *)instruction);
+        case IrInstructionIdAtomicStore:
+            return ir_render_atomic_store(g, executable, (IrInstructionAtomicStore *)instruction);
         case IrInstructionIdSaveErrRetAddr:
             return ir_render_save_err_ret_addr(g, executable, (IrInstructionSaveErrRetAddr *)instruction);
         case IrInstructionIdFloatOp:
@@ -7817,6 +7839,11 @@ static void define_builtin_types(CodeGen *g) {
         g->builtin_types.entry_null = entry;
     }
     {
+        ZigType *entry = new_type_table_entry(ZigTypeIdOpaque);
+        buf_init_from_str(&entry->name, "(var)");
+        g->builtin_types.entry_var = entry;
+    }
+    {
         ZigType *entry = new_type_table_entry(ZigTypeIdArgTuple);
         buf_init_from_str(&entry->name, "(args)");
         g->builtin_types.entry_arg_tuple = entry;
@@ -8060,6 +8087,7 @@ static void define_builtin_fns(CodeGen *g) {
     create_builtin_fn(g, BuiltinFnIdErrorReturnTrace, "errorReturnTrace", 0);
     create_builtin_fn(g, BuiltinFnIdAtomicRmw, "atomicRmw", 5);
     create_builtin_fn(g, BuiltinFnIdAtomicLoad, "atomicLoad", 3);
+    create_builtin_fn(g, BuiltinFnIdAtomicStore, "atomicStore", 4);
     create_builtin_fn(g, BuiltinFnIdErrSetCast, "errSetCast", 2);
     create_builtin_fn(g, BuiltinFnIdToBytes, "sliceToBytes", 1);
     create_builtin_fn(g, BuiltinFnIdFromBytes, "bytesToSlice", 2);

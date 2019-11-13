@@ -107,3 +107,40 @@ test "cmpxchg on a global variable" {
     _ = @cmpxchgWeak(u32, &a_global_variable, 1234, 42, .Acquire, .Monotonic);
     expectEqual(@as(u32, 42), a_global_variable);
 }
+
+test "atomic load and rmw with enum" {
+    const Value = enum(u8) {
+        a,
+        b,
+        c,
+    };
+    var x = Value.a;
+
+    expect(@atomicLoad(Value, &x, .SeqCst) != .b);
+
+    _ = @atomicRmw(Value, &x, .Xchg, .c, .SeqCst); 
+    expect(@atomicLoad(Value, &x, .SeqCst) == .c);
+    expect(@atomicLoad(Value, &x, .SeqCst) != .a);
+    expect(@atomicLoad(Value, &x, .SeqCst) != .b);
+}
+
+test "atomic store" {
+    var x: u32 = 0;
+    @atomicStore(u32, &x, 1, .SeqCst);
+    expect(@atomicLoad(u32, &x, .SeqCst) == 1);
+    @atomicStore(u32, &x, 12345678, .SeqCst);
+    expect(@atomicLoad(u32, &x, .SeqCst) == 12345678);
+}
+
+test "atomic store comptime" {
+    comptime testAtomicStore();
+    testAtomicStore();
+}
+
+fn testAtomicStore() void {
+    var x: u32 = 0;
+    @atomicStore(u32, &x, 1, .SeqCst);
+    expect(@atomicLoad(u32, &x, .SeqCst) == 1);
+    @atomicStore(u32, &x, 12345678, .SeqCst);
+    expect(@atomicLoad(u32, &x, .SeqCst) == 12345678);
+}
