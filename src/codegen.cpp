@@ -949,7 +949,7 @@ static LLVMValueRef get_panic_msg_ptr_val(CodeGen *g, PanicMsgId msg_id) {
     if (!val->global_refs->llvm_global) {
 
         Buf *buf_msg = panic_msg_buf(msg_id);
-        ConstExprValue *array_val = create_const_str_lit(g, buf_msg);
+        ConstExprValue *array_val = create_const_str_lit(g, buf_msg)->data.x_ptr.data.ref.pointee;
         init_const_slice(g, val, array_val, 0, buf_len(buf_msg), true);
 
         render_const_val(g, val, "");
@@ -1108,15 +1108,15 @@ static LLVMValueRef get_add_error_return_trace_addr_fn(CodeGen *g) {
     LLVMValueRef err_ret_trace_ptr = LLVMGetParam(fn_val, 0);
     LLVMValueRef address_value = LLVMGetParam(fn_val, 1);
 
-    size_t index_field_index = g->stack_trace_type->data.structure.fields[0].gen_index;
+    size_t index_field_index = g->stack_trace_type->data.structure.fields[0]->gen_index;
     LLVMValueRef index_field_ptr = LLVMBuildStructGEP(g->builder, err_ret_trace_ptr, (unsigned)index_field_index, "");
-    size_t addresses_field_index = g->stack_trace_type->data.structure.fields[1].gen_index;
+    size_t addresses_field_index = g->stack_trace_type->data.structure.fields[1]->gen_index;
     LLVMValueRef addresses_field_ptr = LLVMBuildStructGEP(g->builder, err_ret_trace_ptr, (unsigned)addresses_field_index, "");
 
-    ZigType *slice_type = g->stack_trace_type->data.structure.fields[1].type_entry;
-    size_t ptr_field_index = slice_type->data.structure.fields[slice_ptr_index].gen_index;
+    ZigType *slice_type = g->stack_trace_type->data.structure.fields[1]->type_entry;
+    size_t ptr_field_index = slice_type->data.structure.fields[slice_ptr_index]->gen_index;
     LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, addresses_field_ptr, (unsigned)ptr_field_index, "");
-    size_t len_field_index = slice_type->data.structure.fields[slice_len_index].gen_index;
+    size_t len_field_index = slice_type->data.structure.fields[slice_len_index]->gen_index;
     LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, addresses_field_ptr, (unsigned)len_field_index, "");
 
     LLVMValueRef len_value = gen_load_untyped(g, len_field_ptr, 0, false, "");
@@ -2176,16 +2176,16 @@ static LLVMValueRef get_merge_err_ret_traces_fn_val(CodeGen *g) {
     LLVMBuildCondBr(g->builder, null_bit, return_block, non_null_block);
 
     LLVMPositionBuilderAtEnd(g->builder, non_null_block);
-    size_t src_index_field_index = g->stack_trace_type->data.structure.fields[0].gen_index;
-    size_t src_addresses_field_index = g->stack_trace_type->data.structure.fields[1].gen_index;
+    size_t src_index_field_index = g->stack_trace_type->data.structure.fields[0]->gen_index;
+    size_t src_addresses_field_index = g->stack_trace_type->data.structure.fields[1]->gen_index;
     LLVMValueRef src_index_field_ptr = LLVMBuildStructGEP(g->builder, src_stack_trace_ptr,
             (unsigned)src_index_field_index, "");
     LLVMValueRef src_addresses_field_ptr = LLVMBuildStructGEP(g->builder, src_stack_trace_ptr,
             (unsigned)src_addresses_field_index, "");
-    ZigType *slice_type = g->stack_trace_type->data.structure.fields[1].type_entry;
-    size_t ptr_field_index = slice_type->data.structure.fields[slice_ptr_index].gen_index;
+    ZigType *slice_type = g->stack_trace_type->data.structure.fields[1]->type_entry;
+    size_t ptr_field_index = slice_type->data.structure.fields[slice_ptr_index]->gen_index;
     LLVMValueRef src_ptr_field_ptr = LLVMBuildStructGEP(g->builder, src_addresses_field_ptr, (unsigned)ptr_field_index, "");
-    size_t len_field_index = slice_type->data.structure.fields[slice_len_index].gen_index;
+    size_t len_field_index = slice_type->data.structure.fields[slice_len_index]->gen_index;
     LLVMValueRef src_len_field_ptr = LLVMBuildStructGEP(g->builder, src_addresses_field_ptr, (unsigned)len_field_index, "");
     LLVMValueRef src_index_val = LLVMBuildLoad(g->builder, src_index_field_ptr, "");
     LLVMValueRef src_ptr_val = LLVMBuildLoad(g->builder, src_ptr_field_ptr, "");
@@ -2784,14 +2784,6 @@ static LLVMValueRef ir_render_bin_op(CodeGen *g, IrExecutable *executable,
     IrInstruction *op1 = bin_op_instruction->op1;
     IrInstruction *op2 = bin_op_instruction->op2;
 
-    assert(op1->value.type == op2->value.type || op_id == IrBinOpBitShiftLeftLossy ||
-        op_id == IrBinOpBitShiftLeftExact || op_id == IrBinOpBitShiftRightLossy ||
-        op_id == IrBinOpBitShiftRightExact ||
-        (op1->value.type->id == ZigTypeIdErrorSet && op2->value.type->id == ZigTypeIdErrorSet) ||
-        (op1->value.type->id == ZigTypeIdPointer &&
-            (op_id == IrBinOpAdd || op_id == IrBinOpSub) &&
-            op1->value.type->data.pointer.ptr_len != PtrLenSingle)
-    );
     ZigType *operand_type = op1->value.type;
     ZigType *scalar_type = (operand_type->id == ZigTypeIdVector) ? operand_type->data.vector.elem_type : operand_type;
 
@@ -2848,7 +2840,6 @@ static LLVMValueRef ir_render_bin_op(CodeGen *g, IrExecutable *executable,
                 AddSubMulMul;
 
             if (scalar_type->id == ZigTypeIdPointer) {
-                assert(scalar_type->data.pointer.ptr_len != PtrLenSingle);
                 LLVMValueRef subscript_value;
                 if (operand_type->id == ZigTypeIdVector)
                     zig_panic("TODO: Implement vector operations on pointers.");
@@ -3010,21 +3001,21 @@ static LLVMValueRef ir_render_resize_slice(CodeGen *g, IrExecutable *executable,
     assert(actual_type->id == ZigTypeIdStruct);
     assert(actual_type->data.structure.is_slice);
 
-    ZigType *actual_pointer_type = actual_type->data.structure.fields[0].type_entry;
+    ZigType *actual_pointer_type = actual_type->data.structure.fields[0]->type_entry;
     ZigType *actual_child_type = actual_pointer_type->data.pointer.child_type;
-    ZigType *wanted_pointer_type = wanted_type->data.structure.fields[0].type_entry;
+    ZigType *wanted_pointer_type = wanted_type->data.structure.fields[0]->type_entry;
     ZigType *wanted_child_type = wanted_pointer_type->data.pointer.child_type;
 
 
-    size_t actual_ptr_index = actual_type->data.structure.fields[slice_ptr_index].gen_index;
-    size_t actual_len_index = actual_type->data.structure.fields[slice_len_index].gen_index;
-    size_t wanted_ptr_index = wanted_type->data.structure.fields[slice_ptr_index].gen_index;
-    size_t wanted_len_index = wanted_type->data.structure.fields[slice_len_index].gen_index;
+    size_t actual_ptr_index = actual_type->data.structure.fields[slice_ptr_index]->gen_index;
+    size_t actual_len_index = actual_type->data.structure.fields[slice_len_index]->gen_index;
+    size_t wanted_ptr_index = wanted_type->data.structure.fields[slice_ptr_index]->gen_index;
+    size_t wanted_len_index = wanted_type->data.structure.fields[slice_len_index]->gen_index;
 
     LLVMValueRef src_ptr_ptr = LLVMBuildStructGEP(g->builder, expr_val, (unsigned)actual_ptr_index, "");
     LLVMValueRef src_ptr = gen_load_untyped(g, src_ptr_ptr, 0, false, "");
     LLVMValueRef src_ptr_casted = LLVMBuildBitCast(g->builder, src_ptr,
-            get_llvm_type(g, wanted_type->data.structure.fields[0].type_entry), "");
+            get_llvm_type(g, wanted_type->data.structure.fields[0]->type_entry), "");
     LLVMValueRef dest_ptr_ptr = LLVMBuildStructGEP(g->builder, result_loc,
             (unsigned)wanted_ptr_index, "");
     gen_store_untyped(g, src_ptr_casted, dest_ptr_ptr, 0, false);
@@ -3077,7 +3068,14 @@ static LLVMValueRef ir_render_cast(CodeGen *g, IrExecutable *executable,
         case CastOpNumLitToConcrete:
             zig_unreachable();
         case CastOpNoop:
-            return expr_val;
+            if (actual_type->id == ZigTypeIdPointer && wanted_type->id == ZigTypeIdPointer &&
+                actual_type->data.pointer.child_type->id == ZigTypeIdArray &&
+                wanted_type->data.pointer.child_type->id == ZigTypeIdArray)
+            {
+                return LLVMBuildBitCast(g->builder, expr_val, get_llvm_type(g, wanted_type), "");
+            } else {
+                return expr_val;
+            }
         case CastOpIntToFloat:
             assert(actual_type->id == ZigTypeIdInt);
             if (actual_type->data.integral.is_signed) {
@@ -3140,9 +3138,9 @@ static LLVMValueRef ir_render_ptr_of_array_to_slice(CodeGen *g, IrExecutable *ex
 {
     ZigType *actual_type = instruction->operand->value.type;
     ZigType *slice_type = instruction->base.value.type;
-    ZigType *slice_ptr_type = slice_type->data.structure.fields[slice_ptr_index].type_entry;
-    size_t ptr_index = slice_type->data.structure.fields[slice_ptr_index].gen_index;
-    size_t len_index = slice_type->data.structure.fields[slice_len_index].gen_index;
+    ZigType *slice_ptr_type = slice_type->data.structure.fields[slice_ptr_index]->type_entry;
+    size_t ptr_index = slice_type->data.structure.fields[slice_ptr_index]->gen_index;
+    size_t len_index = slice_type->data.structure.fields[slice_len_index]->gen_index;
 
     LLVMValueRef result_loc = ir_llvm_value(g, instruction->result_loc);
 
@@ -3508,7 +3506,7 @@ static bool value_is_all_undef(CodeGen *g, ConstExprValue *const_val) {
         case ConstValSpecialStatic:
             if (const_val->type->id == ZigTypeIdStruct) {
                 for (size_t i = 0; i < const_val->type->data.structure.src_field_count; i += 1) {
-                    if (!value_is_all_undef(g, &const_val->data.x_struct.fields[i]))
+                    if (!value_is_all_undef(g, const_val->data.x_struct.fields[i]))
                         return false;
                 }
                 return true;
@@ -3709,8 +3707,9 @@ static LLVMValueRef ir_render_elem_ptr(CodeGen *g, IrExecutable *executable, IrI
             array_type = array_type->data.pointer.child_type;
         }
         if (safety_check_on) {
-            LLVMValueRef end = LLVMConstInt(g->builtin_types.entry_usize->llvm_type,
-                    array_type->data.array.len, false);
+            uint64_t extra_len_from_sentinel = (array_type->data.array.sentinel != nullptr) ? 1 : 0;
+            uint64_t full_len = array_type->data.array.len + extra_len_from_sentinel;
+            LLVMValueRef end = LLVMConstInt(g->builtin_types.entry_usize->llvm_type, full_len, false);
             add_bounds_check(g, subscript_value, LLVMIntEQ, nullptr, LLVMIntULT, end);
         }
         if (array_ptr_type->data.pointer.host_int_bytes != 0) {
@@ -3753,7 +3752,7 @@ static LLVMValueRef ir_render_elem_ptr(CodeGen *g, IrExecutable *executable, IrI
         LLVMValueRef array_ptr = get_handle_value(g, array_ptr_ptr, array_type, array_ptr_type);
         assert(array_type->data.structure.is_slice);
 
-        ZigType *ptr_type = instruction->base.value.type;
+        ZigType *ptr_type = array_type->data.structure.fields[slice_ptr_index]->type_entry;
         if (!type_has_bits(ptr_type)) {
             if (safety_check_on) {
                 assert(LLVMGetTypeKind(LLVMTypeOf(array_ptr)) == LLVMIntegerTypeKind);
@@ -3766,14 +3765,15 @@ static LLVMValueRef ir_render_elem_ptr(CodeGen *g, IrExecutable *executable, IrI
         assert(LLVMGetTypeKind(LLVMGetElementType(LLVMTypeOf(array_ptr))) == LLVMStructTypeKind);
 
         if (safety_check_on) {
-            size_t len_index = array_type->data.structure.fields[slice_len_index].gen_index;
+            size_t len_index = array_type->data.structure.fields[slice_len_index]->gen_index;
             assert(len_index != SIZE_MAX);
             LLVMValueRef len_ptr = LLVMBuildStructGEP(g->builder, array_ptr, (unsigned)len_index, "");
             LLVMValueRef len = gen_load_untyped(g, len_ptr, 0, false, "");
-            add_bounds_check(g, subscript_value, LLVMIntEQ, nullptr, LLVMIntULT, len);
+            LLVMIntPredicate upper_op = (ptr_type->data.pointer.sentinel != nullptr) ? LLVMIntULE : LLVMIntULT;
+            add_bounds_check(g, subscript_value, LLVMIntEQ, nullptr, upper_op, len);
         }
 
-        size_t ptr_index = array_type->data.structure.fields[slice_ptr_index].gen_index;
+        size_t ptr_index = array_type->data.structure.fields[slice_ptr_index]->gen_index;
         assert(ptr_index != SIZE_MAX);
         LLVMValueRef ptr_ptr = LLVMBuildStructGEP(g->builder, array_ptr, (unsigned)ptr_index, "");
         LLVMValueRef ptr = gen_load_untyped(g, ptr_ptr, 0, false, "");
@@ -3865,7 +3865,7 @@ static void render_async_spills(CodeGen *g) {
         if (instruction->field_index == SIZE_MAX)
             continue;
 
-        size_t gen_index = frame_type->data.structure.fields[instruction->field_index].gen_index;
+        size_t gen_index = frame_type->data.structure.fields[instruction->field_index]->gen_index;
         instruction->base.llvm_value = LLVMBuildStructGEP(g->builder, g->cur_frame_ptr, gen_index,
                 instruction->name_hint);
     }
@@ -4351,17 +4351,32 @@ static LLVMValueRef ir_render_union_field_ptr(CodeGen *g, IrExecutable *executab
     TypeUnionField *field = instruction->field;
 
     if (!type_has_bits(field->type_entry)) {
-        if (union_type->data.unionation.gen_tag_index == SIZE_MAX) {
+        ZigType *tag_type = union_type->data.unionation.tag_type;
+        if (!instruction->initializing || !type_has_bits(tag_type))
             return nullptr;
+
+        // The field has no bits but we still have to change the discriminant
+        // value here
+        LLVMValueRef union_ptr = ir_llvm_value(g, instruction->union_ptr);
+
+        LLVMTypeRef tag_type_ref = get_llvm_type(g, tag_type);
+        LLVMValueRef tag_field_ptr = nullptr;
+        if (union_type->data.unionation.gen_field_count == 0) {
+            assert(union_type->data.unionation.gen_tag_index == SIZE_MAX);
+            // The whole union is collapsed into the discriminant
+            tag_field_ptr = LLVMBuildBitCast(g->builder, union_ptr,
+                LLVMPointerType(tag_type_ref, 0), "");
+        } else {
+            assert(union_type->data.unionation.gen_tag_index != SIZE_MAX);
+            tag_field_ptr = LLVMBuildStructGEP(g->builder, union_ptr,
+                union_type->data.unionation.gen_tag_index, "");
         }
-        if (instruction->initializing) {
-            LLVMValueRef union_ptr = ir_llvm_value(g, instruction->union_ptr);
-            LLVMValueRef tag_field_ptr = LLVMBuildStructGEP(g->builder, union_ptr,
-                    union_type->data.unionation.gen_tag_index, "");
-            LLVMValueRef tag_value = bigint_to_llvm_const(get_llvm_type(g, union_type->data.unionation.tag_type),
-                    &field->enum_field->value);
-            gen_store_untyped(g, tag_value, tag_field_ptr, 0, false);
-        }
+
+        LLVMValueRef tag_value = bigint_to_llvm_const(tag_type_ref,
+            &field->enum_field->value);
+        assert(tag_field_ptr != nullptr);
+        gen_store_untyped(g, tag_value, tag_field_ptr, 0, false);
+
         return nullptr;
     }
 
@@ -4992,10 +5007,10 @@ static LLVMValueRef ir_render_align_cast(CodeGen *g, IrExecutable *executable, I
         align_bytes = target_type->data.maybe.child_type->data.fn.fn_type_id.alignment;
         ptr_val = target_val;
     } else if (target_type->id == ZigTypeIdStruct && target_type->data.structure.is_slice) {
-        ZigType *slice_ptr_type = target_type->data.structure.fields[slice_ptr_index].type_entry;
+        ZigType *slice_ptr_type = target_type->data.structure.fields[slice_ptr_index]->type_entry;
         align_bytes = get_ptr_align(g, slice_ptr_type);
 
-        size_t ptr_index = target_type->data.structure.fields[slice_ptr_index].gen_index;
+        size_t ptr_index = target_type->data.structure.fields[slice_ptr_index]->gen_index;
         LLVMValueRef ptr_val_ptr = LLVMBuildStructGEP(g->builder, target_val, (unsigned)ptr_index, "");
         ptr_val = gen_load_untyped(g, ptr_val_ptr, 0, false, "");
     } else {
@@ -5240,13 +5255,13 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutable *executable, IrInst
         }
 
         if (type_has_bits(array_type)) {
-            size_t gen_ptr_index = instruction->base.value.type->data.structure.fields[slice_ptr_index].gen_index;
+            size_t gen_ptr_index = instruction->base.value.type->data.structure.fields[slice_ptr_index]->gen_index;
             LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, gen_ptr_index, "");
             LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, array_ptr, &start_val, 1, "");
             gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
         }
 
-        size_t gen_len_index = instruction->base.value.type->data.structure.fields[slice_len_index].gen_index;
+        size_t gen_len_index = instruction->base.value.type->data.structure.fields[slice_len_index]->gen_index;
         LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, gen_len_index, "");
         LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
         gen_store_untyped(g, len_value, len_field_ptr, 0, false);
@@ -5258,9 +5273,9 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutable *executable, IrInst
         assert(LLVMGetTypeKind(LLVMGetElementType(LLVMTypeOf(array_ptr))) == LLVMStructTypeKind);
         assert(LLVMGetTypeKind(LLVMGetElementType(LLVMTypeOf(tmp_struct_ptr))) == LLVMStructTypeKind);
 
-        size_t ptr_index = array_type->data.structure.fields[slice_ptr_index].gen_index;
+        size_t ptr_index = array_type->data.structure.fields[slice_ptr_index]->gen_index;
         assert(ptr_index != SIZE_MAX);
-        size_t len_index = array_type->data.structure.fields[slice_len_index].gen_index;
+        size_t len_index = array_type->data.structure.fields[slice_len_index]->gen_index;
         assert(len_index != SIZE_MAX);
 
         LLVMValueRef prev_end = nullptr;
@@ -6568,11 +6583,11 @@ static LLVMValueRef pack_const_int(CodeGen *g, LLVMTypeRef big_int_type_ref, Con
                 LLVMValueRef val = LLVMConstInt(big_int_type_ref, 0, false);
                 size_t used_bits = 0;
                 for (size_t i = 0; i < type_entry->data.structure.src_field_count; i += 1) {
-                    TypeStructField *field = &type_entry->data.structure.fields[i];
+                    TypeStructField *field = type_entry->data.structure.fields[i];
                     if (field->gen_index == SIZE_MAX) {
                         continue;
                     }
-                    LLVMValueRef child_val = pack_const_int(g, big_int_type_ref, &const_val->data.x_struct.fields[i]);
+                    LLVMValueRef child_val = pack_const_int(g, big_int_type_ref, const_val->data.x_struct.fields[i]);
                     uint32_t packed_bits_size = type_size_bits(g, field->type_entry);
                     if (is_big_endian) {
                         LLVMValueRef shift_amt = LLVMConstInt(big_int_type_ref, packed_bits_size, false);
@@ -6622,11 +6637,20 @@ static LLVMValueRef gen_const_val_ptr(CodeGen *g, ConstExprValue *const_val, con
                 ConstExprValue *array_const_val = const_val->data.x_ptr.data.base_array.array_val;
                 assert(array_const_val->type->id == ZigTypeIdArray);
                 if (!type_has_bits(array_const_val->type)) {
-                    // make this a null pointer
-                    ZigType *usize = g->builtin_types.entry_usize;
-                    const_val->global_refs->llvm_value = LLVMConstIntToPtr(LLVMConstNull(usize->llvm_type),
-                            get_llvm_type(g, const_val->type));
-                    return const_val->global_refs->llvm_value;
+                    if (array_const_val->type->data.array.sentinel != nullptr) {
+                        ConstExprValue *pointee = array_const_val->type->data.array.sentinel;
+                        render_const_val(g, pointee, "");
+                        render_const_val_global(g, pointee, "");
+                        const_val->global_refs->llvm_value = LLVMConstBitCast(pointee->global_refs->llvm_global,
+                                get_llvm_type(g, const_val->type));
+                        return const_val->global_refs->llvm_value;
+                    } else {
+                        // make this a null pointer
+                        ZigType *usize = g->builtin_types.entry_usize;
+                        const_val->global_refs->llvm_value = LLVMConstIntToPtr(LLVMConstNull(usize->llvm_type),
+                                get_llvm_type(g, const_val->type));
+                        return const_val->global_refs->llvm_value;
+                    }
                 }
                 size_t elem_index = const_val->data.x_ptr.data.base_array.elem_index;
                 LLVMValueRef uncasted_ptr_val = gen_const_ptr_array_recursive(g, array_const_val, elem_index);
@@ -6647,7 +6671,7 @@ static LLVMValueRef gen_const_val_ptr(CodeGen *g, ConstExprValue *const_val, con
                     return const_val->global_refs->llvm_value;
                 }
                 size_t src_field_index = const_val->data.x_ptr.data.base_struct.field_index;
-                size_t gen_field_index = struct_const_val->type->data.structure.fields[src_field_index].gen_index;
+                size_t gen_field_index = struct_const_val->type->data.structure.fields[src_field_index]->gen_index;
                 LLVMValueRef uncasted_ptr_val = gen_const_ptr_struct_recursive(g, struct_const_val,
                         gen_field_index);
                 LLVMValueRef ptr_val = LLVMConstBitCast(uncasted_ptr_val, get_llvm_type(g, const_val->type));
@@ -6826,7 +6850,7 @@ check: switch (const_val->special) {
                 if (type_entry->data.structure.layout == ContainerLayoutPacked) {
                     size_t src_field_index = 0;
                     while (src_field_index < src_field_count) {
-                        TypeStructField *type_struct_field = &type_entry->data.structure.fields[src_field_index];
+                        TypeStructField *type_struct_field = type_entry->data.structure.fields[src_field_index];
                         if (type_struct_field->gen_index == SIZE_MAX) {
                             src_field_index += 1;
                             continue;
@@ -6834,13 +6858,13 @@ check: switch (const_val->special) {
 
                         size_t src_field_index_end = src_field_index + 1;
                         for (; src_field_index_end < src_field_count; src_field_index_end += 1) {
-                            TypeStructField *it_field = &type_entry->data.structure.fields[src_field_index_end];
+                            TypeStructField *it_field = type_entry->data.structure.fields[src_field_index_end];
                             if (it_field->gen_index != type_struct_field->gen_index)
                                 break;
                         }
 
                         if (src_field_index + 1 == src_field_index_end) {
-                            ConstExprValue *field_val = &const_val->data.x_struct.fields[src_field_index];
+                            ConstExprValue *field_val = const_val->data.x_struct.fields[src_field_index];
                             LLVMValueRef val = gen_const_val(g, field_val, "");
                             fields[type_struct_field->gen_index] = val;
                             make_unnamed_struct = make_unnamed_struct || is_llvm_value_unnamed_type(g, field_val->type, val);
@@ -6853,12 +6877,12 @@ check: switch (const_val->special) {
                             LLVMValueRef val = LLVMConstInt(big_int_type_ref, 0, false);
                             size_t used_bits = 0;
                             for (size_t i = src_field_index; i < src_field_index_end; i += 1) {
-                                TypeStructField *it_field = &type_entry->data.structure.fields[i];
+                                TypeStructField *it_field = type_entry->data.structure.fields[i];
                                 if (it_field->gen_index == SIZE_MAX) {
                                     continue;
                                 }
                                 LLVMValueRef child_val = pack_const_int(g, big_int_type_ref,
-                                        &const_val->data.x_struct.fields[i]);
+                                        const_val->data.x_struct.fields[i]);
                                 uint32_t packed_bits_size = type_size_bits(g, it_field->type_entry);
                                 if (is_big_endian) {
                                     LLVMValueRef shift_amt = LLVMConstInt(big_int_type_ref,
@@ -6893,11 +6917,11 @@ check: switch (const_val->special) {
                     }
                 } else {
                     for (uint32_t i = 0; i < src_field_count; i += 1) {
-                        TypeStructField *type_struct_field = &type_entry->data.structure.fields[i];
+                        TypeStructField *type_struct_field = type_entry->data.structure.fields[i];
                         if (type_struct_field->gen_index == SIZE_MAX) {
                             continue;
                         }
-                        ConstExprValue *field_val = &const_val->data.x_struct.fields[i];
+                        ConstExprValue *field_val = const_val->data.x_struct.fields[i];
                         assert(field_val->type != nullptr);
                         if ((err = ensure_const_val_repr(nullptr, g, nullptr, field_val,
                                         type_struct_field->type_entry)))
@@ -6910,10 +6934,10 @@ check: switch (const_val->special) {
                         make_unnamed_struct = make_unnamed_struct || is_llvm_value_unnamed_type(g, field_val->type, val);
 
                         size_t end_pad_gen_index = (i + 1 < src_field_count) ?
-                            type_entry->data.structure.fields[i + 1].gen_index :
+                            type_entry->data.structure.fields[i + 1]->gen_index :
                             type_entry->data.structure.gen_field_count;
                         size_t next_offset = (i + 1 < src_field_count) ?
-                            type_entry->data.structure.fields[i + 1].offset : type_entry->abi_size;
+                            type_entry->data.structure.fields[i + 1]->offset : type_entry->abi_size;
                         if (end_pad_gen_index != SIZE_MAX) {
                             for (size_t gen_i = type_struct_field->gen_index + 1; gen_i < end_pad_gen_index;
                                     gen_i += 1)
@@ -6940,7 +6964,9 @@ check: switch (const_val->special) {
                     case ConstArraySpecialUndef:
                         return LLVMGetUndef(get_llvm_type(g, type_entry));
                     case ConstArraySpecialNone: {
-                        LLVMValueRef *values = allocate<LLVMValueRef>(len);
+                        uint64_t extra_len_from_sentinel = (type_entry->data.array.sentinel != nullptr) ? 1 : 0;
+                        uint64_t full_len = len + extra_len_from_sentinel;
+                        LLVMValueRef *values = allocate<LLVMValueRef>(full_len);
                         LLVMTypeRef element_type_ref = get_llvm_type(g, type_entry->data.array.child_type);
                         bool make_unnamed_struct = false;
                         for (uint64_t i = 0; i < len; i += 1) {
@@ -6949,15 +6975,19 @@ check: switch (const_val->special) {
                             values[i] = val;
                             make_unnamed_struct = make_unnamed_struct || is_llvm_value_unnamed_type(g, elem_value->type, val);
                         }
+                        if (type_entry->data.array.sentinel != nullptr) {
+                            values[len] = gen_const_val(g, type_entry->data.array.sentinel, "");
+                        }
                         if (make_unnamed_struct) {
-                            return LLVMConstStruct(values, len, true);
+                            return LLVMConstStruct(values, full_len, true);
                         } else {
-                            return LLVMConstArray(element_type_ref, values, (unsigned)len);
+                            return LLVMConstArray(element_type_ref, values, (unsigned)full_len);
                         }
                     }
                     case ConstArraySpecialBuf: {
                         Buf *buf = const_val->data.x_array.data.s_buf;
-                        return LLVMConstString(buf_ptr(buf), (unsigned)buf_len(buf), true);
+                        return LLVMConstString(buf_ptr(buf), (unsigned)buf_len(buf),
+                                type_entry->data.array.sentinel == nullptr);
                     }
                 }
                 zig_unreachable();
@@ -7450,7 +7480,7 @@ static void do_code_gen(CodeGen *g) {
             !is_async && !have_err_ret_trace_arg;
         LLVMValueRef err_ret_array_val = nullptr;
         if (have_err_ret_trace_stack) {
-            ZigType *array_type = get_array_type(g, g->builtin_types.entry_usize, stack_trace_ptr_count);
+            ZigType *array_type = get_array_type(g, g->builtin_types.entry_usize, stack_trace_ptr_count, nullptr);
             err_ret_array_val = build_alloca(g, array_type, "error_return_trace_addresses", get_abi_alignment(g, array_type));
 
             (void)get_llvm_type(g, get_stack_trace_type(g));
@@ -7576,15 +7606,15 @@ static void do_code_gen(CodeGen *g) {
         // finishing error return trace setup. we have to do this after all the allocas.
         if (have_err_ret_trace_stack) {
             ZigType *usize = g->builtin_types.entry_usize;
-            size_t index_field_index = g->stack_trace_type->data.structure.fields[0].gen_index;
+            size_t index_field_index = g->stack_trace_type->data.structure.fields[0]->gen_index;
             LLVMValueRef index_field_ptr = LLVMBuildStructGEP(g->builder, g->cur_err_ret_trace_val_stack, (unsigned)index_field_index, "");
             gen_store_untyped(g, LLVMConstNull(usize->llvm_type), index_field_ptr, 0, false);
 
-            size_t addresses_field_index = g->stack_trace_type->data.structure.fields[1].gen_index;
+            size_t addresses_field_index = g->stack_trace_type->data.structure.fields[1]->gen_index;
             LLVMValueRef addresses_field_ptr = LLVMBuildStructGEP(g->builder, g->cur_err_ret_trace_val_stack, (unsigned)addresses_field_index, "");
 
-            ZigType *slice_type = g->stack_trace_type->data.structure.fields[1].type_entry;
-            size_t ptr_field_index = slice_type->data.structure.fields[slice_ptr_index].gen_index;
+            ZigType *slice_type = g->stack_trace_type->data.structure.fields[1]->type_entry;
+            size_t ptr_field_index = slice_type->data.structure.fields[slice_ptr_index]->gen_index;
             LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, addresses_field_ptr, (unsigned)ptr_field_index, "");
             LLVMValueRef zero = LLVMConstNull(usize->llvm_type);
             LLVMValueRef indices[] = {zero, zero};
@@ -7593,7 +7623,7 @@ static void do_code_gen(CodeGen *g) {
             ZigType *ptr_ptr_usize_type = get_pointer_to_type(g, get_pointer_to_type(g, usize, false), false);
             gen_store(g, err_ret_array_val_elem0_ptr, ptr_field_ptr, ptr_ptr_usize_type);
 
-            size_t len_field_index = slice_type->data.structure.fields[slice_len_index].gen_index;
+            size_t len_field_index = slice_type->data.structure.fields[slice_len_index]->gen_index;
             LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, addresses_field_ptr, (unsigned)len_field_index, "");
             gen_store(g, LLVMConstInt(usize->llvm_type, stack_trace_ptr_count, false), len_field_ptr, get_pointer_to_type(g, usize, false));
         }
@@ -7710,7 +7740,7 @@ static void do_code_gen(CodeGen *g) {
 
     char *error = nullptr;
     if (LLVMVerifyModule(g->module, LLVMReturnStatusAction, &error)) {
-        zig_panic("broken LLVM module found: %s", error);
+        zig_panic("broken LLVM module found: %s\nThis is a bug in the Zig compiler.", error);
     }
 }
 
@@ -8613,6 +8643,11 @@ static void init(CodeGen *g) {
     g->const_void_val.type = g->builtin_types.entry_void;
     g->const_void_val.global_refs = allocate<ConstGlobalRefs>(1);
 
+    g->const_zero_byte.special = ConstValSpecialStatic;
+    g->const_zero_byte.type = g->builtin_types.entry_u8;
+    g->const_zero_byte.global_refs = allocate<ConstGlobalRefs>(1);
+    bigint_init_unsigned(&g->const_zero_byte.data.x_bigint, 0);
+
     {
         ConstGlobalRefs *global_refs = allocate<ConstGlobalRefs>(PanicMsgIdCount);
         for (size_t i = 0; i < PanicMsgIdCount; i += 1) {
@@ -9052,7 +9087,7 @@ static void create_test_compile_var_and_add_test_runner(CodeGen *g) {
         zig_unreachable();
 
     ConstExprValue *test_fn_array = create_const_vals(1);
-    test_fn_array->type = get_array_type(g, struct_type, g->test_fns.length);
+    test_fn_array->type = get_array_type(g, struct_type, g->test_fns.length, nullptr);
     test_fn_array->special = ConstValSpecialStatic;
     test_fn_array->data.x_array.data.s_none.elements = create_const_vals(g->test_fns.length);
 
@@ -9074,13 +9109,13 @@ static void create_test_compile_var_and_add_test_runner(CodeGen *g) {
         this_val->parent.id = ConstParentIdArray;
         this_val->parent.data.p_array.array_val = test_fn_array;
         this_val->parent.data.p_array.elem_index = i;
-        this_val->data.x_struct.fields = create_const_vals(2);
+        this_val->data.x_struct.fields = alloc_const_vals_ptrs(2);
 
-        ConstExprValue *name_field = &this_val->data.x_struct.fields[0];
-        ConstExprValue *name_array_val = create_const_str_lit(g, &test_fn_entry->symbol_name);
+        ConstExprValue *name_field = this_val->data.x_struct.fields[0];
+        ConstExprValue *name_array_val = create_const_str_lit(g, &test_fn_entry->symbol_name)->data.x_ptr.data.ref.pointee;
         init_const_slice(g, name_field, name_array_val, 0, buf_len(&test_fn_entry->symbol_name), true);
 
-        ConstExprValue *fn_field = &this_val->data.x_struct.fields[1];
+        ConstExprValue *fn_field = this_val->data.x_struct.fields[1];
         fn_field->type = fn_type;
         fn_field->special = ConstValSpecialStatic;
         fn_field->data.x_ptr.special = ConstPtrSpecialFunction;
@@ -9508,7 +9543,7 @@ static void prepend_c_type_to_decl_list(CodeGen *g, GenH *gen_h, ZigType *type_e
             return;
         case ZigTypeIdStruct:
             for (uint32_t i = 0; i < type_entry->data.structure.src_field_count; i += 1) {
-                TypeStructField *field = &type_entry->data.structure.fields[i];
+                TypeStructField *field = type_entry->data.structure.fields[i];
                 prepend_c_type_to_decl_list(g, gen_h, field->type_entry);
             }
             gen_h->types_to_declare.append(type_entry);
@@ -9874,7 +9909,7 @@ static void gen_h_file(CodeGen *g) {
                 if (type_entry->data.structure.layout == ContainerLayoutExtern) {
                     fprintf(out_h, "struct %s {\n", buf_ptr(type_h_name(type_entry)));
                     for (uint32_t field_i = 0; field_i < type_entry->data.structure.src_field_count; field_i += 1) {
-                        TypeStructField *struct_field = &type_entry->data.structure.fields[field_i];
+                        TypeStructField *struct_field = type_entry->data.structure.fields[field_i];
 
                         Buf *type_name_buf = buf_alloc();
                         get_c_type(g, gen_h, struct_field->type_entry, type_name_buf);
@@ -10400,6 +10435,7 @@ CodeGen *codegen_create(Buf *main_pkg_path, Buf *root_src_path, const ZigTarget 
     g->external_prototypes.init(8);
     g->string_literals_table.init(16);
     g->type_info_cache.init(32);
+    g->one_possible_values.init(32);
     g->is_test_build = is_test_build;
     g->is_single_threaded = false;
     buf_resize(&g->global_asm, 0);

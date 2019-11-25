@@ -1,7 +1,6 @@
 // This is Zig code that is used by both stage1 and stage2.
 // The prototypes in src/userland.h must match these definitions.
 
-const builtin = @import("builtin");
 const std = @import("std");
 const io = std.io;
 const mem = std.mem;
@@ -28,7 +27,7 @@ comptime {
 // ABI warning
 export fn stage2_zen(ptr: *[*]const u8, len: *usize) void {
     const info_zen = @import("main.zig").info_zen;
-    ptr.* = &info_zen;
+    ptr.* = info_zen;
     len.* = info_zen.len;
 }
 
@@ -145,7 +144,7 @@ export fn stage2_render_ast(tree: *ast.Tree, output_file: *FILE) Error {
 
 // TODO: just use the actual self-hosted zig fmt. Until https://github.com/ziglang/zig/issues/2377,
 // we use a blocking implementation.
-export fn stage2_fmt(argc: c_int, argv: [*]const [*]const u8) c_int {
+export fn stage2_fmt(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     if (std.debug.runtime_safety) {
         fmtMain(argc, argv) catch unreachable;
     } else {
@@ -157,7 +156,7 @@ export fn stage2_fmt(argc: c_int, argv: [*]const [*]const u8) c_int {
     return 0;
 }
 
-fn fmtMain(argc: c_int, argv: [*]const [*]const u8) !void {
+fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
     const allocator = std.heap.c_allocator;
     var args_list = std.ArrayList([]const u8).init(allocator);
     const argc_usize = @intCast(usize, argc);
@@ -354,9 +353,9 @@ fn printErrMsgToFile(
     color: errmsg.Color,
 ) !void {
     const color_on = switch (color) {
-        errmsg.Color.Auto => file.isTty(),
-        errmsg.Color.On => true,
-        errmsg.Color.Off => false,
+        .Auto => file.isTty(),
+        .On => true,
+        .Off => false,
     };
     const lok_token = parse_error.loc();
     const span = errmsg.Span{
@@ -421,8 +420,8 @@ export fn stage2_DepTokenizer_next(self: *stage2_DepTokenizer) stage2_DepNextRes
     const textz = std.Buffer.init(&self.handle.arena.allocator, token.bytes) catch @panic("failed to create .d tokenizer token text");
     return stage2_DepNextResult{
         .type_id = switch (token.id) {
-            .target => stage2_DepNextResult.TypeId.target,
-            .prereq => stage2_DepNextResult.TypeId.prereq,
+            .target => .target,
+            .prereq => .prereq,
         },
         .textz = textz.toSlice().ptr,
     };

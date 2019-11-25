@@ -2,7 +2,6 @@
 // and stage2. Currently the only way it is used is with `zig translate-c-2`.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
 const ast = std.zig.ast;
 const Token = std.zig.Token;
@@ -13,8 +12,7 @@ pub const Mode = enum {
     translate,
 };
 
-// TODO merge with Type.Fn.CallingConvention
-const CallingConvention = builtin.TypeInfo.CallingConvention;
+const CallingConvention = std.builtin.TypeInfo.CallingConvention;
 
 pub const ClangErrMsg = Stage2ErrorMsg;
 
@@ -115,7 +113,7 @@ const Context = struct {
     }
 
     /// Convert a null-terminated C string to a slice allocated in the arena
-    fn str(c: *Context, s: [*]const u8) ![]u8 {
+    fn str(c: *Context, s: [*:0]const u8) ![]u8 {
         return std.mem.dupe(c.a(), u8, std.mem.toSliceConst(u8, s));
     }
 
@@ -174,7 +172,6 @@ pub fn translate(
     tree.root_node.* = ast.Node.Root{
         .base = ast.Node{ .id = ast.Node.Id.Root },
         .decls = ast.Node.Root.DeclList.init(arena),
-        .doc_comments = null,
         // initialized with the eof token at the end
         .eof_token = undefined,
     };
@@ -699,10 +696,9 @@ fn transStringLiteral(
             len = 0;
             for (str) |c| len += escapeChar(c, &char_buf).len;
 
-            const buf = try rp.c.a().alloc(u8, len + "c\"\"".len);
-            buf[0] = 'c';
-            buf[1] = '"';
-            writeEscapedString(buf[2..], str);
+            const buf = try rp.c.a().alloc(u8, len + "\"\"".len);
+            buf[0] = '"';
+            writeEscapedString(buf[1..], str);
             buf[buf.len - 1] = '"';
 
             const token = try appendToken(rp.c, .StringLiteral, buf);
@@ -1107,16 +1103,30 @@ fn transCreateNodePtrType(
     is_const: bool,
     is_volatile: bool,
     op_tok_id: std.zig.Token.Id,
-    bytes: []const u8,
 ) !*ast.Node.PrefixOp {
     const node = try c.a().create(ast.Node.PrefixOp);
+    const op_token = switch (op_tok_id) {
+        .LBracket => blk: {
+            const lbracket = try appendToken(c, .LBracket, "[");
+            _ = try appendToken(c, .Asterisk, "*");
+            _ = try appendToken(c, .RBracket, "]");
+            break :blk lbracket;
+        },
+        .Identifier => blk: {
+            _ = try appendToken(c, .LBracket, "[");
+            _ = try appendToken(c, .Asterisk, "*");
+            const c_ident = try appendToken(c, .Identifier, "c");
+            _ = try appendToken(c, .RBracket, "]");
+            break :blk c_ident;
+        },
+        .Asterisk => try appendToken(c, .Asterisk, "*"),
+        else => unreachable,
+    };
     node.* = ast.Node.PrefixOp{
         .base = ast.Node{ .id = .PrefixOp },
-        .op_token = try appendToken(c, op_tok_id, bytes),
+        .op_token = op_token,
         .op = ast.Node.PrefixOp.Op{
-            .PtrType = ast.Node.PrefixOp.PtrInfo{
-                .allowzero_token = null,
-                .align_info = null,
+            .PtrType = .{
                 .const_token = if (is_const) try appendToken(c, .Keyword_const, "const") else null,
                 .volatile_token = if (is_volatile) try appendToken(c, .Keyword_volatile, "volatile") else null,
             },
@@ -1227,7 +1237,6 @@ fn transType(rp: RestorePoint, ty: *const ZigClangType, source_loc: ZigClangSour
                     ZigClangQualType_isConstQualified(child_qt),
                     ZigClangQualType_isVolatileQualified(child_qt),
                     .Asterisk,
-                    "*",
                 );
                 optional_node.rhs = &pointer_node.base;
                 pointer_node.rhs = try transQualType(rp, child_qt, source_loc);
@@ -1237,8 +1246,7 @@ fn transType(rp: RestorePoint, ty: *const ZigClangType, source_loc: ZigClangSour
                 rp.c,
                 ZigClangQualType_isConstQualified(child_qt),
                 ZigClangQualType_isVolatileQualified(child_qt),
-                .BracketStarCBracket,
-                "[*c]",
+                .Identifier,
             );
             pointer_node.rhs = try transQualType(rp, child_qt, source_loc);
             return &pointer_node.base;

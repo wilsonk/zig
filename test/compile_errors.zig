@@ -3,6 +3,142 @@ const builtin = @import("builtin");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
+        "incompatible sentinels",
+        \\export fn entry1(ptr: [*:255]u8) [*:0]u8 {
+        \\    return ptr;
+        \\}
+        \\export fn entry2(ptr: [*]u8) [*:0]u8 {
+        \\    return ptr;
+        \\}
+        \\export fn entry3() void {
+        \\    var array: [2:0]u8 = [_:255]u8{1, 2};
+        \\}
+        \\export fn entry4() void {
+        \\    var array: [2:0]u8 = [_]u8{1, 2};
+        \\}
+    ,
+        "tmp.zig:2:12: error: expected type '[*:0]u8', found '[*:255]u8'",
+        "tmp.zig:2:12: note: destination pointer requires a terminating '0' sentinel, but source pointer has a terminating '255' sentinel",
+        "tmp.zig:5:12: error: expected type '[*:0]u8', found '[*]u8'",
+        "tmp.zig:5:12: note: destination pointer requires a terminating '0' sentinel",
+
+        "tmp.zig:8:35: error: expected type '[2:0]u8', found '[2:255]u8'",
+        "tmp.zig:8:35: note: destination array requires a terminating '0' sentinel, but source array has a terminating '255' sentinel",
+        "tmp.zig:11:31: error: expected type '[2:0]u8', found '[2]u8'",
+        "tmp.zig:11:31: note: destination array requires a terminating '0' sentinel",
+
+    );
+
+    cases.add(
+        "empty switch on an integer",
+        \\export fn entry() void {
+        \\    var x: u32 = 0;
+        \\    switch(x) {}
+        \\}
+    ,
+        "tmp.zig:3:5: error: switch must handle all possibilities",
+    );
+
+    cases.add(
+        "incorrect return type",
+        \\ pub export fn entry() void{
+        \\     _ = foo();
+        \\ }
+        \\ const A = struct {
+        \\     a: u32,
+        \\ };
+        \\ fn foo() A {
+        \\     return bar();
+        \\ }
+        \\ const B = struct {
+        \\     a: u32,
+        \\ };
+        \\ fn bar() B {
+        \\     unreachable;
+        \\ }
+    ,
+        "tmp.zig:8:16: error: expected type 'A', found 'B'",
+    );
+
+    cases.add(
+        "regression test #2980: base type u32 is not type checked properly when assigning a value within a struct",
+        \\const Foo = struct {
+        \\    ptr: ?*usize,
+        \\    uval: u32,
+        \\};
+        \\fn get_uval(x: u32) !u32 {
+        \\    return error.NotFound;
+        \\}
+        \\export fn entry() void {
+        \\    const afoo = Foo{
+        \\        .ptr = null,
+        \\        .uval = get_uval(42),
+        \\    };
+        \\}
+    ,
+        "tmp.zig:11:25: error: expected type 'u32', found '@typeOf(get_uval).ReturnType.ErrorSet!u32'",
+    );
+
+    cases.add(
+        "asigning to struct or union fields that are not optionals with a function that returns an optional",
+        \\fn maybe(is: bool) ?u8 {
+        \\    if (is) return @as(u8, 10) else return null;
+        \\}
+        \\const U = union {
+        \\    Ye: u8,
+        \\};
+        \\const S = struct {
+        \\    num: u8,
+        \\};
+        \\export fn entry() void {
+        \\    var u = U{ .Ye = maybe(false) };
+        \\    var s = S{ .num = maybe(false) };
+        \\}
+    ,
+        "tmp.zig:11:27: error: expected type 'u8', found '?u8'",
+    );
+
+    cases.add(
+        "missing result type for phi node",
+        \\fn foo() !void {
+        \\    return anyerror.Foo;
+        \\}
+        \\export fn entry() void {
+        \\    foo() catch 0;
+        \\}
+    ,
+        "tmp.zig:5:17: error: integer value 0 cannot be coerced to type 'void'",
+    );
+
+    cases.add(
+        "atomicrmw with enum op not .Xchg",
+        \\export fn entry() void {
+        \\    const E = enum(u8) {
+        \\        a,
+        \\        b,
+        \\        c,
+        \\        d,
+        \\    };
+        \\    var x: E = .a;
+        \\    _ = @atomicRmw(E, &x, .Add, .b, .SeqCst);
+        \\}
+    ,
+        "tmp.zig:9:27: error: @atomicRmw on enum only works with .Xchg",
+    );
+
+    cases.add(
+        "disallow coercion from non-null-terminated pointer to null-terminated pointer",
+        \\extern fn puts(s: [*:0]const u8) c_int;
+        \\pub fn main() void {
+        \\    const no_zero_array = [_]u8{'h', 'e', 'l', 'l', 'o'};
+        \\    const no_zero_ptr: [*]const u8 = &no_zero_array;
+        \\    _ = puts(no_zero_ptr);
+        \\}
+    ,
+        "tmp.zig:5:14: error: expected type '[*:0]const u8', found '[*]const u8'",
+    );
+
+    cases.add(
         "atomic orderings of atomicStore Acquire or AcqRel",
         \\export fn entry() void {
         \\    var x: u32 = 0;
@@ -86,7 +222,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
         "using an unknown len ptr type instead of array",
         \\const resolutions = [*][*]const u8{
-        \\    c"[320 240  ]",
+        \\    "[320 240  ]",
         \\    null,
         \\};
         \\comptime {
@@ -703,10 +839,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "peer cast then implicit cast const pointer to mutable C pointer",
         \\export fn func() void {
         \\    var strValue: [*c]u8 = undefined;
-        \\    strValue = strValue orelse c"";
+        \\    strValue = strValue orelse "";
         \\}
     ,
-        "tmp.zig:3:32: error: cast discards const qualifier",
+        "tmp.zig:3:32: error: expected type '[*c]u8', found '*const [0:0]u8'",
+        "tmp.zig:3:32: note: cast discards const qualifier",
     );
 
     cases.add(
@@ -1037,7 +1174,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
             "libc headers note",
             \\const c = @cImport(@cInclude("stdio.h"));
             \\export fn entry() void {
-            \\    _ = c.printf(c"hello, world!\n");
+            \\    _ = c.printf("hello, world!\n");
             \\}
         ,
             "tmp.zig:1:11: error: C import failed",
@@ -1245,7 +1382,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    ptr_opt_many_ptr = c_ptr;
         \\}
         \\export fn entry2() void {
-        \\    var buf: [4]u8 = "aoeu";
+        \\    var buf: [4]u8 = "aoeu".*;
         \\    var slice: []u8 = &buf;
         \\    var opt_many_ptr: [*]u8 = slice.ptr;
         \\    var ptr_opt_many_ptr = &opt_many_ptr;
@@ -1440,7 +1577,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
         "reading past end of pointer casted array",
         \\comptime {
-        \\    const array = "aoeu";
+        \\    const array: [4]u8 = "aoeu".*;
         \\    const slice = array[1..];
         \\    const int_ptr = @ptrCast(*const u24, slice.ptr);
         \\    const deref = int_ptr.*;
@@ -2363,12 +2500,13 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     );
 
     cases.add(
-        "var not allowed in structs",
+        "var makes structs required to be comptime known",
         \\export fn entry() void {
-        \\   var s = (struct{v: var}){.v=@as(i32, 10)};
+        \\   const S = struct{v: var};
+        \\   var s = S{.v=@as(i32, 10)};
         \\}
     ,
-        "tmp.zig:2:23: error: invalid token: 'var'",
+        "tmp.zig:3:4: error: variable of type 'S' must be const or comptime",
     );
 
     cases.add(
@@ -3274,11 +3412,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
         "variable has wrong type",
         \\export fn f() i32 {
-        \\    const a = c"a";
+        \\    const a = "a";
         \\    return a;
         \\}
     ,
-        "tmp.zig:3:12: error: expected type 'i32', found '[*]const u8'",
+        "tmp.zig:3:12: error: expected type 'i32', found '*const [1:0]u8'",
     );
 
     cases.add(
@@ -3749,12 +3887,12 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
         "array concatenation with wrong type",
         \\const src = "aoeu";
-        \\const derp = @as(usize, 1234);
+        \\const derp: usize = 1234;
         \\const a = derp ++ "foo";
         \\
         \\export fn entry() usize { return @sizeOf(@typeOf(a)); }
     ,
-        "tmp.zig:3:11: error: expected array or C string literal, found 'usize'",
+        "tmp.zig:3:11: error: expected array, found 'usize'",
     );
 
     cases.add(
@@ -4708,7 +4846,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
         "assign through constant pointer",
         \\export fn f() void {
-        \\  var cstr = c"Hat";
+        \\  var cstr = "Hat";
         \\  cstr[0] = 'W';
         \\}
     ,
@@ -6129,11 +6267,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add(
         "calling var args extern function, passing array instead of pointer",
         \\export fn entry() void {
-        \\    foo("hello",);
+        \\    foo("hello".*,);
         \\}
         \\pub extern fn foo(format: *const u8, ...) void;
     ,
-        "tmp.zig:2:9: error: expected type '*const u8', found '[5]u8'",
+        "tmp.zig:2:16: error: expected type '*const u8', found '[5:0]u8'",
     );
 
     cases.add(
@@ -6699,7 +6837,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
     ,
         "tmp.zig:4:22: error: expected type '*[1]i32', found '*const i32'",
-        "tmp.zig:4:22: note: pointer type child 'i32' cannot cast into pointer type child '[1]i32'",
+        "tmp.zig:4:22: note: cast discards const qualifier",
     );
 
     cases.add(

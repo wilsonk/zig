@@ -1,3 +1,13 @@
+test "zig fmt: anon literal in array" {
+    try testCanonical(
+        \\var arr: [2]Foo = .{
+        \\    .{ .a = 2 },
+        \\    .{ .b = 3 },
+        \\};
+        \\
+    );
+}
+
 test "zig fmt: anon struct literal syntax" {
     try testCanonical(
         \\const x = .{
@@ -1542,6 +1552,7 @@ test "zig fmt: pointer attributes" {
         \\extern fn f2(s: **align(1) *const *volatile u8) c_int;
         \\extern fn f3(s: *align(1) const *align(1) volatile *const volatile u8) c_int;
         \\extern fn f4(s: *align(1) const volatile u8) c_int;
+        \\extern fn f5(s: [*:0]align(1) const volatile u8) c_int;
         \\
     );
 }
@@ -1552,6 +1563,7 @@ test "zig fmt: slice attributes" {
         \\extern fn f2(s: **align(1) *const *volatile u8) c_int;
         \\extern fn f3(s: *align(1) const *align(1) volatile *const volatile u8) c_int;
         \\extern fn f4(s: *align(1) const volatile u8) c_int;
+        \\extern fn f5(s: [*:0]align(1) const volatile u8) c_int;
         \\
     );
 }
@@ -1713,11 +1725,6 @@ test "zig fmt: multiline string" {
         \\        \\two)
         \\        \\three
         \\    ;
-        \\    const s2 =
-        \\        c\\one
-        \\        c\\two)
-        \\        c\\three
-        \\    ;
         \\    const s3 = // hi
         \\        \\one
         \\        \\two)
@@ -1734,7 +1741,6 @@ test "zig fmt: values" {
         \\    1;
         \\    1.0;
         \\    "string";
-        \\    c"cstring";
         \\    'c';
         \\    true;
         \\    false;
@@ -1879,6 +1885,7 @@ test "zig fmt: arrays" {
         \\        2,
         \\    };
         \\    const a: [0]u8 = []u8{};
+        \\    const x: [4:0]u8 = undefined;
         \\}
         \\
     );
@@ -2552,6 +2559,62 @@ test "zig fmt: comments at several places in struct init" {
         \\    .y = "test",
         \\    // test
         \\};
+        \\
+    );
+}
+
+test "zig fmt: top level doc comments" {
+    try testCanonical(
+        \\//! tld 1
+        \\//! tld 2
+        \\//! tld 3
+        \\
+        \\// comment
+        \\
+        \\/// A doc
+        \\const A = struct {
+        \\    //! A tld 1
+        \\    //! A tld 2
+        \\    //! A tld 3
+        \\};
+        \\
+        \\/// B doc
+        \\const B = struct {
+        \\    //! B tld 1
+        \\    //! B tld 2
+        \\    //! B tld 3
+        \\
+        \\    /// b doc
+        \\    b: u32,
+        \\};
+        \\
+        \\/// C doc
+        \\const C = struct {
+        \\    //! C tld 1
+        \\    //! C tld 2
+        \\    //! C tld 3
+        \\
+        \\    /// c1 doc
+        \\    c1: u32,
+        \\
+        \\    //! C tld 4
+        \\    //! C tld 5
+        \\    //! C tld 6
+        \\
+        \\    /// c2 doc
+        \\    c2: u32,
+        \\};
+        \\
+    );
+    try testCanonical(
+        \\//! Top-level documentation.
+        \\
+        \\/// This is A
+        \\pub const A = usize;
+        \\
+    );
+    try testCanonical(
+        \\//! Nothing here
         \\
     );
 }

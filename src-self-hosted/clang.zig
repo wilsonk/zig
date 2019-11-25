@@ -42,6 +42,7 @@ pub const struct_ZigClangImplicitCastExpr = @OpaqueType();
 pub const struct_ZigClangIncompleteArrayType = @OpaqueType();
 pub const struct_ZigClangIntegerLiteral = @OpaqueType();
 pub const struct_ZigClangMacroDefinitionRecord = @OpaqueType();
+pub const struct_ZigClangMacroQualifiedType = @OpaqueType();
 pub const struct_ZigClangMemberExpr = @OpaqueType();
 pub const struct_ZigClangNamedDecl = @OpaqueType();
 pub const struct_ZigClangNone = @OpaqueType();
@@ -707,7 +708,7 @@ pub const ZigClangStringLiteral_StringKind = extern enum {
 };
 
 pub extern fn ZigClangSourceManager_getSpellingLoc(self: ?*const struct_ZigClangSourceManager, Loc: struct_ZigClangSourceLocation) struct_ZigClangSourceLocation;
-pub extern fn ZigClangSourceManager_getFilename(self: *const struct_ZigClangSourceManager, SpellingLoc: struct_ZigClangSourceLocation) ?[*]const u8;
+pub extern fn ZigClangSourceManager_getFilename(self: *const struct_ZigClangSourceManager, SpellingLoc: struct_ZigClangSourceLocation) ?[*:0]const u8;
 pub extern fn ZigClangSourceManager_getSpellingLineNumber(self: ?*const struct_ZigClangSourceManager, Loc: struct_ZigClangSourceLocation) c_uint;
 pub extern fn ZigClangSourceManager_getSpellingColumnNumber(self: ?*const struct_ZigClangSourceManager, Loc: struct_ZigClangSourceLocation) c_uint;
 pub extern fn ZigClangSourceManager_getCharacterData(self: ?*const struct_ZigClangSourceManager, SL: struct_ZigClangSourceLocation) [*c]const u8;
@@ -745,7 +746,7 @@ pub extern fn ZigClangQualType_isRestrictQualified(self: struct_ZigClangQualType
 pub extern fn ZigClangType_getTypeClass(self: ?*const struct_ZigClangType) ZigClangTypeClass;
 pub extern fn ZigClangType_getPointeeType(self: ?*const struct_ZigClangType) struct_ZigClangQualType;
 pub extern fn ZigClangType_isVoidType(self: ?*const struct_ZigClangType) bool;
-pub extern fn ZigClangType_getTypeClassName(self: *const struct_ZigClangType) [*]const u8;
+pub extern fn ZigClangType_getTypeClassName(self: *const struct_ZigClangType) [*:0]const u8;
 pub extern fn ZigClangStmt_getBeginLoc(self: *const struct_ZigClangStmt) struct_ZigClangSourceLocation;
 pub extern fn ZigClangStmt_getStmtClass(self: ?*const struct_ZigClangStmt) ZigClangStmtClass;
 pub extern fn ZigClangStmt_classof_Expr(self: ?*const struct_ZigClangStmt) bool;
@@ -831,6 +832,7 @@ pub const ZigClangImplicitCastExpr = struct_ZigClangImplicitCastExpr;
 pub const ZigClangIncompleteArrayType = struct_ZigClangIncompleteArrayType;
 pub const ZigClangIntegerLiteral = struct_ZigClangIntegerLiteral;
 pub const ZigClangMacroDefinitionRecord = struct_ZigClangMacroDefinitionRecord;
+pub const ZigClangMacroQualifiedType = struct_ZigClangMacroQualifiedType;
 pub const ZigClangMemberExpr = struct_ZigClangMemberExpr;
 pub const ZigClangNamedDecl = struct_ZigClangNamedDecl;
 pub const ZigClangNone = struct_ZigClangNone;
@@ -902,7 +904,7 @@ pub extern fn ZigClangLoadFromCommandLine(
 ) ?*ZigClangASTUnit;
 
 pub extern fn ZigClangDecl_getKind(decl: *const ZigClangDecl) ZigClangDeclKind;
-pub extern fn ZigClangDecl_getDeclKindName(decl: *const struct_ZigClangDecl) [*]const u8;
+pub extern fn ZigClangDecl_getDeclKindName(decl: *const struct_ZigClangDecl) [*:0]const u8;
 
 pub const ZigClangCompoundStmt_const_body_iterator = [*c]const *struct_ZigClangStmt;
 
@@ -936,6 +938,8 @@ pub extern fn ZigClangParenType_getInnerType(*const ZigClangParenType) ZigClangQ
 pub extern fn ZigClangElaboratedType_getNamedType(*const ZigClangElaboratedType) ZigClangQualType;
 
 pub extern fn ZigClangAttributedType_getEquivalentType(*const ZigClangAttributedType) ZigClangQualType;
+
+pub extern fn ZigClangMacroQualifiedType_getModifiedType(*const ZigClangMacroQualifiedType) ZigClangQualType;
 
 pub extern fn ZigClangCStyleCastExpr_getBeginLoc(*const ZigClangCStyleCastExpr) ZigClangSourceLocation;
 pub extern fn ZigClangCStyleCastExpr_getSubExpr(*const ZigClangCStyleCastExpr) *const ZigClangExpr;

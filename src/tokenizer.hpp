@@ -28,9 +28,6 @@ enum TokenId {
     TokenIdBitShiftRight,
     TokenIdBitShiftRightEq,
     TokenIdBitXorEq,
-    TokenIdBracketStarBracket,
-    TokenIdBracketStarCBracket,
-    TokenIdBracketUnderscoreBracket,
     TokenIdCharLiteral,
     TokenIdCmpEq,
     TokenIdCmpGreaterOrEq,
@@ -43,6 +40,7 @@ enum TokenId {
     TokenIdDash,
     TokenIdDivEq,
     TokenIdDocComment,
+    TokenIdContainerDocComment,
     TokenIdDot,
     TokenIdDotStar,
     TokenIdEllipsis2,
@@ -148,7 +146,6 @@ struct TokenIntLit {
 
 struct TokenStrLit {
     Buf str;
-    bool is_c_str;
 };
 
 struct TokenCharLit {

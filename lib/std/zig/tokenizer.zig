@@ -142,8 +142,7 @@ pub const Token = struct {
         FloatLiteral,
         LineComment,
         DocComment,
-        BracketStarBracket,
-        BracketStarCBracket,
+        ContainerDocComment,
         ShebangLine,
         Keyword_align,
         Keyword_allowzero,
@@ -211,6 +210,7 @@ pub const Token = struct {
                 .FloatLiteral => "FloatLiteral",
                 .LineComment => "LineComment",
                 .DocComment => "DocComment",
+                .ContainerDocComment => "ContainerDocComment",
                 .ShebangLine => "ShebangLine",
 
                 .Bang => "!",
@@ -267,8 +267,6 @@ pub const Token = struct {
                 .AngleBracketAngleBracketRight => ">>",
                 .AngleBracketAngleBracketRightEqual => ">>=",
                 .Tilde => "~",
-                .BracketStarBracket => "[*]",
-                .BracketStarCBracket => "[*c]",
                 .Keyword_align => "align",
                 .Keyword_allowzero => "allowzero",
                 .Keyword_and => "and",
@@ -336,33 +334,19 @@ pub const Tokenizer = struct {
     }
 
     pub fn init(buffer: []const u8) Tokenizer {
-        if (mem.startsWith(u8, buffer, "#!")) {
-            const src_start = if (mem.indexOfScalar(u8, buffer, '\n')) |i| i + 1 else buffer.len;
-            return Tokenizer{
-                .buffer = buffer,
-                .index = src_start,
-                .pending_invalid_token = Token{
-                    .id = Token.Id.ShebangLine,
-                    .start = 0,
-                    .end = src_start,
-                },
-            };
-        } else {
-            // Skip the UTF-8 BOM if present
-            const src_start = if (mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else @as(usize, 0);
-            return Tokenizer{
-                .buffer = buffer,
-                .index = src_start,
-                .pending_invalid_token = null,
-            };
-        }
+        // Skip the UTF-8 BOM if present
+        const src_start = if (mem.startsWith(u8, buffer, "\xEF\xBB\xBF")) 3 else @as(usize, 0);
+        return Tokenizer{
+            .buffer = buffer,
+            .index = src_start,
+            .pending_invalid_token = null,
+        };
     }
 
     const State = enum {
         Start,
         Identifier,
         Builtin,
-        C,
         StringLiteral,
         StringLiteralBackslash,
         MultilineStringLiteralLine,
@@ -387,6 +371,7 @@ pub const Tokenizer = struct {
         LineComment,
         DocCommentStart,
         DocComment,
+        ContainerDocComment,
         Zero,
         IntegerLiteral,
         IntegerLiteralWithRadix,
@@ -411,9 +396,6 @@ pub const Tokenizer = struct {
         Period,
         Period2,
         SawAtSign,
-        LBracket,
-        LBracketStar,
-        LBracketStarC,
     };
 
     pub fn next(self: *Tokenizer) Token {
@@ -437,10 +419,6 @@ pub const Tokenizer = struct {
                     ' ', '\n', '\t', '\r' => {
                         result.start = self.index + 1;
                     },
-                    'c' => {
-                        state = State.C;
-                        result.id = Token.Id.Identifier;
-                    },
                     '"' => {
                         state = State.StringLiteral;
                         result.id = Token.Id.StringLiteral;
@@ -448,7 +426,7 @@ pub const Tokenizer = struct {
                     '\'' => {
                         state = State.CharLiteral;
                     },
-                    'a'...'b', 'd'...'z', 'A'...'Z', '_' => {
+                    'a'...'z', 'A'...'Z', '_' => {
                         state = State.Identifier;
                         result.id = Token.Id.Identifier;
                     },
@@ -475,7 +453,9 @@ pub const Tokenizer = struct {
                         break;
                     },
                     '[' => {
-                        state = State.LBracket;
+                        result.id = .LBracket;
+                        self.index += 1;
+                        break;
                     },
                     ']' => {
                         result.id = Token.Id.RBracket;
@@ -576,43 +556,6 @@ pub const Tokenizer = struct {
                         self.index -= 1;
                         state = State.Builtin;
                         result.id = Token.Id.Builtin;
-                    },
-                },
-
-                State.LBracket => switch (c) {
-                    '*' => {
-                        state = State.LBracketStar;
-                    },
-                    else => {
-                        result.id = Token.Id.LBracket;
-                        break;
-                    },
-                },
-
-                State.LBracketStar => switch (c) {
-                    'c' => {
-                        state = State.LBracketStarC;
-                    },
-                    ']' => {
-                        result.id = Token.Id.BracketStarBracket;
-                        self.index += 1;
-                        break;
-                    },
-                    else => {
-                        result.id = Token.Id.Invalid;
-                        break;
-                    },
-                },
-
-                State.LBracketStarC => switch (c) {
-                    ']' => {
-                        result.id = Token.Id.BracketStarCBracket;
-                        self.index += 1;
-                        break;
-                    },
-                    else => {
-                        result.id = Token.Id.Invalid;
-                        break;
                     },
                 },
 
@@ -740,20 +683,6 @@ pub const Tokenizer = struct {
                     },
                     else => break,
                 },
-                State.C => switch (c) {
-                    '\\' => {
-                        state = State.Backslash;
-                        result.id = Token.Id.MultilineStringLiteralLine;
-                    },
-                    '"' => {
-                        state = State.StringLiteral;
-                        result.id = Token.Id.StringLiteral;
-                    },
-                    'a'...'z', 'A'...'Z', '_', '0'...'9' => {
-                        state = State.Identifier;
-                    },
-                    else => break,
-                },
                 State.StringLiteral => switch (c) {
                     '\\' => {
                         state = State.StringLiteralBackslash;
@@ -762,12 +691,12 @@ pub const Tokenizer = struct {
                         self.index += 1;
                         break;
                     },
-                    '\n' => break, // Look for this error later.
+                    '\n', '\r' => break, // Look for this error later.
                     else => self.checkLiteralCharacter(),
                 },
 
                 State.StringLiteralBackslash => switch (c) {
-                    '\n' => break, // Look for this error later.
+                    '\n', '\r' => break, // Look for this error later.
                     else => {
                         state = State.StringLiteral;
                     },
@@ -1076,6 +1005,10 @@ pub const Tokenizer = struct {
                     '/' => {
                         state = State.DocCommentStart;
                     },
+                    '!' => {
+                        result.id = Token.Id.ContainerDocComment;
+                        state = State.ContainerDocComment;
+                    },
                     '\n' => break,
                     else => {
                         state = State.LineComment;
@@ -1096,7 +1029,7 @@ pub const Tokenizer = struct {
                         self.checkLiteralCharacter();
                     },
                 },
-                State.LineComment, State.DocComment => switch (c) {
+                State.LineComment, State.DocComment, State.ContainerDocComment => switch (c) {
                     '\n' => break,
                     else => self.checkLiteralCharacter(),
                 },
@@ -1210,7 +1143,6 @@ pub const Tokenizer = struct {
         } else if (self.index == self.buffer.len) {
             switch (state) {
                 State.Start,
-                State.C,
                 State.IntegerLiteral,
                 State.IntegerLiteralWithRadix,
                 State.IntegerLiteralWithRadixHex,
@@ -1234,6 +1166,9 @@ pub const Tokenizer = struct {
                 State.DocComment, State.DocCommentStart => {
                     result.id = Token.Id.DocComment;
                 },
+                State.ContainerDocComment => {
+                    result.id = Token.Id.ContainerDocComment;
+                },
 
                 State.NumberDot,
                 State.NumberDotHex,
@@ -1250,8 +1185,6 @@ pub const Tokenizer = struct {
                 State.CharLiteralEnd,
                 State.CharLiteralUnicode,
                 State.StringLiteralBackslash,
-                State.LBracketStar,
-                State.LBracketStarC,
                 => {
                     result.id = Token.Id.Invalid;
                 },
@@ -1267,9 +1200,6 @@ pub const Tokenizer = struct {
                 },
                 State.Slash => {
                     result.id = Token.Id.Slash;
-                },
-                State.LBracket => {
-                    result.id = Token.Id.LBracket;
                 },
                 State.Zero => {
                     result.id = Token.Id.IntegerLiteral;
@@ -1391,9 +1321,14 @@ test "tokenizer - unknown length pointer and then c pointer" {
         \\[*]u8
         \\[*c]u8
     , [_]Token.Id{
-        Token.Id.BracketStarBracket,
+        Token.Id.LBracket,
+        Token.Id.Asterisk,
+        Token.Id.RBracket,
         Token.Id.Identifier,
-        Token.Id.BracketStarCBracket,
+        Token.Id.LBracket,
+        Token.Id.Asterisk,
+        Token.Id.Identifier,
+        Token.Id.RBracket,
         Token.Id.Identifier,
     });
 }
@@ -1601,6 +1536,8 @@ test "tokenizer - line comment and doc comment" {
     testTokenize("/// a", [_]Token.Id{Token.Id.DocComment});
     testTokenize("///", [_]Token.Id{Token.Id.DocComment});
     testTokenize("////", [_]Token.Id{Token.Id.LineComment});
+    testTokenize("//!", [_]Token.Id{Token.Id.ContainerDocComment});
+    testTokenize("//!!", [_]Token.Id{Token.Id.ContainerDocComment});
 }
 
 test "tokenizer - line comment followed by identifier" {

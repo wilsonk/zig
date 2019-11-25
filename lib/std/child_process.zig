@@ -63,7 +63,7 @@ pub const ChildProcess = struct {
 
         /// Windows-only. `cwd` was provided, but the path did not exist when spawning the child process.
         CurrentWorkingDirectoryUnlinked,
-    } || os.ExecveError || os.SetIdError || os.ChangeCurDirError || windows.CreateProcessError;
+    } || os.ExecveError || os.SetIdError || os.ChangeCurDirError || windows.CreateProcessError || windows.WaitForSingleObjectError;
 
     pub const Term = union(enum) {
         Exited: u32,
@@ -259,7 +259,9 @@ pub const ChildProcess = struct {
     }
 
     fn handleWaitResult(self: *ChildProcess, status: u32) void {
-        self.term = self.cleanupAfterWait(status);
+        // TODO https://github.com/ziglang/zig/issues/3190 
+        var term = self.cleanupAfterWait(status);
+        self.term = term;
     }
 
     fn cleanupStreams(self: *ChildProcess) void {
@@ -328,7 +330,7 @@ pub const ChildProcess = struct {
 
         const any_ignore = (self.stdin_behavior == StdIo.Ignore or self.stdout_behavior == StdIo.Ignore or self.stderr_behavior == StdIo.Ignore);
         const dev_null_fd = if (any_ignore)
-            os.openC(c"/dev/null", os.O_RDWR, 0) catch |err| switch (err) {
+            os.openC("/dev/null", os.O_RDWR, 0) catch |err| switch (err) {
                 error.PathAlreadyExists => unreachable,
                 error.NoSpaceLeft => unreachable,
                 error.FileTooBig => unreachable,
@@ -439,6 +441,7 @@ pub const ChildProcess = struct {
 
         const any_ignore = (self.stdin_behavior == StdIo.Ignore or self.stdout_behavior == StdIo.Ignore or self.stderr_behavior == StdIo.Ignore);
 
+        // TODO use CreateFileW here since we are using a string literal for the path
         const nul_handle = if (any_ignore)
             windows.CreateFile(
                 "NUL",
