@@ -39,20 +39,20 @@ comptime {
 
 extern var _fltused: c_int = 1;
 
-extern fn main(argc: c_int, argv: [*][*]u8) c_int;
+extern fn main(argc: c_int, argv: [*:null]?[*:0]u8) c_int;
 extern fn wasm_start() void {
     _ = main(0, undefined);
 }
 
-extern fn strcmp(s1: [*]const u8, s2: [*]const u8) c_int {
+extern fn strcmp(s1: [*:0]const u8, s2: [*:0]const u8) c_int {
     return std.cstr.cmp(s1, s2);
 }
 
-extern fn strlen(s: [*]const u8) usize {
+extern fn strlen(s: [*:0]const u8) usize {
     return std.mem.len(u8, s);
 }
 
-extern fn strncmp(_l: [*]const u8, _r: [*]const u8, _n: usize) c_int {
+extern fn strncmp(_l: [*:0]const u8, _r: [*:0]const u8, _n: usize) c_int {
     if (_n == 0) return 0;
     var l = _l;
     var r = _r;
@@ -65,7 +65,7 @@ extern fn strncmp(_l: [*]const u8, _r: [*]const u8, _n: usize) c_int {
     return @as(c_int, l[0]) - @as(c_int, r[0]);
 }
 
-extern fn strerror(errnum: c_int) [*]const u8 {
+extern fn strerror(errnum: c_int) [*:0]const u8 {
     return "TODO strerror implementation";
 }
 
@@ -197,6 +197,49 @@ extern fn __stack_chk_fail() noreturn {
 // across .o file boundaries. fix comptime @ptrCast of nakedcc functions.
 nakedcc fn clone() void {
     switch (builtin.arch) {
+        .i386 => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //         +8,   +12,   +16,   +20, +24,  +28, +32
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //         eax,       ebx,   ecx,   edx,  esi, edi
+            asm volatile (
+                \\  push %%ebp
+                \\  mov %%esp,%%ebp
+                \\  push %%ebx
+                \\  push %%esi
+                \\  push %%edi
+                \\  // Setup the arguments
+                \\  mov 16(%%ebp),%%ebx
+                \\  mov 12(%%ebp),%%ecx
+                \\  and $-16,%%ecx
+                \\  sub $20,%%ecx
+                \\  mov 20(%%ebp),%%eax
+                \\  mov %%eax,4(%%ecx)
+                \\  mov 8(%%ebp),%%eax
+                \\  mov %%eax,0(%%ecx)
+                \\  mov 24(%%ebp),%%edx
+                \\  mov 28(%%ebp),%%esi
+                \\  mov 32(%%ebp),%%edi
+                \\  mov $120,%%eax
+                \\  int $128
+                \\  test %%eax,%%eax
+                \\  jnz 1f
+                \\  pop %%eax
+                \\  xor %%ebp,%%ebp
+                \\  call *%%eax
+                \\  mov %%eax,%%ebx
+                \\  xor %%eax,%%eax
+                \\  inc %%eax
+                \\  int $128
+                \\  hlt
+                \\1:
+                \\  pop %%edi
+                \\  pop %%esi
+                \\  pop %%ebx
+                \\  pop %%ebp
+                \\  ret
+            );
+        },
         .x86_64 => {
             asm volatile (
                 \\      xor %%eax,%%eax

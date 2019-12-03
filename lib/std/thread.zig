@@ -19,7 +19,7 @@ pub const Thread = struct {
     else switch (builtin.os) {
         .linux => i32,
         .windows => windows.HANDLE,
-        else => @compileError("Unsupported OS"),
+        else => void,
     };
 
     /// Represents a unique ID per thread.
@@ -45,7 +45,7 @@ pub const Thread = struct {
             alloc_start: *c_void,
             heap_handle: windows.HANDLE,
         },
-        else => @compileError("Unsupported OS"),
+        else => struct {},
     };
 
     /// Returns the ID of the calling thread.
@@ -99,7 +99,7 @@ pub const Thread = struct {
                 os.munmap(self.data.memory);
             },
             .windows => {
-                windows.WaitForSingleObject(self.data.handle, windows.INFINITE) catch unreachable;
+                windows.WaitForSingleObjectEx(self.data.handle, windows.INFINITE, false) catch unreachable;
                 windows.CloseHandle(self.data.handle);
                 windows.HeapFree(self.data.heap_handle, 0, self.data.alloc_start);
             },
@@ -314,11 +314,38 @@ pub const Thread = struct {
                 os.CLONE_THREAD | os.CLONE_SYSVSEM | os.CLONE_PARENT_SETTID | os.CLONE_CHILD_CLEARTID |
                 os.CLONE_DETACHED;
             var newtls: usize = undefined;
+            // This structure is only needed when targeting i386
+            var user_desc: if (builtin.arch == .i386) os.linux.user_desc else void = undefined;
+
             if (os.linux.tls.tls_image) |tls_img| {
-                newtls = os.linux.tls.copyTLS(mmap_addr + tls_start_offset);
+                if (builtin.arch == .i386) {
+                    user_desc = os.linux.user_desc{
+                        .entry_number = tls_img.gdt_entry_number,
+                        .base_addr = os.linux.tls.copyTLS(mmap_addr + tls_start_offset),
+                        .limit = 0xfffff,
+                        .seg_32bit = 1,
+                        .contents = 0, // Data
+                        .read_exec_only = 0,
+                        .limit_in_pages = 1,
+                        .seg_not_present = 0,
+                        .useable = 1,
+                    };
+                    newtls = @ptrToInt(&user_desc);
+                } else {
+                    newtls = os.linux.tls.copyTLS(mmap_addr + tls_start_offset);
+                }
                 flags |= os.CLONE_SETTLS;
             }
-            const rc = os.linux.clone(MainFuncs.linuxThreadMain, mmap_addr + stack_end_offset, flags, arg, &thread_ptr.data.handle, newtls, &thread_ptr.data.handle);
+
+            const rc = os.linux.clone(
+                MainFuncs.linuxThreadMain,
+                mmap_addr + stack_end_offset,
+                flags,
+                arg,
+                &thread_ptr.data.handle,
+                newtls,
+                &thread_ptr.data.handle,
+            );
             switch (os.errno(rc)) {
                 0 => return thread_ptr,
                 os.EAGAIN => return error.ThreadQuotaExceeded,
