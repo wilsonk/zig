@@ -170,7 +170,7 @@ fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
     stderr = &stderr_file.outStream().stream;
 
     const args = args_list.toSliceConst();
-    var flags = try Args.parse(allocator, self_hosted_main.args_fmt_spec, args[2..]);
+    var flags = try Args.parse(allocator, &self_hosted_main.args_fmt_spec, args[2..]);
     defer flags.deinit();
 
     if (flags.present("help")) {
@@ -279,14 +279,14 @@ fn fmtPath(fmt: *Fmt, file_path_ref: []const u8, check_mode: bool) FmtError!void
     const source_code = io.readFileAlloc(fmt.allocator, file_path) catch |err| switch (err) {
         error.IsDir, error.AccessDenied => {
             // TODO make event based (and dir.next())
-            var dir = try fs.Dir.cwd().openDirList(file_path);
+            var dir = try fs.cwd().openDirList(file_path);
             defer dir.close();
 
             var dir_it = dir.iterate();
 
             while (try dir_it.next()) |entry| {
                 if (entry.kind == .Directory or mem.endsWith(u8, entry.name, ".zig")) {
-                    const full_path = try fs.path.join(fmt.allocator, [_][]const u8{ file_path, entry.name });
+                    const full_path = try fs.path.join(fmt.allocator, &[_][]const u8{ file_path, entry.name });
                     try fmtPath(fmt, full_path, check_mode);
                 }
             }
@@ -427,11 +427,11 @@ export fn stage2_DepTokenizer_next(self: *stage2_DepTokenizer) stage2_DepNextRes
     };
 }
 
-export const stage2_DepTokenizer = extern struct {
+const stage2_DepTokenizer = extern struct {
     handle: *DepTokenizer,
 };
 
-export const stage2_DepNextResult = extern struct {
+const stage2_DepNextResult = extern struct {
     type_id: TypeId,
 
     // when type_id == error --> error text
@@ -440,7 +440,7 @@ export const stage2_DepNextResult = extern struct {
     // when type_id == prereq --> prereq pathname
     textz: [*]const u8,
 
-    export const TypeId = extern enum {
+    const TypeId = extern enum {
         error_,
         null_,
         target,

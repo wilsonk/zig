@@ -291,7 +291,7 @@ pub const Address = extern union {
             },
             os.AF_INET6 => {
                 const port = mem.bigToNative(u16, self.in6.port);
-                if (mem.eql(u8, self.in6.addr[0..12], [_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
+                if (mem.eql(u8, self.in6.addr[0..12], &[_]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff })) {
                     try std.fmt.format(
                         context,
                         Errors,
@@ -339,7 +339,7 @@ pub const Address = extern union {
                     unreachable;
                 }
 
-                try std.fmt.format(context, Errors, output, "{}", self.un.path);
+                try std.fmt.format(context, Errors, output, "{}", &self.un.path);
             },
             else => unreachable,
         }
@@ -812,7 +812,7 @@ fn linuxLookupNameFromHosts(
     family: os.sa_family_t,
     port: u16,
 ) !void {
-    const file = fs.File.openReadC("/etc/hosts") catch |err| switch (err) {
+    const file = fs.openFileAbsoluteC("/etc/hosts", .{}) catch |err| switch (err) {
         error.FileNotFound,
         error.NotDir,
         error.AccessDenied,
@@ -894,7 +894,7 @@ fn linuxLookupNameFromDnsSearch(
     }
 
     const search = if (rc.search.isNull() or dots >= rc.ndots or mem.endsWith(u8, name, "."))
-        [_]u8{}
+        &[_]u8{}
     else
         rc.search.toSliceConst();
 
@@ -959,7 +959,7 @@ fn linuxLookupNameFromDns(
 
     for (afrrs) |afrr| {
         if (family != afrr.af) {
-            const len = os.res_mkquery(0, name, 1, afrr.rr, [_]u8{}, null, &qbuf[nq]);
+            const len = os.res_mkquery(0, name, 1, afrr.rr, &[_]u8{}, null, &qbuf[nq]);
             qp[nq] = qbuf[nq][0..len];
             nq += 1;
         }
@@ -1006,7 +1006,7 @@ fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
     };
     errdefer rc.deinit();
 
-    const file = fs.File.openReadC("/etc/resolv.conf") catch |err| switch (err) {
+    const file = fs.openFileAbsoluteC("/etc/resolv.conf", .{}) catch |err| switch (err) {
         error.FileNotFound,
         error.NotDir,
         error.AccessDenied,

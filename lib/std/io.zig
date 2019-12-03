@@ -61,17 +61,14 @@ pub const COutStream = @import("io/c_out_stream.zig").COutStream;
 pub const InStream = @import("io/in_stream.zig").InStream;
 pub const OutStream = @import("io/out_stream.zig").OutStream;
 
-/// TODO move this to `std.fs` and add a version to `std.fs.Dir`.
+/// Deprecated; use `std.fs.Dir.writeFile`.
 pub fn writeFile(path: []const u8, data: []const u8) !void {
-    var file = try File.openWrite(path);
-    defer file.close();
-    try file.write(data);
+    return fs.cwd().writeFile(path, data);
 }
 
-/// On success, caller owns returned buffer.
-/// This function is deprecated; use `std.fs.Dir.readFileAlloc`.
+/// Deprecated; use `std.fs.Dir.readFileAlloc`.
 pub fn readFileAlloc(allocator: *mem.Allocator, path: []const u8) ![]u8 {
-    return fs.Dir.cwd().readFileAlloc(allocator, path, math.maxInt(usize));
+    return fs.cwd().readFileAlloc(allocator, path, math.maxInt(usize));
 }
 
 pub fn BufferedInStream(comptime Error: type) type {
@@ -1107,7 +1104,7 @@ pub fn Serializer(comptime endian: builtin.Endian, comptime packing: Packing, co
                 byte.* = if (t_bit_count < u8_bit_count) v else @truncate(u8, v);
             }
 
-            try self.out_stream.write(buffer);
+            try self.out_stream.write(&buffer);
         }
 
         /// Serializes the passed value into the stream
