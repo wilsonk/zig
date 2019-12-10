@@ -41,7 +41,6 @@ pub const Type = struct {
             .Enum => @fieldParentPtr(Enum, "base", base).destroy(comp),
             .Union => @fieldParentPtr(Union, "base", base).destroy(comp),
             .BoundFn => @fieldParentPtr(BoundFn, "base", base).destroy(comp),
-            .ArgTuple => @fieldParentPtr(ArgTuple, "base", base).destroy(comp),
             .Opaque => @fieldParentPtr(Opaque, "base", base).destroy(comp),
             .Frame => @fieldParentPtr(Frame, "base", base).destroy(comp),
             .AnyFrame => @fieldParentPtr(AnyFrame, "base", base).destroy(comp),
@@ -76,7 +75,6 @@ pub const Type = struct {
             .Enum => return @fieldParentPtr(Enum, "base", base).getLlvmType(allocator, llvm_context),
             .Union => return @fieldParentPtr(Union, "base", base).getLlvmType(allocator, llvm_context),
             .BoundFn => return @fieldParentPtr(BoundFn, "base", base).getLlvmType(allocator, llvm_context),
-            .ArgTuple => unreachable,
             .Opaque => return @fieldParentPtr(Opaque, "base", base).getLlvmType(allocator, llvm_context),
             .Frame => return @fieldParentPtr(Frame, "base", base).getLlvmType(allocator, llvm_context),
             .AnyFrame => return @fieldParentPtr(AnyFrame, "base", base).getLlvmType(allocator, llvm_context),
@@ -93,7 +91,6 @@ pub const Type = struct {
             .Undefined,
             .Null,
             .BoundFn,
-            .ArgTuple,
             .Opaque,
             => unreachable,
 
@@ -128,7 +125,6 @@ pub const Type = struct {
             .Undefined,
             .Null,
             .BoundFn,
-            .ArgTuple,
             .Opaque,
             => unreachable,
 
@@ -399,7 +395,7 @@ pub const Type = struct {
                 .Generic => |generic| {
                     self.non_key = NonKey{ .Generic = {} };
                     const cc_str = ccFnTypeStr(generic.cc);
-                    try name_stream.print("{}fn(", cc_str);
+                    try name_stream.print("{}fn(", .{cc_str});
                     var param_i: usize = 0;
                     while (param_i < generic.param_count) : (param_i += 1) {
                         const arg = if (param_i == 0) "var" else ", var";
@@ -407,7 +403,7 @@ pub const Type = struct {
                     }
                     try name_stream.write(")");
                     if (key.alignment) |alignment| {
-                        try name_stream.print(" align({})", alignment);
+                        try name_stream.print(" align({})", .{alignment});
                     }
                     try name_stream.write(" var");
                 },
@@ -416,7 +412,7 @@ pub const Type = struct {
                         .Normal = NonKey.Normal{ .variable_list = std.ArrayList(*Scope.Var).init(comp.gpa()) },
                     };
                     const cc_str = ccFnTypeStr(normal.cc);
-                    try name_stream.print("{}fn(", cc_str);
+                    try name_stream.print("{}fn(", .{cc_str});
                     for (normal.params) |param, i| {
                         if (i != 0) try name_stream.write(", ");
                         if (param.is_noalias) try name_stream.write("noalias ");
@@ -428,9 +424,9 @@ pub const Type = struct {
                     }
                     try name_stream.write(")");
                     if (key.alignment) |alignment| {
-                        try name_stream.print(" align({})", alignment);
+                        try name_stream.print(" align({})", .{alignment});
                     }
-                    try name_stream.print(" {}", normal.return_type.name);
+                    try name_stream.print(" {}", .{normal.return_type.name});
                 },
             }
 
@@ -584,7 +580,7 @@ pub const Type = struct {
             errdefer comp.gpa().destroy(self);
 
             const u_or_i = "ui"[@boolToInt(key.is_signed)];
-            const name = try std.fmt.allocPrint(comp.gpa(), "{c}{}", u_or_i, key.bit_count);
+            const name = try std.fmt.allocPrint(comp.gpa(), "{c}{}", .{ u_or_i, key.bit_count });
             errdefer comp.gpa().free(name);
 
             self.base.init(comp, .Int, name);
@@ -767,23 +763,19 @@ pub const Type = struct {
                 .Non => "",
             };
             const name = switch (self.key.alignment) {
-                .Abi => try std.fmt.allocPrint(
-                    comp.gpa(),
-                    "{}{}{}{}",
+                .Abi => try std.fmt.allocPrint(comp.gpa(), "{}{}{}{}", .{
                     size_str,
                     mut_str,
                     vol_str,
                     self.key.child_type.name,
-                ),
-                .Override => |alignment| try std.fmt.allocPrint(
-                    comp.gpa(),
-                    "{}align<{}> {}{}{}",
+                }),
+                .Override => |alignment| try std.fmt.allocPrint(comp.gpa(), "{}align<{}> {}{}{}", .{
                     size_str,
                     alignment,
                     mut_str,
                     vol_str,
                     self.key.child_type.name,
-                ),
+                }),
             };
             errdefer comp.gpa().free(name);
 
@@ -852,7 +844,7 @@ pub const Type = struct {
             };
             errdefer comp.gpa().destroy(self);
 
-            const name = try std.fmt.allocPrint(comp.gpa(), "[{}]{}", key.len, key.elem_type.name);
+            const name = try std.fmt.allocPrint(comp.gpa(), "[{}]{}", .{ key.len, key.elem_type.name });
             errdefer comp.gpa().free(name);
 
             self.base.init(comp, .Array, name);
@@ -1008,14 +1000,6 @@ pub const Type = struct {
         }
     };
 
-    pub const ArgTuple = struct {
-        base: Type,
-
-        pub fn destroy(self: *ArgTuple, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
     pub const Opaque = struct {
         base: Type,
 
@@ -1054,14 +1038,14 @@ pub const Type = struct {
 };
 
 fn hashAny(x: var, comptime seed: u64) u32 {
-    switch (@typeInfo(@typeOf(x))) {
+    switch (@typeInfo(@TypeOf(x))) {
         .Int => |info| {
             comptime var rng = comptime std.rand.DefaultPrng.init(seed);
             const unsigned_x = @bitCast(@IntType(false, info.bits), x);
             if (info.bits <= 32) {
                 return @as(u32, unsigned_x) *% comptime rng.random.scalar(u32);
             } else {
-                return @truncate(u32, unsigned_x *% comptime rng.random.scalar(@typeOf(unsigned_x)));
+                return @truncate(u32, unsigned_x *% comptime rng.random.scalar(@TypeOf(unsigned_x)));
             }
         },
         .Pointer => |info| {
@@ -1085,6 +1069,6 @@ fn hashAny(x: var, comptime seed: u64) u32 {
                 return hashAny(@as(u32, 1), seed);
             }
         },
-        else => @compileError("implement hash function for " ++ @typeName(@typeOf(x))),
+        else => @compileError("implement hash function for " ++ @typeName(@TypeOf(x))),
     }
 }

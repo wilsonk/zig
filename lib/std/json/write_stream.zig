@@ -155,27 +155,27 @@ pub fn WriteStream(comptime OutStream: type, comptime max_depth: usize) type {
             value: var,
         ) !void {
             assert(self.state[self.state_index] == State.Value);
-            switch (@typeInfo(@typeOf(value))) {
+            switch (@typeInfo(@TypeOf(value))) {
                 .Int => |info| {
                     if (info.bits < 53) {
-                        try self.stream.print("{}", value);
+                        try self.stream.print("{}", .{value});
                         self.popState();
                         return;
                     }
                     if (value < 4503599627370496 and (!info.is_signed or value > -4503599627370496)) {
-                        try self.stream.print("{}", value);
+                        try self.stream.print("{}", .{value});
                         self.popState();
                         return;
                     }
                 },
                 .Float => if (@floatCast(f64, value) == value) {
-                    try self.stream.print("{}", value);
+                    try self.stream.print("{}", .{value});
                     self.popState();
                     return;
                 },
                 else => {},
             }
-            try self.stream.print("\"{}\"", value);
+            try self.stream.print("\"{}\"", .{value});
             self.popState();
         }
 
@@ -257,7 +257,7 @@ test "json write stream" {
     var mem_buf: [1024 * 10]u8 = undefined;
     const allocator = &std.heap.FixedBufferAllocator.init(&mem_buf).allocator;
 
-    var w = std.json.WriteStream(@typeOf(out).Child, 10).init(out);
+    var w = std.json.WriteStream(@TypeOf(out).Child, 10).init(out);
     try w.emitJson(try getJson(allocator));
 
     const result = slice_stream.getWritten();
