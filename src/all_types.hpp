@@ -1928,6 +1928,12 @@ enum WantStackCheck {
     WantStackCheckEnabled,
 };
 
+enum WantCSanitize {
+    WantCSanitizeAuto,
+    WantCSanitizeDisabled,
+    WantCSanitizeEnabled,
+};
+
 struct CFile {
     ZigList<const char *> args;
     const char *source_path;
@@ -2003,10 +2009,11 @@ struct CodeGen {
     ZigPackage *std_package;
     ZigPackage *test_runner_package;
     ZigPackage *compile_var_package;
+    ZigPackage *root_pkg; // @import("root")
+    ZigPackage *main_pkg; // usually same as root_pkg, except for `zig test`
     ZigType *compile_var_import;
     ZigType *root_import;
     ZigType *start_import;
-    ZigType *test_runner_import;
 
     struct {
         ZigType *entry_bool;
@@ -2095,6 +2102,7 @@ struct CodeGen {
 
     WantPIC want_pic;
     WantStackCheck want_stack_check;
+    WantCSanitize want_sanitize_c;
     CacheHash cache_hash;
     ErrColor err_color;
     uint32_t next_unresolved_index;
@@ -2169,6 +2177,7 @@ struct CodeGen {
     bool have_pic;
     bool have_dynamic_link; // this is whether the final thing will be dynamically linked. see also is_dynamic
     bool have_stack_probing;
+    bool have_sanitize_c;
     bool function_sections;
     bool enable_dump_analysis;
     bool enable_doc_generation;
@@ -2179,7 +2188,6 @@ struct CodeGen {
     Buf *root_out_name;
     Buf *test_filter;
     Buf *test_name_prefix;
-    ZigPackage *root_package;
     Buf *zig_lib_dir;
     Buf *zig_std_dir;
     Buf *dynamic_linker_path;

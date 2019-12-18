@@ -240,19 +240,18 @@ fn testCastConstArrayRefToConstSlice() void {
 }
 
 test "peer type resolution: error and [N]T" {
-    // TODO: implicit error!T to error!U where T can implicitly cast to U
-    //expect(mem.eql(u8, try testPeerErrorAndArray(0), "OK"));
-    //comptime expect(mem.eql(u8, try testPeerErrorAndArray(0), "OK"));
+    expect(mem.eql(u8, try testPeerErrorAndArray(0), "OK"));
+    comptime expect(mem.eql(u8, try testPeerErrorAndArray(0), "OK"));
     expect(mem.eql(u8, try testPeerErrorAndArray2(1), "OKK"));
     comptime expect(mem.eql(u8, try testPeerErrorAndArray2(1), "OKK"));
 }
 
-//fn testPeerErrorAndArray(x: u8) error![]const u8 {
-//    return switch (x) {
-//        0x00 => "OK",
-//        else => error.BadValue,
-//    };
-//}
+fn testPeerErrorAndArray(x: u8) anyerror![]const u8 {
+    return switch (x) {
+        0x00 => "OK",
+        else => error.BadValue,
+    };
+}
 fn testPeerErrorAndArray2(x: u8) anyerror![]const u8 {
     return switch (x) {
         0x00 => "OK",
@@ -619,6 +618,7 @@ test "peer resolution of string literals" {
                 .b => "two",
                 .c => "three",
                 .d => "four",
+                else => unreachable,
             };
             expect(mem.eql(u8, cmd, "two"));
         }

@@ -2682,7 +2682,7 @@ static Error resolve_enum_zero_bits(CodeGen *g, ZigType *enum_type) {
 
         // Make sure the value is unique
         auto entry = occupied_tag_values.put_unique(type_enum_field->value, field_node);
-        if (entry != nullptr) {
+        if (entry != nullptr && enum_type->data.enumeration.layout != ContainerLayoutExtern) {
             enum_type->data.enumeration.resolve_status = ResolveStatusInvalid;
 
             Buf *val_buf = buf_alloc();
@@ -3536,7 +3536,7 @@ static void preview_test_decl(CodeGen *g, AstNode *node, ScopeDecls *decls_scope
         return;
 
     ZigType *import = get_scope_import(&decls_scope->base);
-    if (import->data.structure.root_struct->package != g->root_package)
+    if (import->data.structure.root_struct->package != g->main_pkg)
         return;
 
     Buf *decl_name_buf = node->data.test_decl.name;
@@ -3577,7 +3577,7 @@ void update_compile_var(CodeGen *g, Buf *name, ZigValue *value) {
     resolve_top_level_decl(g, tld, tld->source_node, false);
     assert(tld->id == TldIdVar);
     TldVar *tld_var = (TldVar *)tld;
-    tld_var->var->const_value = value;
+    copy_const_val(tld_var->var->const_value, value);
     tld_var->var->var_type = value->type;
     tld_var->var->align_bytes = get_abi_alignment(g, value->type);
 }
@@ -5584,6 +5584,18 @@ ZigValue *get_the_one_possible_value(CodeGen *g, ZigType *type_entry) {
     ZigValue *result = create_const_vals(1);
     result->type = type_entry;
     result->special = ConstValSpecialStatic;
+    if (result->type->id == ZigTypeIdStruct) {
+        // The fields array cannot be left unpopulated
+        const ZigType *struct_type = result->type;
+        const size_t field_count = struct_type->data.structure.src_field_count;
+        result->data.x_struct.fields = alloc_const_vals_ptrs(field_count);
+        for (size_t i = 0; i < field_count; i += 1) {
+            TypeStructField *field = struct_type->data.structure.fields[i];
+            ZigType *field_type = resolve_struct_field_type(g, field);
+            assert(field_type != nullptr);
+            result->data.x_struct.fields[i] = get_the_one_possible_value(g, field_type);
+        }
+    }
     g->one_possible_values.put(type_entry, result);
     return result;
 }
@@ -8779,7 +8791,8 @@ static void resolve_llvm_types_fn_type(CodeGen *g, ZigType *fn_type) {
 
     fn_type->data.fn.raw_type_ref = LLVMFunctionType(get_llvm_type(g, gen_return_type),
             gen_param_types.items, (unsigned int)gen_param_types.length, fn_type_id->is_var_args);
-    fn_type->llvm_type = LLVMPointerType(fn_type->data.fn.raw_type_ref, 0);
+    const unsigned fn_addrspace = ZigLLVMDataLayoutGetProgramAddressSpace(g->target_data_ref);
+    fn_type->llvm_type = LLVMPointerType(fn_type->data.fn.raw_type_ref, fn_addrspace);
     fn_type->data.fn.raw_di_type = ZigLLVMCreateSubroutineType(g->dbuilder, param_di_types.items, (int)param_di_types.length, 0);
     fn_type->llvm_di_type = ZigLLVMCreateDebugPointerType(g->dbuilder, fn_type->data.fn.raw_di_type,
             LLVMStoreSizeOfType(g->target_data_ref, fn_type->llvm_type),
@@ -8888,7 +8901,8 @@ static void resolve_llvm_types_any_frame(CodeGen *g, ZigType *any_frame_type, Re
 
     ZigType *result_type = any_frame_type->data.any_frame.result_type;
     ZigType *ptr_result_type = (result_type == nullptr) ? nullptr : get_pointer_to_type(g, result_type, false);
-    LLVMTypeRef ptr_fn_llvm_type = LLVMPointerType(fn_type, 0);
+    const unsigned fn_addrspace = ZigLLVMDataLayoutGetProgramAddressSpace(g->target_data_ref);
+    LLVMTypeRef ptr_fn_llvm_type = LLVMPointerType(fn_type, fn_addrspace);
     if (result_type == nullptr) {
         g->anyframe_fn_type = ptr_fn_llvm_type;
     }
@@ -9177,4 +9191,81 @@ bool is_anon_container(ZigType *ty) {
     return ty->id == ZigTypeIdStruct && (
         ty->data.structure.special == StructSpecialInferredTuple ||
         ty->data.structure.special == StructSpecialInferredStruct);
+}
+
+bool is_opt_err_set(ZigType *ty) {
+    return ty->id == ZigTypeIdErrorSet ||
+        (ty->id == ZigTypeIdOptional && ty->data.maybe.child_type->id == ZigTypeIdErrorSet);
+}
+
+// Returns whether the x_optional field of ZigValue is active.
+bool type_has_optional_repr(ZigType *ty) {
+    if (ty->id != ZigTypeIdOptional) {
+        return false;
+    } else if (get_codegen_ptr_type(ty) != nullptr) {
+        return false;
+    } else if (is_opt_err_set(ty)) {
+        return false;
+    } else {
+        return true;
+    }
+}
+
+void copy_const_val(ZigValue *dest, ZigValue *src) {
+    memcpy(dest, src, sizeof(ZigValue));
+    if (src->special != ConstValSpecialStatic)
+        return;
+    dest->parent.id = ConstParentIdNone;
+    if (dest->type->id == ZigTypeIdStruct) {
+        dest->data.x_struct.fields = alloc_const_vals_ptrs(dest->type->data.structure.src_field_count);
+        for (size_t i = 0; i < dest->type->data.structure.src_field_count; i += 1) {
+            copy_const_val(dest->data.x_struct.fields[i], src->data.x_struct.fields[i]);
+            dest->data.x_struct.fields[i]->parent.id = ConstParentIdStruct;
+            dest->data.x_struct.fields[i]->parent.data.p_struct.struct_val = dest;
+            dest->data.x_struct.fields[i]->parent.data.p_struct.field_index = i;
+        }
+    } else if (type_has_optional_repr(dest->type) && dest->data.x_optional != nullptr) {
+        dest->data.x_optional = create_const_vals(1);
+        copy_const_val(dest->data.x_optional, src->data.x_optional);
+        dest->data.x_optional->parent.id = ConstParentIdOptionalPayload;
+        dest->data.x_optional->parent.data.p_optional_payload.optional_val = dest;
+    }
+}
+
+bool type_is_numeric(ZigType *ty) {
+    switch (ty->id) {
+        case ZigTypeIdInvalid:
+            zig_unreachable();
+        case ZigTypeIdComptimeFloat:
+        case ZigTypeIdComptimeInt:
+        case ZigTypeIdInt:
+        case ZigTypeIdFloat:
+            return true;
+
+        case ZigTypeIdVector:
+            return type_is_numeric(ty->data.vector.elem_type);
+
+        case ZigTypeIdMetaType:
+        case ZigTypeIdVoid:
+        case ZigTypeIdBool:
+        case ZigTypeIdUnreachable:
+        case ZigTypeIdPointer:
+        case ZigTypeIdArray:
+        case ZigTypeIdStruct:
+        case ZigTypeIdUndefined:
+        case ZigTypeIdNull:
+        case ZigTypeIdOptional:
+        case ZigTypeIdErrorUnion:
+        case ZigTypeIdErrorSet:
+        case ZigTypeIdEnum:
+        case ZigTypeIdUnion:
+        case ZigTypeIdFn:
+        case ZigTypeIdBoundFn:
+        case ZigTypeIdOpaque:
+        case ZigTypeIdFnFrame:
+        case ZigTypeIdAnyFrame:
+        case ZigTypeIdEnumLiteral:
+            return false;
+    }
+    zig_unreachable();
 }

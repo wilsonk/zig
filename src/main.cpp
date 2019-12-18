@@ -59,6 +59,8 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --enable-valgrind            include valgrind client requests release builds\n"
         "  -fstack-check                enable stack probing in unsafe builds\n"
         "  -fno-stack-check             disable stack probing in safe builds\n"
+        "  -fsanitize-c                 enable C undefined behavior detection in unsafe builds\n"
+        "  -fno-sanitize-c              disable C undefined behavior detection in safe builds\n"
         "  --emit [asm|bin|llvm-ir]     emit a specific file format as compilation output\n"
         "  -fPIC                        enable Position Independent Code\n"
         "  -fno-PIC                     disable Position Independent Code\n"
@@ -524,6 +526,7 @@ int main(int argc, char **argv) {
     ValgrindSupport valgrind_support = ValgrindSupportAuto;
     WantPIC want_pic = WantPICAuto;
     WantStackCheck want_stack_check = WantStackCheckAuto;
+    WantCSanitize want_sanitize_c = WantCSanitizeAuto;
     bool function_sections = false;
 
     ZigList<const char *> llvm_argv = {0};
@@ -623,7 +626,7 @@ int main(int argc, char **argv) {
 
         ZigPackage *build_pkg = codegen_create_package(g, buf_ptr(&build_file_dirname),
                 buf_ptr(&build_file_basename), "std.special");
-        g->root_package->package_table.put(buf_create_from_str("@build"), build_pkg);
+        g->main_pkg->package_table.put(buf_create_from_str("@build"), build_pkg);
         g->enable_cache = get_cache_opt(enable_cache, true);
         codegen_build_and_link(g);
         if (root_progress_node != nullptr) {
@@ -722,6 +725,10 @@ int main(int argc, char **argv) {
                 want_stack_check = WantStackCheckEnabled;
             } else if (strcmp(arg, "-fno-stack-check") == 0) {
                 want_stack_check = WantStackCheckDisabled;
+            } else if (strcmp(arg, "-fsanitize-c") == 0) {
+                want_sanitize_c = WantCSanitizeEnabled;
+            } else if (strcmp(arg, "-fno-sanitize-c") == 0) {
+                want_sanitize_c = WantCSanitizeDisabled;
             } else if (strcmp(arg, "--system-linker-hack") == 0) {
                 system_linker_hack = true;
             } else if (strcmp(arg, "--single-threaded") == 0) {
@@ -1093,6 +1100,7 @@ int main(int argc, char **argv) {
         g->valgrind_support = valgrind_support;
         g->want_pic = want_pic;
         g->want_stack_check = want_stack_check;
+        g->want_sanitize_c = want_sanitize_c;
         g->want_single_threaded = want_single_threaded;
         Buf *builtin_source = codegen_generate_builtin_source(g);
         if (fwrite(buf_ptr(builtin_source), 1, buf_len(builtin_source), stdout) != buf_len(builtin_source)) {
@@ -1192,6 +1200,7 @@ int main(int argc, char **argv) {
             g->valgrind_support = valgrind_support;
             g->want_pic = want_pic;
             g->want_stack_check = want_stack_check;
+            g->want_sanitize_c = want_sanitize_c;
             g->subsystem = subsystem;
 
             g->enable_time_report = timing_info;
@@ -1269,7 +1278,7 @@ int main(int argc, char **argv) {
                 codegen_set_test_name_prefix(g, buf_create_from_str(test_name_prefix));
             }
 
-            add_package(g, cur_pkg, g->root_package);
+            add_package(g, cur_pkg, g->main_pkg);
 
             if (cmd == CmdBuild || cmd == CmdRun || cmd == CmdTest) {
                 g->c_source_files = c_source_files;

@@ -2,6 +2,45 @@ const tests = @import("tests.zig");
 const builtin = @import("builtin");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.add("intToPtr with misaligned address",
+        \\pub fn main() void {
+        \\    var y = @intToPtr([*]align(4) u8, 5);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:13: error: pointer type '[*]align(4) u8' requires aligned address",
+    });
+
+    cases.add("switch on extern enum missing else prong",
+        \\const i = extern enum {
+        \\    n = 0,
+        \\    o = 2,
+        \\    p = 4,
+        \\    q = 4,
+        \\};
+        \\pub fn main() void {
+        \\    var x = @intToEnum(i, 52);
+        \\    switch (x) {
+        \\        .n,
+        \\        .o,
+        \\        .p => unreachable,
+        \\    }
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:9:5: error: switch on an extern enum must have an else prong",
+    });
+
+    cases.add("invalid float literal",
+        \\const std = @import("std");
+        \\
+        \\pub fn main() void {
+        \\    var bad_float :f32 = 0.0;
+        \\    bad_float = bad_float + .20;
+        \\    std.debug.assert(bad_float < 1.0);
+        \\})
+    , &[_][]const u8{
+        "tmp.zig:5:29: error: invalid token: '.'",
+    });
+
     cases.add("var args without c calling conv",
         \\fn foo(args: ...) void {}
         \\comptime {
@@ -2141,7 +2180,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
 
     cases.add("bad @alignCast at comptime",
         \\comptime {
-        \\    const ptr = @intToPtr(*i32, 0x1);
+        \\    const ptr = @intToPtr(*align(1) i32, 0x1);
         \\    const aligned = @alignCast(4, ptr);
         \\}
     , &[_][]const u8{
@@ -4135,58 +4174,50 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:3:5: error: use of undefined value here causes undefined behavior",
     });
 
-    cases.add("equal on undefined value",
+    cases.add("comparison operators with undefined value",
+        \\// operator ==
         \\comptime {
         \\    var a: i64 = undefined;
-        \\    _ = a == a;
+        \\    var x: i32 = 0;
+        \\    if (a == a) x += 1;
         \\}
-    , &[_][]const u8{
-        "tmp.zig:3:9: error: use of undefined value here causes undefined behavior",
-    });
-
-    cases.add("not equal on undefined value",
+        \\// operator !=
         \\comptime {
         \\    var a: i64 = undefined;
-        \\    _ = a != a;
+        \\    var x: i32 = 0;
+        \\    if (a != a) x += 1;
         \\}
-    , &[_][]const u8{
-        "tmp.zig:3:9: error: use of undefined value here causes undefined behavior",
-    });
-
-    cases.add("greater than on undefined value",
+        \\// operator >
         \\comptime {
         \\    var a: i64 = undefined;
-        \\    _ = a > a;
+        \\    var x: i32 = 0;
+        \\    if (a > a) x += 1;
         \\}
-    , &[_][]const u8{
-        "tmp.zig:3:9: error: use of undefined value here causes undefined behavior",
-    });
-
-    cases.add("greater than equal on undefined value",
+        \\// operator <
         \\comptime {
         \\    var a: i64 = undefined;
-        \\    _ = a >= a;
+        \\    var x: i32 = 0;
+        \\    if (a < a) x += 1;
         \\}
-    , &[_][]const u8{
-        "tmp.zig:3:9: error: use of undefined value here causes undefined behavior",
-    });
-
-    cases.add("less than on undefined value",
+        \\// operator >=
         \\comptime {
         \\    var a: i64 = undefined;
-        \\    _ = a < a;
+        \\    var x: i32 = 0;
+        \\    if (a >= a) x += 1;
         \\}
-    , &[_][]const u8{
-        "tmp.zig:3:9: error: use of undefined value here causes undefined behavior",
-    });
-
-    cases.add("less than equal on undefined value",
+        \\// operator <=
         \\comptime {
         \\    var a: i64 = undefined;
-        \\    _ = a <= a;
+        \\    var x: i32 = 0;
+        \\    if (a <= a) x += 1;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:9: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:5:11: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:11:11: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:17:11: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:23:11: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:29:11: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:35:11: error: use of undefined value here causes undefined behavior",
     });
 
     cases.add("and on undefined value",
