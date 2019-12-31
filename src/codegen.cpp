@@ -941,6 +941,8 @@ static Buf *panic_msg_buf(PanicMsgId msg_id) {
             return buf_create_from_str("async function called with noasync suspended");
         case PanicMsgIdResumeNotSuspendedFn:
             return buf_create_from_str("resumed a non-suspended function");
+        case PanicMsgIdBadSentinel:
+            return buf_create_from_str("sentinel mismatch");
     }
     zig_unreachable();
 }
@@ -1419,6 +1421,27 @@ static void add_bounds_check(CodeGen *g, LLVMValueRef target_val,
     LLVMPositionBuilderAtEnd(g->builder, ok_block);
 }
 
+static void add_sentinel_check(CodeGen *g, LLVMValueRef sentinel_elem_ptr, ZigValue *sentinel) {
+    LLVMValueRef expected_sentinel = gen_const_val(g, sentinel, "");
+
+    LLVMValueRef actual_sentinel = gen_load_untyped(g, sentinel_elem_ptr, 0, false, "");
+    LLVMValueRef ok_bit;
+    if (sentinel->type->id == ZigTypeIdFloat) {
+        ok_bit = LLVMBuildFCmp(g->builder, LLVMRealOEQ, actual_sentinel, expected_sentinel, "");
+    } else {
+        ok_bit = LLVMBuildICmp(g->builder, LLVMIntEQ, actual_sentinel, expected_sentinel, "");
+    }
+
+    LLVMBasicBlockRef fail_block = LLVMAppendBasicBlock(g->cur_fn_val, "SentinelFail");
+    LLVMBasicBlockRef ok_block = LLVMAppendBasicBlock(g->cur_fn_val, "SentinelOk");
+    LLVMBuildCondBr(g->builder, ok_bit, ok_block, fail_block);
+
+    LLVMPositionBuilderAtEnd(g->builder, fail_block);
+    gen_safety_crash(g, PanicMsgIdBadSentinel);
+
+    LLVMPositionBuilderAtEnd(g->builder, ok_block);
+}
+
 static LLVMValueRef gen_assert_zero(CodeGen *g, LLVMValueRef expr_val, ZigType *int_type) {
     LLVMValueRef zero = LLVMConstNull(get_llvm_type(g, int_type));
     LLVMValueRef ok_bit = LLVMBuildICmp(g->builder, LLVMIntEQ, expr_val, zero, "");
@@ -1702,11 +1725,14 @@ static void gen_var_debug_decl(CodeGen *g, ZigVar *var) {
 
 static LLVMValueRef ir_llvm_value(CodeGen *g, IrInstruction *instruction) {
     Error err;
-    if ((err = type_resolve(g, instruction->value->type, ResolveStatusZeroBitsKnown))) {
+
+    bool value_has_bits;
+    if ((err = type_has_bits2(g, instruction->value->type, &value_has_bits)))
         codegen_report_errors_and_exit(g);
-    }
-    if (!type_has_bits(instruction->value->type))
+
+    if (!value_has_bits)
         return nullptr;
+
     if (!instruction->llvm_value) {
         if (instruction->id == IrInstructionIdAwaitGen) {
             IrInstructionAwaitGen *await = reinterpret_cast<IrInstructionAwaitGen*>(instruction);
@@ -5106,19 +5132,21 @@ static LLVMAtomicOrdering to_LLVMAtomicOrdering(AtomicOrder atomic_order) {
     zig_unreachable();
 }
 
-static LLVMAtomicRMWBinOp to_LLVMAtomicRMWBinOp(AtomicRmwOp op, bool is_signed) {
+static enum ZigLLVM_AtomicRMWBinOp to_ZigLLVMAtomicRMWBinOp(AtomicRmwOp op, bool is_signed, bool is_float) {
     switch (op) {
-        case AtomicRmwOp_xchg: return LLVMAtomicRMWBinOpXchg;
-        case AtomicRmwOp_add: return LLVMAtomicRMWBinOpAdd;
-        case AtomicRmwOp_sub: return LLVMAtomicRMWBinOpSub;
-        case AtomicRmwOp_and: return LLVMAtomicRMWBinOpAnd;
-        case AtomicRmwOp_nand: return LLVMAtomicRMWBinOpNand;
-        case AtomicRmwOp_or: return LLVMAtomicRMWBinOpOr;
-        case AtomicRmwOp_xor: return LLVMAtomicRMWBinOpXor;
+        case AtomicRmwOp_xchg: return ZigLLVMAtomicRMWBinOpXchg;
+        case AtomicRmwOp_add:
+            return is_float ? ZigLLVMAtomicRMWBinOpFAdd : ZigLLVMAtomicRMWBinOpAdd;
+        case AtomicRmwOp_sub:
+            return is_float ? ZigLLVMAtomicRMWBinOpFSub : ZigLLVMAtomicRMWBinOpSub;
+        case AtomicRmwOp_and: return ZigLLVMAtomicRMWBinOpAnd;
+        case AtomicRmwOp_nand: return ZigLLVMAtomicRMWBinOpNand;
+        case AtomicRmwOp_or: return ZigLLVMAtomicRMWBinOpOr;
+        case AtomicRmwOp_xor: return ZigLLVMAtomicRMWBinOpXor;
         case AtomicRmwOp_max:
-            return is_signed ? LLVMAtomicRMWBinOpMax : LLVMAtomicRMWBinOpUMax;
+            return is_signed ? ZigLLVMAtomicRMWBinOpMax : ZigLLVMAtomicRMWBinOpUMax;
         case AtomicRmwOp_min:
-            return is_signed ? LLVMAtomicRMWBinOpMin : LLVMAtomicRMWBinOpUMin;
+            return is_signed ? ZigLLVMAtomicRMWBinOpMin : ZigLLVMAtomicRMWBinOpUMin;
     }
     zig_unreachable();
 }
@@ -5244,6 +5272,9 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutable *executable, IrInst
 
     bool want_runtime_safety = instruction->safety_check_on && ir_want_runtime_safety(g, &instruction->base);
 
+    ZigType *res_slice_ptr_type = instruction->base.value->type->data.structure.fields[slice_ptr_index]->type_entry;
+    ZigValue *sentinel = res_slice_ptr_type->data.pointer.sentinel;
+
     if (array_type->id == ZigTypeIdArray ||
         (array_type->id == ZigTypeIdPointer && array_type->data.pointer.ptr_len == PtrLenSingle))
     {
@@ -5265,6 +5296,15 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutable *executable, IrInst
                 LLVMValueRef array_end = LLVMConstInt(g->builtin_types.entry_usize->llvm_type,
                         array_type->data.array.len, false);
                 add_bounds_check(g, end_val, LLVMIntEQ, nullptr, LLVMIntULE, array_end);
+
+                if (sentinel != nullptr) {
+                    LLVMValueRef indices[] = {
+                        LLVMConstNull(g->builtin_types.entry_usize->llvm_type),
+                        end_val,
+                    };
+                    LLVMValueRef sentinel_elem_ptr = LLVMBuildInBoundsGEP(g->builder, array_ptr, indices, 2, "");
+                    add_sentinel_check(g, sentinel_elem_ptr, sentinel);
+                }
             }
         }
         if (!type_has_bits(array_type)) {
@@ -5297,6 +5337,10 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutable *executable, IrInst
 
         if (want_runtime_safety) {
             add_bounds_check(g, start_val, LLVMIntEQ, nullptr, LLVMIntULE, end_val);
+            if (sentinel != nullptr) {
+                LLVMValueRef sentinel_elem_ptr = LLVMBuildInBoundsGEP(g->builder, array_ptr, &end_val, 1, "");
+                add_sentinel_check(g, sentinel_elem_ptr, sentinel);
+            }
         }
 
         if (type_has_bits(array_type)) {
@@ -5337,18 +5381,24 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutable *executable, IrInst
             end_val = prev_end;
         }
 
+        LLVMValueRef src_ptr_ptr = LLVMBuildStructGEP(g->builder, array_ptr, (unsigned)ptr_index, "");
+        LLVMValueRef src_ptr = gen_load_untyped(g, src_ptr_ptr, 0, false, "");
+
         if (want_runtime_safety) {
             assert(prev_end);
             add_bounds_check(g, start_val, LLVMIntEQ, nullptr, LLVMIntULE, end_val);
             if (instruction->end) {
                 add_bounds_check(g, end_val, LLVMIntEQ, nullptr, LLVMIntULE, prev_end);
+
+                if (sentinel != nullptr) {
+                    LLVMValueRef sentinel_elem_ptr = LLVMBuildInBoundsGEP(g->builder, src_ptr, &end_val, 1, "");
+                    add_sentinel_check(g, sentinel_elem_ptr, sentinel);
+                }
             }
         }
 
-        LLVMValueRef src_ptr_ptr = LLVMBuildStructGEP(g->builder, array_ptr, (unsigned)ptr_index, "");
-        LLVMValueRef src_ptr = gen_load_untyped(g, src_ptr_ptr, 0, false, "");
         LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, (unsigned)ptr_index, "");
-        LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, src_ptr, &start_val, (unsigned)len_index, "");
+        LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, src_ptr, &start_val, 1, "");
         gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
 
         LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, (unsigned)len_index, "");
@@ -5515,13 +5565,21 @@ static LLVMValueRef ir_render_unwrap_err_code(CodeGen *g, IrExecutable *executab
 static LLVMValueRef ir_render_unwrap_err_payload(CodeGen *g, IrExecutable *executable,
         IrInstructionUnwrapErrPayload *instruction)
 {
+    Error err;
+
     if (instruction->base.value->special != ConstValSpecialRuntime)
         return nullptr;
 
     bool want_safety = instruction->safety_check_on && ir_want_runtime_safety(g, &instruction->base) &&
         g->errors_by_index.length > 1;
-    if (!want_safety && !type_has_bits(instruction->base.value->type))
+
+    bool value_has_bits;
+    if ((err = type_has_bits2(g, instruction->base.value->type, &value_has_bits)))
+        codegen_report_errors_and_exit(g);
+
+    if (!want_safety && !value_has_bits)
         return nullptr;
+
     ZigType *ptr_type = instruction->value->value->type;
     assert(ptr_type->id == ZigTypeIdPointer);
     ZigType *err_union_type = ptr_type->data.pointer.child_type;
@@ -5682,25 +5740,26 @@ static LLVMValueRef ir_render_atomic_rmw(CodeGen *g, IrExecutable *executable,
 {
     bool is_signed;
     ZigType *operand_type = instruction->operand->value->type;
+    bool is_float = operand_type->id == ZigTypeIdFloat;
     if (operand_type->id == ZigTypeIdInt) {
         is_signed = operand_type->data.integral.is_signed;
     } else {
         is_signed = false;
     }
-    LLVMAtomicRMWBinOp op = to_LLVMAtomicRMWBinOp(instruction->resolved_op, is_signed);
+    enum ZigLLVM_AtomicRMWBinOp op = to_ZigLLVMAtomicRMWBinOp(instruction->resolved_op, is_signed, is_float);
     LLVMAtomicOrdering ordering = to_LLVMAtomicOrdering(instruction->resolved_ordering);
     LLVMValueRef ptr = ir_llvm_value(g, instruction->ptr);
     LLVMValueRef operand = ir_llvm_value(g, instruction->operand);
 
     if (get_codegen_ptr_type(operand_type) == nullptr) {
-        return LLVMBuildAtomicRMW(g->builder, op, ptr, operand, ordering, g->is_single_threaded);
+        return ZigLLVMBuildAtomicRMW(g->builder, op, ptr, operand, ordering, g->is_single_threaded);
     }
 
     // it's a pointer but we need to treat it as an int
     LLVMValueRef casted_ptr = LLVMBuildBitCast(g->builder, ptr,
         LLVMPointerType(g->builtin_types.entry_usize->llvm_type, 0), "");
     LLVMValueRef casted_operand = LLVMBuildPtrToInt(g->builder, operand, g->builtin_types.entry_usize->llvm_type, "");
-    LLVMValueRef uncasted_result = LLVMBuildAtomicRMW(g->builder, op, casted_ptr, casted_operand, ordering,
+    LLVMValueRef uncasted_result = ZigLLVMBuildAtomicRMW(g->builder, op, casted_ptr, casted_operand, ordering,
             g->is_single_threaded);
     return LLVMBuildIntToPtr(g->builder, uncasted_result, get_llvm_type(g, operand_type), "");
 }

@@ -2003,6 +2003,8 @@ bool type_is_invalid(ZigType *type_entry) {
             return type_entry->data.unionation.resolve_status == ResolveStatusInvalid;
         case ZigTypeIdEnum:
             return type_entry->data.enumeration.resolve_status == ResolveStatusInvalid;
+        case ZigTypeIdFnFrame:
+            return type_entry->data.frame.reported_loop_err;
         default:
             return false;
     }
@@ -6370,10 +6372,11 @@ static Error resolve_pointer_zero_bits(CodeGen *g, ZigType *ty) {
 
     ZigType *elem_type = ty->data.pointer.child_type;
 
-    if ((err = type_resolve(g, elem_type, ResolveStatusZeroBitsKnown)))
+    bool has_bits;
+    if ((err = type_has_bits2(g, elem_type, &has_bits)))
         return err;
 
-    if (type_has_bits(elem_type)) {
+    if (has_bits) {
         ty->abi_size = g->builtin_types.entry_usize->abi_size;
         ty->size_in_bits = g->builtin_types.entry_usize->size_in_bits;
         ty->abi_align = g->builtin_types.entry_usize->abi_align;
@@ -9240,6 +9243,7 @@ bool type_is_numeric(ZigType *ty) {
         case ZigTypeIdComptimeInt:
         case ZigTypeIdInt:
         case ZigTypeIdFloat:
+        case ZigTypeIdUndefined:
             return true;
 
         case ZigTypeIdVector:
@@ -9252,7 +9256,6 @@ bool type_is_numeric(ZigType *ty) {
         case ZigTypeIdPointer:
         case ZigTypeIdArray:
         case ZigTypeIdStruct:
-        case ZigTypeIdUndefined:
         case ZigTypeIdNull:
         case ZigTypeIdOptional:
         case ZigTypeIdErrorUnion:

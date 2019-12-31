@@ -1981,19 +1981,19 @@ fn parseAssignOp(arena: *Allocator, it: *TokenIterator, tree: *Tree) !?*Node {
 
     const token = nextToken(it);
     const op = switch (token.ptr.id) {
-        .AsteriskEqual => Op{ .AssignTimes = {} },
+        .AsteriskEqual => Op{ .AssignMul = {} },
         .SlashEqual => Op{ .AssignDiv = {} },
         .PercentEqual => Op{ .AssignMod = {} },
-        .PlusEqual => Op{ .AssignPlus = {} },
-        .MinusEqual => Op{ .AssignMinus = {} },
+        .PlusEqual => Op{ .AssignAdd = {} },
+        .MinusEqual => Op{ .AssignSub = {} },
         .AngleBracketAngleBracketLeftEqual => Op{ .AssignBitShiftLeft = {} },
         .AngleBracketAngleBracketRightEqual => Op{ .AssignBitShiftRight = {} },
         .AmpersandEqual => Op{ .AssignBitAnd = {} },
         .CaretEqual => Op{ .AssignBitXor = {} },
         .PipeEqual => Op{ .AssignBitOr = {} },
-        .AsteriskPercentEqual => Op{ .AssignTimesWarp = {} },
-        .PlusPercentEqual => Op{ .AssignPlusWrap = {} },
-        .MinusPercentEqual => Op{ .AssignMinusWrap = {} },
+        .AsteriskPercentEqual => Op{ .AssignMulWrap = {} },
+        .PlusPercentEqual => Op{ .AssignAddWrap = {} },
+        .MinusPercentEqual => Op{ .AssignSubWrap = {} },
         .Equal => Op{ .Assign = {} },
         else => {
             putBackToken(it, token.index);
@@ -2120,11 +2120,11 @@ fn parseMultiplyOp(arena: *Allocator, it: *TokenIterator, tree: *Tree) !?*Node {
     const token = nextToken(it);
     const op = switch (token.ptr.id) {
         .PipePipe => ops{ .BoolOr = {} },
-        .Asterisk => ops{ .Mult = {} },
+        .Asterisk => ops{ .Mul = {} },
         .Slash => ops{ .Div = {} },
         .Percent => ops{ .Mod = {} },
         .AsteriskAsterisk => ops{ .ArrayMult = {} },
-        .AsteriskPercent => ops{ .MultWrap = {} },
+        .AsteriskPercent => ops{ .MulWrap = {} },
         else => {
             putBackToken(it, token.index);
             return null;
@@ -2331,7 +2331,7 @@ fn parsePrefixTypeOp(arena: *Allocator, it: *TokenIterator, tree: *Tree) !?*Node
 }
 
 /// SuffixOp
-///     <- LBRACKET Expr (DOT2 Expr?)? RBRACKET
+///     <- LBRACKET Expr (DOT2 (Expr (COLON Expr)?)?)? RBRACKET
 ///      / DOT IDENTIFIER
 ///      / DOTASTERISK
 ///      / DOTQUESTIONMARK
@@ -2349,11 +2349,16 @@ fn parseSuffixOp(arena: *Allocator, it: *TokenIterator, tree: *Tree) !?*Node {
 
             if (eatToken(it, .Ellipsis2) != null) {
                 const end_expr = try parseExpr(arena, it, tree);
+                const sentinel: ?*ast.Node = if (eatToken(it, .Colon) != null)
+                    try parseExpr(arena, it, tree)
+                else
+                    null;
                 break :blk OpAndToken{
                     .op = Op{
                         .Slice = Op.Slice{
                             .start = index_expr,
                             .end = end_expr,
+                            .sentinel = sentinel,
                         },
                     },
                     .token = try expectToken(it, tree, .RBracket),

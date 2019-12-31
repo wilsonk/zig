@@ -225,10 +225,15 @@ pub fn raise(sig: u8) RaiseError!void {
 
     if (builtin.os == .linux) {
         var set: linux.sigset_t = undefined;
-        linux.blockAppSignals(&set);
-        const tid = linux.syscall0(linux.SYS_gettid);
-        const rc = linux.syscall2(linux.SYS_tkill, tid, sig);
-        linux.restoreSignals(&set);
+        // block application signals
+        _ = linux.sigprocmask(SIG_BLOCK, &linux.app_mask, &set);
+
+        const tid = linux.gettid();
+        const rc = linux.tkill(tid, sig);
+
+        // restore signal mask
+        _ = linux.sigprocmask(SIG_SETMASK, &set, null);
+
         switch (errno(rc)) {
             0 => return,
             else => |err| return unexpectedErrno(err),
@@ -805,9 +810,9 @@ pub fn execvpeC(file: [*:0]const u8, child_argv: [*:null]const ?[*:0]const u8, e
         mem.copy(u8, &path_buf, search_path);
         path_buf[search_path.len] = '/';
         mem.copy(u8, path_buf[search_path.len + 1 ..], file_slice);
-        path_buf[search_path.len + file_slice.len + 1] = 0;
-        // TODO avoid @ptrCast here using slice syntax with https://github.com/ziglang/zig/issues/3770
-        err = execveC(@ptrCast([*:0]u8, &path_buf), child_argv, envp);
+        const path_len = search_path.len + file_slice.len + 1;
+        path_buf[path_len] = 0;
+        err = execveC(path_buf[0..path_len :0].ptr, child_argv, envp);
         switch (err) {
             error.AccessDenied => seen_eacces = true,
             error.FileNotFound, error.NotDir => {},
@@ -841,17 +846,13 @@ pub fn execvpe(
         const arg_buf = try allocator.alloc(u8, arg.len + 1);
         @memcpy(arg_buf.ptr, arg.ptr, arg.len);
         arg_buf[arg.len] = 0;
-
-        // TODO avoid @ptrCast using slice syntax with https://github.com/ziglang/zig/issues/3770
-        argv_buf[i] = @ptrCast([*:0]u8, arg_buf.ptr);
+        argv_buf[i] = arg_buf[0..arg.len :0].ptr;
     }
     argv_buf[argv_slice.len] = null;
+    const argv_ptr = argv_buf[0..argv_slice.len :null].ptr;
 
     const envp_buf = try createNullDelimitedEnvMap(allocator, env_map);
     defer freeNullDelimitedEnvMap(allocator, envp_buf);
-
-    // TODO avoid @ptrCast here using slice syntax with https://github.com/ziglang/zig/issues/3770
-    const argv_ptr = @ptrCast([*:null]?[*:0]u8, argv_buf.ptr);
 
     return execvpeC(argv_buf.ptr[0].?, argv_ptr, envp_buf.ptr);
 }
@@ -869,16 +870,13 @@ pub fn createNullDelimitedEnvMap(allocator: *mem.Allocator, env_map: *const std.
             @memcpy(env_buf.ptr, pair.key.ptr, pair.key.len);
             env_buf[pair.key.len] = '=';
             @memcpy(env_buf.ptr + pair.key.len + 1, pair.value.ptr, pair.value.len);
-            env_buf[env_buf.len - 1] = 0;
-
-            // TODO avoid @ptrCast here using slice syntax with https://github.com/ziglang/zig/issues/3770
-            envp_buf[i] = @ptrCast([*:0]u8, env_buf.ptr);
+            const len = env_buf.len - 1;
+            env_buf[len] = 0;
+            envp_buf[i] = env_buf[0..len :0].ptr;
         }
         assert(i == envp_count);
     }
-    // TODO avoid @ptrCast here using slice syntax with https://github.com/ziglang/zig/issues/3770
-    assert(envp_buf[envp_count] == null);
-    return @ptrCast([*:null]?[*:0]u8, envp_buf.ptr)[0..envp_count];
+    return envp_buf[0..envp_count :null];
 }
 
 pub fn freeNullDelimitedEnvMap(allocator: *mem.Allocator, envp_buf: []?[*:0]u8) void {
@@ -3250,5 +3248,36 @@ pub fn sched_yield() SchedYieldError!void {
         0 => return,
         ENOSYS => return error.SystemCannotYield,
         else => return error.SystemCannotYield,
+    }
+}
+
+pub const SetSockOptError = error{
+    /// The socket is already connected, and a specified option cannot be set while the socket is connected.
+    AlreadyConnected,
+
+    /// The option is not supported by the protocol.
+    InvalidProtocolOption,
+
+    /// The send and receive timeout values are too big to fit into the timeout fields in the socket structure.
+    TimeoutTooBig,
+
+    /// Insufficient resources are available in the system to complete the call.
+    SystemResources,
+} || UnexpectedError;
+
+/// Set a socket's options.
+pub fn setsockopt(fd: fd_t, level: u32, optname: u32, opt: []const u8) SetSockOptError!void {
+    switch (errno(system.setsockopt(fd, level, optname, opt.ptr, @intCast(socklen_t, opt.len)))) {
+        0 => {},
+        EBADF => unreachable, // always a race condition
+        ENOTSOCK => unreachable, // always a race condition
+        EINVAL => unreachable,
+        EFAULT => unreachable,
+        EDOM => return error.TimeoutTooBig,
+        EISCONN => return error.AlreadyConnected,
+        ENOPROTOOPT => return error.InvalidProtocolOption,
+        ENOMEM => return error.SystemResources,
+        ENOBUFS => return error.SystemResources,
+        else => |err| return unexpectedErrno(err),
     }
 }

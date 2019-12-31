@@ -1431,13 +1431,13 @@ pub const Node = struct {
             AssignBitShiftRight,
             AssignBitXor,
             AssignDiv,
-            AssignMinus,
-            AssignMinusWrap,
+            AssignSub,
+            AssignSubWrap,
             AssignMod,
-            AssignPlus,
-            AssignPlusWrap,
-            AssignTimes,
-            AssignTimesWarp,
+            AssignAdd,
+            AssignAddWrap,
+            AssignMul,
+            AssignMulWrap,
             BangEqual,
             BitAnd,
             BitOr,
@@ -1456,8 +1456,8 @@ pub const Node = struct {
             LessThan,
             MergeErrorSets,
             Mod,
-            Mult,
-            MultWrap,
+            Mul,
+            MulWrap,
             Period,
             Range,
             Sub,
@@ -1490,13 +1490,13 @@ pub const Node = struct {
                 Op.AssignBitShiftRight,
                 Op.AssignBitXor,
                 Op.AssignDiv,
-                Op.AssignMinus,
-                Op.AssignMinusWrap,
+                Op.AssignSub,
+                Op.AssignSubWrap,
                 Op.AssignMod,
-                Op.AssignPlus,
-                Op.AssignPlusWrap,
-                Op.AssignTimes,
-                Op.AssignTimesWarp,
+                Op.AssignAdd,
+                Op.AssignAddWrap,
+                Op.AssignMul,
+                Op.AssignMulWrap,
                 Op.BangEqual,
                 Op.BitAnd,
                 Op.BitOr,
@@ -1514,8 +1514,8 @@ pub const Node = struct {
                 Op.LessThan,
                 Op.MergeErrorSets,
                 Op.Mod,
-                Op.Mult,
-                Op.MultWrap,
+                Op.Mul,
+                Op.MulWrap,
                 Op.Period,
                 Op.Range,
                 Op.Sub,
@@ -1701,6 +1701,7 @@ pub const Node = struct {
             pub const Slice = struct {
                 start: *Node,
                 end: ?*Node,
+                sentinel: ?*Node,
             };
         };
 
@@ -1730,6 +1731,10 @@ pub const Node = struct {
 
                     if (range.end) |end| {
                         if (i < 1) return end;
+                        i -= 1;
+                    }
+                    if (range.sentinel) |sentinel| {
+                        if (i < 1) return sentinel;
                         i -= 1;
                     }
                 },
