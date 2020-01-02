@@ -322,6 +322,7 @@ enum LazyValueId {
     LazyValueIdSliceType,
     LazyValueIdFnType,
     LazyValueIdErrUnionType,
+    LazyValueIdArrayType,
 };
 
 struct LazyValue {
@@ -353,6 +354,15 @@ struct LazyValueSliceType {
     bool is_const;
     bool is_volatile;
     bool is_allowzero;
+};
+
+struct LazyValueArrayType {
+    LazyValue base;
+
+    IrAnalyze *ira;
+    IrInstruction *sentinel; // can be null
+    IrInstruction *elem_type;
+    uint64_t length;
 };
 
 struct LazyValuePtrType {
@@ -409,6 +419,9 @@ struct ZigValue {
     LLVMValueRef llvm_global;
 
     union {
+        // populated if special == ConstValSpecialLazy
+        LazyValue *x_lazy;
+
         // populated if special == ConstValSpecialStatic
         BigInt x_bigint;
         BigFloat x_bigfloat;
@@ -429,7 +442,6 @@ struct ZigValue {
         ConstPtrValue x_ptr;
         ConstArgTuple x_arg_tuple;
         Buf *x_enum_literal;
-        LazyValue *x_lazy;
 
         // populated if special == ConstValSpecialRuntime
         RuntimeHintErrorUnion rh_error_union;
@@ -767,10 +779,18 @@ struct AstNodeUnwrapOptional {
     AstNode *expr;
 };
 
+// Must be synchronized with std.builtin.CallOptions.Modifier
 enum CallModifier {
     CallModifierNone,
     CallModifierAsync,
+    CallModifierNeverTail,
+    CallModifierNeverInline,
     CallModifierNoAsync,
+    CallModifierAlwaysTail,
+    CallModifierAlwaysInline,
+    CallModifierCompileTime,
+
+    // These are additional tags in the compiler, but not exposed in the std lib.
     CallModifierBuiltin,
 };
 
@@ -790,6 +810,7 @@ struct AstNodeSliceExpr {
     AstNode *array_ref_expr;
     AstNode *start;
     AstNode *end;
+    AstNode *sentinel; // can be null
 };
 
 struct AstNodeFieldAccessExpr {
@@ -996,6 +1017,7 @@ struct AstNodeStructField {
     // populated if the "align(A)" is present
     AstNode *align_expr;
     Buf doc_comments;
+    Token *comptime_token;
 };
 
 struct AstNodeStringLiteral {
@@ -1253,6 +1275,7 @@ struct TypeStructField {
     uint32_t bit_offset_in_host; // offset from the memory at gen_index
     uint32_t host_int_bytes; // size of host integer
     uint32_t align;
+    bool is_comptime;
 };
 
 enum ResolveStatus {
@@ -1286,6 +1309,13 @@ struct RootStruct {
     ZigLLVMDIFile *di_file;
 };
 
+enum StructSpecial {
+    StructSpecialNone,
+    StructSpecialSlice,
+    StructSpecialInferredTuple,
+    StructSpecialInferredStruct,
+};
+
 struct ZigTypeStruct {
     AstNode *decl_node;
     TypeStructField **fields;
@@ -1301,13 +1331,12 @@ struct ZigTypeStruct {
     ContainerLayout layout;
     ResolveStatus resolve_status;
 
-    bool is_slice;
+    StructSpecial special;
     // whether any of the fields require comptime
     // known after ResolveStatusZeroBitsKnown
     bool requires_comptime;
     bool resolve_loop_flag_zero_bits;
     bool resolve_loop_flag_other;
-    bool is_inferred;
 };
 
 struct ZigTypeOptional {
@@ -1443,7 +1472,6 @@ enum ZigTypeId {
     ZigTypeIdUnion,
     ZigTypeIdFn,
     ZigTypeIdBoundFn,
-    ZigTypeIdArgTuple,
     ZigTypeIdOpaque,
     ZigTypeIdFnFrame,
     ZigTypeIdAnyFrame,
@@ -1692,8 +1720,6 @@ enum BuiltinFnId {
     BuiltinFnIdFieldParentPtr,
     BuiltinFnIdByteOffsetOf,
     BuiltinFnIdBitOffsetOf,
-    BuiltinFnIdInlineCall,
-    BuiltinFnIdNoInlineCall,
     BuiltinFnIdNewStackCall,
     BuiltinFnIdAsyncCall,
     BuiltinFnIdTypeId,
@@ -1717,6 +1743,7 @@ enum BuiltinFnId {
     BuiltinFnIdFrameHandle,
     BuiltinFnIdFrameSize,
     BuiltinFnIdAs,
+    BuiltinFnIdCall,
 };
 
 struct BuiltinFnEntry {
@@ -1752,6 +1779,7 @@ enum PanicMsgId {
     PanicMsgIdResumedFnPendingAwait,
     PanicMsgIdBadNoAsyncCall,
     PanicMsgIdResumeNotSuspendedFn,
+    PanicMsgIdBadSentinel,
 
     PanicMsgIdCount,
 };
@@ -1902,6 +1930,12 @@ enum WantStackCheck {
     WantStackCheckEnabled,
 };
 
+enum WantCSanitize {
+    WantCSanitizeAuto,
+    WantCSanitizeDisabled,
+    WantCSanitizeEnabled,
+};
+
 struct CFile {
     ZigList<const char *> args;
     const char *source_path;
@@ -1977,10 +2011,11 @@ struct CodeGen {
     ZigPackage *std_package;
     ZigPackage *test_runner_package;
     ZigPackage *compile_var_package;
+    ZigPackage *root_pkg; // @import("root")
+    ZigPackage *main_pkg; // usually same as root_pkg, except for `zig test`
     ZigType *compile_var_import;
     ZigType *root_import;
     ZigType *start_import;
-    ZigType *test_runner_import;
 
     struct {
         ZigType *entry_bool;
@@ -2012,7 +2047,6 @@ struct CodeGen {
         ZigType *entry_null;
         ZigType *entry_var;
         ZigType *entry_global_error_set;
-        ZigType *entry_arg_tuple;
         ZigType *entry_enum_literal;
         ZigType *entry_any_frame;
     } builtin_types;
@@ -2061,7 +2095,6 @@ struct CodeGen {
     ZigList<TldVar *> global_vars;
 
     ZigFn *cur_fn;
-    ZigFn *main_fn;
     ZigFn *panic_fn;
 
     ZigFn *largest_frame_fn;
@@ -2071,6 +2104,7 @@ struct CodeGen {
 
     WantPIC want_pic;
     WantStackCheck want_stack_check;
+    WantCSanitize want_sanitize_c;
     CacheHash cache_hash;
     ErrColor err_color;
     uint32_t next_unresolved_index;
@@ -2081,7 +2115,6 @@ struct CodeGen {
     uint32_t target_abi_index;
     uint32_t target_oformat_index;
     bool is_big_endian;
-    bool have_pub_main;
     bool have_c_main;
     bool have_winmain;
     bool have_winmain_crt_startup;
@@ -2146,6 +2179,7 @@ struct CodeGen {
     bool have_pic;
     bool have_dynamic_link; // this is whether the final thing will be dynamically linked. see also is_dynamic
     bool have_stack_probing;
+    bool have_sanitize_c;
     bool function_sections;
     bool enable_dump_analysis;
     bool enable_doc_generation;
@@ -2156,7 +2190,6 @@ struct CodeGen {
     Buf *root_out_name;
     Buf *test_filter;
     Buf *test_name_prefix;
-    ZigPackage *root_package;
     Buf *zig_lib_dir;
     Buf *zig_std_dir;
     Buf *dynamic_linker_path;
@@ -2370,7 +2403,7 @@ struct ScopeFnDef {
     ZigFn *fn_entry;
 };
 
-// This scope is created for a @typeOf.
+// This scope is created for a @TypeOf.
 // All runtime side-effects are elided within it.
 // NodeTypeFnCallExpr
 struct ScopeTypeOf {
@@ -2481,6 +2514,8 @@ enum IrInstructionId {
     IrInstructionIdVarPtr,
     IrInstructionIdReturnPtr,
     IrInstructionIdCallSrc,
+    IrInstructionIdCallSrcArgs,
+    IrInstructionIdCallExtra,
     IrInstructionIdCallGen,
     IrInstructionIdConst,
     IrInstructionIdReturn,
@@ -2888,15 +2923,37 @@ struct IrInstructionCallSrc {
     ZigFn *fn_entry;
     size_t arg_count;
     IrInstruction **args;
+    IrInstruction *ret_ptr;
     ResultLoc *result_loc;
 
     IrInstruction *new_stack;
 
-    FnInline fn_inline;
     CallModifier modifier;
-
     bool is_async_call_builtin;
-    bool is_comptime;
+};
+
+// This is a pass1 instruction, used by @call when the args node is
+// a tuple or struct literal.
+struct IrInstructionCallSrcArgs {
+    IrInstruction base;
+
+    IrInstruction *options;
+    IrInstruction *fn_ref;
+    IrInstruction **args_ptr;
+    size_t args_len;
+    ResultLoc *result_loc;
+};
+
+// This is a pass1 instruction, used by @call, when the args node
+// is not a literal.
+// `args` is expected to be either a struct or a tuple.
+struct IrInstructionCallExtra {
+    IrInstruction base;
+
+    IrInstruction *options;
+    IrInstruction *fn_ref;
+    IrInstruction *args;
+    ResultLoc *result_loc;
 };
 
 struct IrInstructionCallGen {
@@ -2910,7 +2967,6 @@ struct IrInstructionCallGen {
     IrInstruction *frame_result_loc;
     IrInstruction *new_stack;
 
-    FnInline fn_inline;
     CallModifier modifier;
 
     bool is_async_call_builtin;
@@ -3334,6 +3390,7 @@ struct IrInstructionSliceSrc {
     IrInstruction *ptr;
     IrInstruction *start;
     IrInstruction *end;
+    IrInstruction *sentinel;
     ResultLoc *result_loc;
 };
 

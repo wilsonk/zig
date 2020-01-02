@@ -156,6 +156,10 @@ unsigned ZigLLVMDataLayoutGetStackAlignment(LLVMTargetDataRef TD) {
     return unwrap(TD)->getStackAlignment();
 }
 
+unsigned ZigLLVMDataLayoutGetProgramAddressSpace(LLVMTargetDataRef TD) {
+    return unwrap(TD)->getProgramAddressSpace();
+}
+
 bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMModuleRef module_ref,
         const char *filename, ZigLLVM_EmitOutputType output_type, char **error_message, bool is_debug,
         bool is_small, bool time_report)
@@ -269,18 +273,24 @@ ZIG_EXTERN_C LLVMTypeRef ZigLLVMTokenTypeInContext(LLVMContextRef context_ref) {
 }
 
 LLVMValueRef ZigLLVMBuildCall(LLVMBuilderRef B, LLVMValueRef Fn, LLVMValueRef *Args,
-        unsigned NumArgs, unsigned CC, ZigLLVM_FnInline fn_inline, const char *Name)
+        unsigned NumArgs, unsigned CC, ZigLLVM_CallAttr attr, const char *Name)
 {
     CallInst *call_inst = CallInst::Create(unwrap(Fn), makeArrayRef(unwrap(Args), NumArgs), Name);
     call_inst->setCallingConv(CC);
-    switch (fn_inline) {
-        case ZigLLVM_FnInlineAuto:
+    switch (attr) {
+        case ZigLLVM_CallAttrAuto:
             break;
-        case ZigLLVM_FnInlineAlways:
-            call_inst->addAttribute(AttributeList::FunctionIndex, Attribute::AlwaysInline);
+        case ZigLLVM_CallAttrNeverTail:
+            call_inst->setTailCallKind(CallInst::TCK_NoTail);
             break;
-        case ZigLLVM_FnInlineNever:
+        case ZigLLVM_CallAttrNeverInline:
             call_inst->addAttribute(AttributeList::FunctionIndex, Attribute::NoInline);
+            break;
+        case ZigLLVM_CallAttrAlwaysTail:
+            call_inst->setTailCallKind(CallInst::TCK_MustTail);
+            break;
+        case ZigLLVM_CallAttrAlwaysInline:
+            call_inst->addAttribute(AttributeList::FunctionIndex, Attribute::AlwaysInline);
             break;
     }
     return wrap(unwrap(B)->Insert(call_inst));
@@ -1084,6 +1094,56 @@ bool ZigLLDLink(ZigLLVM_ObjectFormatType oformat, const char **args, size_t arg_
     }
     assert(false); // unreachable
     abort();
+}
+
+static AtomicRMWInst::BinOp toLLVMRMWBinOp(enum ZigLLVM_AtomicRMWBinOp BinOp) {
+    switch (BinOp) {
+        default:
+        case ZigLLVMAtomicRMWBinOpXchg: return AtomicRMWInst::Xchg;
+        case ZigLLVMAtomicRMWBinOpAdd: return AtomicRMWInst::Add;
+        case ZigLLVMAtomicRMWBinOpSub: return AtomicRMWInst::Sub;
+        case ZigLLVMAtomicRMWBinOpAnd: return AtomicRMWInst::And;
+        case ZigLLVMAtomicRMWBinOpNand: return AtomicRMWInst::Nand;
+        case ZigLLVMAtomicRMWBinOpOr: return AtomicRMWInst::Or;
+        case ZigLLVMAtomicRMWBinOpXor: return AtomicRMWInst::Xor;
+        case ZigLLVMAtomicRMWBinOpMax: return AtomicRMWInst::Max;
+        case ZigLLVMAtomicRMWBinOpMin: return AtomicRMWInst::Min;
+        case ZigLLVMAtomicRMWBinOpUMax: return AtomicRMWInst::UMax;
+        case ZigLLVMAtomicRMWBinOpUMin: return AtomicRMWInst::UMin;
+        case ZigLLVMAtomicRMWBinOpFAdd: return AtomicRMWInst::FAdd;
+        case ZigLLVMAtomicRMWBinOpFSub: return AtomicRMWInst::FSub;
+    }
+}
+
+static AtomicOrdering toLLVMOrdering(LLVMAtomicOrdering Ordering) {
+    switch (Ordering) {
+        default:
+        case LLVMAtomicOrderingNotAtomic: return AtomicOrdering::NotAtomic;
+        case LLVMAtomicOrderingUnordered: return AtomicOrdering::Unordered;
+        case LLVMAtomicOrderingMonotonic: return AtomicOrdering::Monotonic;
+        case LLVMAtomicOrderingAcquire: return AtomicOrdering::Acquire;
+        case LLVMAtomicOrderingRelease: return AtomicOrdering::Release;
+        case LLVMAtomicOrderingAcquireRelease: return AtomicOrdering::AcquireRelease;
+        case LLVMAtomicOrderingSequentiallyConsistent: return AtomicOrdering::SequentiallyConsistent;
+    }
+}
+
+inline LLVMAttributeRef wrap(Attribute Attr) {
+    return reinterpret_cast<LLVMAttributeRef>(Attr.getRawPointer());
+}
+
+inline Attribute unwrap(LLVMAttributeRef Attr) {
+    return Attribute::fromRawPointer(Attr);
+}
+
+LLVMValueRef ZigLLVMBuildAtomicRMW(LLVMBuilderRef B, enum ZigLLVM_AtomicRMWBinOp op,
+    LLVMValueRef PTR, LLVMValueRef Val,
+    LLVMAtomicOrdering ordering, LLVMBool singleThread) 
+{
+    AtomicRMWInst::BinOp intop = toLLVMRMWBinOp(op);
+    return wrap(unwrap(B)->CreateAtomicRMW(intop, unwrap(PTR),
+        unwrap(Val), toLLVMOrdering(ordering), 
+        singleThread ? SyncScope::SingleThread : SyncScope::System));
 }
 
 static_assert((Triple::ArchType)ZigLLVM_UnknownArch == Triple::UnknownArch, "");

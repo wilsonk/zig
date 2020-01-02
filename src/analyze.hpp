@@ -171,9 +171,6 @@ void init_const_slice(CodeGen *g, ZigValue *const_val, ZigValue *array_val,
         size_t start, size_t len, bool is_const);
 ZigValue *create_const_slice(CodeGen *g, ZigValue *array_val, size_t start, size_t len, bool is_const);
 
-void init_const_arg_tuple(CodeGen *g, ZigValue *const_val, size_t arg_index_start, size_t arg_index_end);
-ZigValue *create_const_arg_tuple(CodeGen *g, size_t arg_index_start, size_t arg_index_end);
-
 void init_const_null(ZigValue *const_val, ZigType *type);
 ZigValue *create_const_null(ZigType *type);
 
@@ -202,11 +199,12 @@ ZigType *get_align_amt_type(CodeGen *g);
 ZigPackage *new_anonymous_package(void);
 
 Buf *const_value_to_buffer(ZigValue *const_val);
-void add_fn_export(CodeGen *g, ZigFn *fn_table_entry, const char *symbol_name, GlobalLinkageId linkage, bool ccc);
+void add_fn_export(CodeGen *g, ZigFn *fn_table_entry, const char *symbol_name, GlobalLinkageId linkage, CallingConvention cc);
 void add_var_export(CodeGen *g, ZigVar *fn_table_entry, const char *symbol_name, GlobalLinkageId linkage);
 
 
 ZigValue *get_builtin_value(CodeGen *codegen, const char *name);
+ZigType *get_builtin_type(CodeGen *codegen, const char *name);
 ZigType *get_stack_trace_type(CodeGen *g);
 bool resolve_inferred_error_set(CodeGen *g, ZigType *err_set_type, AstNode *source_node);
 
@@ -277,4 +275,9 @@ IrInstruction *ir_create_alloca(CodeGen *g, Scope *scope, AstNode *source_node, 
 Error analyze_import(CodeGen *codegen, ZigType *source_import, Buf *import_target_str,
         ZigType **out_import, Buf **out_import_target_path, Buf *out_full_path);
 ZigValue *get_the_one_possible_value(CodeGen *g, ZigType *type_entry);
+bool is_anon_container(ZigType *ty);
+void copy_const_val(ZigValue *dest, ZigValue *src);
+bool type_has_optional_repr(ZigType *ty);
+bool is_opt_err_set(ZigType *ty);
+bool type_is_numeric(ZigType *ty);
 #endif

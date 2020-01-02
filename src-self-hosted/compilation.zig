@@ -135,22 +135,17 @@ pub const Compilation = struct {
     /// lazily created when we need it
     tmp_dir: event.Future(BuildError![]u8) = event.Future(BuildError![]u8).init(),
 
-    version_major: u32 = 0,
-    version_minor: u32 = 0,
-    version_patch: u32 = 0,
+    version: builtin.Version = builtin.Version{ .major = 0, .minor = 0, .patch = 0 },
 
     linker_script: ?[]const u8 = null,
     out_h_path: ?[]const u8 = null,
 
     is_test: bool = false,
-    each_lib_rpath: bool = false,
     strip: bool = false,
     is_static: bool,
     linker_rdynamic: bool = false,
 
     clang_argv: []const []const u8 = &[_][]const u8{},
-    lib_dirs: []const []const u8 = &[_][]const u8{},
-    rpath_list: []const []const u8 = &[_][]const u8{},
     assembly_files: []const []const u8 = &[_][]const u8{},
 
     /// paths that are explicitly provided by the user to link against
@@ -161,9 +156,6 @@ pub const Compilation = struct {
     fn_link_set: event.Locked(FnLinkSet) = event.Locked(FnLinkSet).init(FnLinkSet.init()),
 
     pub const FnLinkSet = std.TailQueue(?*Value.Fn);
-
-    windows_subsystem_windows: bool = false,
-    windows_subsystem_console: bool = false,
 
     link_libs_list: ArrayList(*LinkLib),
     libc_link_lib: ?*LinkLib = null,
@@ -178,17 +170,18 @@ pub const Compilation = struct {
     verbose_llvm_ir: bool = false,
     verbose_link: bool = false,
 
-    darwin_frameworks: []const []const u8 = &[_][]const u8{},
     darwin_version_min: DarwinVersionMin = .None,
 
     test_filters: []const []const u8 = &[_][]const u8{},
     test_name_prefix: ?[]const u8 = null,
 
-    emit_file_type: Emit = .Binary,
+    emit_bin: bool = true,
+    emit_asm: bool = false,
+    emit_llvm_ir: bool = false,
+    emit_h: bool = false,
 
     kind: Kind,
 
-    link_out_file: ?[]const u8 = null,
     events: *event.Channel(Event),
 
     exported_symbol_names: event.Locked(Decl.Table),
@@ -778,7 +771,7 @@ pub const Compilation = struct {
                     continue;
                 };
                 const root_scope = ev.data;
-                group.call(rebuildFile, self, root_scope) catch |err| {
+                group.call(rebuildFile, .{ self, root_scope }) catch |err| {
                     build_result = err;
                     continue;
                 };
@@ -787,7 +780,7 @@ pub const Compilation = struct {
             while (self.fs_watch.channel.getOrNull()) |ev_or_err| {
                 if (ev_or_err) |ev| {
                     const root_scope = ev.data;
-                    group.call(rebuildFile, self, root_scope) catch |err| {
+                    group.call(rebuildFile, .{ self, root_scope }) catch |err| {
                         build_result = err;
                         continue;
                     };
@@ -807,7 +800,7 @@ pub const Compilation = struct {
                 root_scope.realpath,
                 max_src_size,
             ) catch |err| {
-                try self.addCompileErrorCli(root_scope.realpath, "unable to open: {}", @errorName(err));
+                try self.addCompileErrorCli(root_scope.realpath, "unable to open: {}", .{@errorName(err)});
                 return;
             };
             errdefer self.gpa().free(source_code);
@@ -868,7 +861,7 @@ pub const Compilation = struct {
 
                     // TODO connect existing comptime decls to updated source files
 
-                    try self.prelink_group.call(addCompTimeBlock, self, tree_scope, &decl_scope.base, comptime_node);
+                    try self.prelink_group.call(addCompTimeBlock, .{ self, tree_scope, &decl_scope.base, comptime_node });
                 },
                 .VarDecl => @panic("TODO"),
                 .FnProto => {
@@ -878,7 +871,7 @@ pub const Compilation = struct {
                         try self.addCompileError(tree_scope, Span{
                             .first = fn_proto.fn_token,
                             .last = fn_proto.fn_token + 1,
-                        }, "missing function name");
+                        }, "missing function name", .{});
                         continue;
                     };
 
@@ -921,7 +914,7 @@ pub const Compilation = struct {
                         tree_scope.base.ref();
                         errdefer self.gpa().destroy(fn_decl);
 
-                        try group.call(addTopLevelDecl, self, &fn_decl.base, locked_table);
+                        try group.call(addTopLevelDecl, .{ self, &fn_decl.base, locked_table });
                     }
                 },
                 .TestDecl => @panic("TODO"),
@@ -942,7 +935,7 @@ pub const Compilation = struct {
             const root_scope = blk: {
                 // TODO async/await std.fs.realpath
                 const root_src_real_path = std.fs.realpathAlloc(self.gpa(), root_src_path) catch |err| {
-                    try self.addCompileErrorCli(root_src_path, "unable to open: {}", @errorName(err));
+                    try self.addCompileErrorCli(root_src_path, "unable to open: {}", .{@errorName(err)});
                     return;
                 };
                 errdefer self.gpa().free(root_src_real_path);
@@ -991,7 +984,7 @@ pub const Compilation = struct {
         defer unanalyzed_code.destroy(comp.gpa());
 
         if (comp.verbose_ir) {
-            std.debug.warn("unanalyzed:\n");
+            std.debug.warn("unanalyzed:\n", .{});
             unanalyzed_code.dump();
         }
 
@@ -1003,7 +996,7 @@ pub const Compilation = struct {
         errdefer analyzed_code.destroy(comp.gpa());
 
         if (comp.verbose_ir) {
-            std.debug.warn("analyzed:\n");
+            std.debug.warn("analyzed:\n", .{});
             analyzed_code.dump();
         }
 
@@ -1042,37 +1035,37 @@ pub const Compilation = struct {
         const is_export = decl.isExported(decl.tree_scope.tree);
 
         if (is_export) {
-            try self.prelink_group.call(verifyUniqueSymbol, self, decl);
-            try self.prelink_group.call(resolveDecl, self, decl);
+            try self.prelink_group.call(verifyUniqueSymbol, .{ self, decl });
+            try self.prelink_group.call(resolveDecl, .{ self, decl });
         }
 
         const gop = try locked_table.getOrPut(decl.name);
         if (gop.found_existing) {
-            try self.addCompileError(decl.tree_scope, decl.getSpan(), "redefinition of '{}'", decl.name);
+            try self.addCompileError(decl.tree_scope, decl.getSpan(), "redefinition of '{}'", .{decl.name});
             // TODO note: other definition here
         } else {
             gop.kv.value = decl;
         }
     }
 
-    fn addCompileError(self: *Compilation, tree_scope: *Scope.AstTree, span: Span, comptime fmt: []const u8, args: ...) !void {
+    fn addCompileError(self: *Compilation, tree_scope: *Scope.AstTree, span: Span, comptime fmt: []const u8, args: var) !void {
         const text = try std.fmt.allocPrint(self.gpa(), fmt, args);
         errdefer self.gpa().free(text);
 
         const msg = try Msg.createFromScope(self, tree_scope, span, text);
         errdefer msg.destroy();
 
-        try self.prelink_group.call(addCompileErrorAsync, self, msg);
+        try self.prelink_group.call(addCompileErrorAsync, .{ self, msg });
     }
 
-    fn addCompileErrorCli(self: *Compilation, realpath: []const u8, comptime fmt: []const u8, args: ...) !void {
+    fn addCompileErrorCli(self: *Compilation, realpath: []const u8, comptime fmt: []const u8, args: var) !void {
         const text = try std.fmt.allocPrint(self.gpa(), fmt, args);
         errdefer self.gpa().free(text);
 
         const msg = try Msg.createFromCli(self, realpath, text);
         errdefer msg.destroy();
 
-        try self.prelink_group.call(addCompileErrorAsync, self, msg);
+        try self.prelink_group.call(addCompileErrorAsync, .{ self, msg });
     }
 
     async fn addCompileErrorAsync(
@@ -1092,12 +1085,9 @@ pub const Compilation = struct {
         defer exported_symbol_names.release();
 
         if (try exported_symbol_names.value.put(decl.name, decl)) |other_decl| {
-            try self.addCompileError(
-                decl.tree_scope,
-                decl.getSpan(),
-                "exported symbol collision: '{}'",
+            try self.addCompileError(decl.tree_scope, decl.getSpan(), "exported symbol collision: '{}'", .{
                 decl.name,
-            );
+            });
             // TODO add error note showing location of other symbol
         }
     }
@@ -1134,7 +1124,7 @@ pub const Compilation = struct {
 
             // get a head start on looking for the native libc
             if (self.target == Target.Native and self.override_libc == null) {
-                try self.deinit_group.call(startFindingNativeLibC, self);
+                try self.deinit_group.call(startFindingNativeLibC, .{self});
             }
         }
         return link_lib;
@@ -1162,7 +1152,7 @@ pub const Compilation = struct {
         const tmp_dir = try self.getTmpDir();
         const file_prefix = self.getRandomFileName();
 
-        const file_name = try std.fmt.allocPrint(self.gpa(), "{}{}", file_prefix[0..], suffix);
+        const file_name = try std.fmt.allocPrint(self.gpa(), "{}{}", .{ file_prefix[0..], suffix });
         defer self.gpa().free(file_name);
 
         const full_path = try std.fs.path.join(self.gpa(), &[_][]const u8{ tmp_dir, file_name[0..] });
@@ -1303,7 +1293,7 @@ fn generateDeclFn(comp: *Compilation, fn_decl: *Decl.Fn) !void {
             try comp.addCompileError(tree_scope, Span{
                 .first = param_decl.firstToken(),
                 .last = param_decl.type_node.firstToken(),
-            }, "missing parameter name");
+            }, "missing parameter name", .{});
             return error.SemanticAnalysisFailed;
         };
         const param_name = tree_scope.tree.tokenSlice(name_token);
@@ -1342,8 +1332,8 @@ fn generateDeclFn(comp: *Compilation, fn_decl: *Decl.Fn) !void {
 
     // Kick off rendering to LLVM module, but it doesn't block the fn decl
     // analysis from being complete.
-    try comp.prelink_group.call(codegen.renderToLlvm, comp, fn_val, analyzed_code);
-    try comp.prelink_group.call(addFnToLinkSet, comp, fn_val);
+    try comp.prelink_group.call(codegen.renderToLlvm, .{ comp, fn_val, analyzed_code });
+    try comp.prelink_group.call(addFnToLinkSet, .{ comp, fn_val });
 }
 
 async fn addFnToLinkSet(comp: *Compilation, fn_val: *Value.Fn) Compilation.BuildError!void {

@@ -180,9 +180,9 @@ pub const Int = struct {
 
     pub fn dump(self: Int) void {
         for (self.limbs) |limb| {
-            debug.warn("{x} ", limb);
+            debug.warn("{x} ", .{limb});
         }
-        debug.warn("\n");
+        debug.warn("\n", .{});
     }
 
     /// Negate the sign of an Int.
@@ -268,7 +268,7 @@ pub const Int = struct {
     /// Sets an Int to value. Value must be an primitive integer type.
     pub fn set(self: *Int, value: var) Allocator.Error!void {
         self.assertWritable();
-        const T = @typeOf(value);
+        const T = @TypeOf(value);
 
         switch (@typeInfo(T)) {
             TypeId.Int => |info| {
@@ -477,9 +477,12 @@ pub const Int = struct {
             }
 
             var q = try self.clone();
+            defer q.deinit();
             q.abs();
             var r = try Int.init(allocator);
+            defer r.deinit();
             var b = try Int.initSet(allocator, limb_base);
+            defer b.deinit();
 
             while (q.len() >= 2) {
                 try Int.divTrunc(&q, &r, q, b);
@@ -522,7 +525,7 @@ pub const Int = struct {
         options: std.fmt.FormatOptions,
         context: var,
         comptime FmtError: type,
-        output: fn (@typeOf(context), []const u8) FmtError!void,
+        output: fn (@TypeOf(context), []const u8) FmtError!void,
     ) FmtError!void {
         self.assertWritable();
         // TODO look at fmt and support other bases
@@ -811,7 +814,7 @@ pub const Int = struct {
 
         var j: usize = 0;
         while (j < a_lo.len) : (j += 1) {
-            a_lo[j] = @inlineCall(addMulLimbWithCarry, a_lo[j], y[j], xi, &carry);
+            a_lo[j] = @call(.{ .modifier = .always_inline }, addMulLimbWithCarry, .{ a_lo[j], y[j], xi, &carry });
         }
 
         j = 0;
@@ -1214,7 +1217,11 @@ pub const Int = struct {
             const dst_i = src_i + limb_shift;
 
             const src_digit = a[src_i];
-            r[dst_i] = carry | @inlineCall(math.shr, Limb, src_digit, Limb.bit_count - @intCast(Limb, interior_limb_shift));
+            r[dst_i] = carry | @call(.{ .modifier = .always_inline }, math.shr, .{
+                Limb,
+                src_digit,
+                Limb.bit_count - @intCast(Limb, interior_limb_shift),
+            });
             carry = (src_digit << interior_limb_shift);
         }
 
@@ -1254,7 +1261,11 @@ pub const Int = struct {
 
             const src_digit = a[src_i];
             r[dst_i] = carry | (src_digit >> interior_limb_shift);
-            carry = @inlineCall(math.shl, Limb, src_digit, Limb.bit_count - @intCast(Limb, interior_limb_shift));
+            carry = @call(.{ .modifier = .always_inline }, math.shl, .{
+                Limb,
+                src_digit,
+                Limb.bit_count - @intCast(Limb, interior_limb_shift),
+            });
         }
     }
 

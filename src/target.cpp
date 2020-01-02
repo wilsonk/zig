@@ -180,6 +180,7 @@ static const Os os_list[] = {
     OsWASI,
     OsEmscripten,
     OsUefi,
+    OsOther,
 };
 
 // Coordinate with zig_llvm.h
@@ -268,6 +269,7 @@ Os target_os_enum(size_t index) {
 ZigLLVM_OSType get_llvm_os_type(Os os_type) {
     switch (os_type) {
         case OsFreestanding:
+        case OsOther:
             return ZigLLVM_UnknownOS;
         case OsAnanas:
             return ZigLLVM_Ananas;
@@ -425,6 +427,8 @@ const char *target_os_name(Os os_type) {
             return "freestanding";
         case OsUefi:
             return "uefi";
+        case OsOther:
+            return "other";
         case OsAnanas:
         case OsCloudABI:
         case OsDragonFly:
@@ -1005,6 +1009,7 @@ uint32_t target_arch_largest_atomic_bits(ZigLLVM_ArchType arch) {
 uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
     switch (target->os) {
         case OsFreestanding:
+        case OsOther:
             switch (target->arch) {
                 case ZigLLVM_msp430:
                     switch (id) {
@@ -1134,7 +1139,8 @@ bool target_allows_addr_zero(const ZigTarget *target) {
 const char *target_o_file_ext(const ZigTarget *target) {
     if (target->abi == ZigLLVM_MSVC ||
         (target->os == OsWindows && !target_abi_is_gnu(target->abi)) ||
-        target->os == OsUefi) {
+        target->os == OsUefi)
+    {
         return ".obj";
     } else {
         return ".o";
@@ -1376,6 +1382,7 @@ const char *target_dynamic_linker(const ZigTarget *target) {
         case OsUefi:
         case OsWindows:
         case OsEmscripten:
+        case OsOther:
             return nullptr;
 
         case OsAnanas:
@@ -1599,6 +1606,10 @@ bool target_supports_stack_probing(const ZigTarget *target) {
     return target->os != OsWindows && target->os != OsUefi && (target->arch == ZigLLVM_x86 || target->arch == ZigLLVM_x86_64);
 }
 
+bool target_supports_sanitize_c(const ZigTarget *target) {
+    return true;
+}
+
 bool target_requires_pic(const ZigTarget *target, bool linking_libc) {
   // This function returns whether non-pic code is completely invalid on the given target.
   return target_is_android(target) || target->os == OsWindows || target->os == OsUefi || target_os_requires_libc(target->os) ||
@@ -1650,6 +1661,7 @@ ZigLLVM_EnvironmentType target_default_abi(ZigLLVM_ArchType arch, Os os) {
         case OsContiki:
         case OsAMDPAL:
         case OsHermitCore:
+        case OsOther:
             return ZigLLVM_EABI;
         case OsOpenBSD:
         case OsMacOSX:

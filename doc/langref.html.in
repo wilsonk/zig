@@ -1,12 +1,13 @@
 <!doctype html>
-<html>
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <title>Documentation - The Zig Programming Language</title>
     <link rel="icon" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAgklEQVR4AWMYWuD7EllJIM4G4g4g5oIJ/odhOJ8wToOxSTXgNxDHoeiBMfA4+wGShjyYOCkG/IGqWQziEzYAoUAeiF9D5U+DxEg14DRU7jWIT5IBIOdCxf+A+CQZAAoopEB7QJwBCBwHiip8UYmRdrAlDpIMgApwQZNnNii5Dq0MBgCxxycBnwEd+wAAAABJRU5ErkJggg=="/>
-    <style type="text/css">
+    <style>
       body{
         font-family: system-ui, -apple-system, Roboto, "Segoe UI", sans-serif;
+        margin: 0;
       }
       a:not(:hover) {
         text-decoration: none;
@@ -80,9 +81,33 @@
           font-weight: bold;
       }
 
+      #main-wrapper {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+      }
+
+      #contents-wrapper {
+        flex-grow: 1;
+        padding: 0 2em;
+      }
+
       #contents {
         max-width: 60em;
         margin: auto;
+      }
+
+      #index {
+        padding: 0 1em;
+      }
+
+      @media screen and (min-width: 1025px) {
+        #main-wrapper {
+            flex-direction: row;
+        }
+        #contents-wrapper, #index {
+            overflow: auto;
+        }
       }
 
       h1 a, h2 a, h3 a, h4 a, h5 a {
@@ -155,17 +180,22 @@
     </style>
   </head>
   <body>
-    <a href="https://ziglang.org/documentation/0.1.1">0.1.1</a> |
-    <a href="https://ziglang.org/documentation/0.2.0">0.2.0</a> |
-    <a href="https://ziglang.org/documentation/0.3.0">0.3.0</a> |
-    <a href="https://ziglang.org/documentation/0.4.0">0.4.0</a> |
-    <a href="https://ziglang.org/documentation/0.5.0">0.5.0</a> |
-    master
-    <div id="contents">
+    <div id="main-wrapper">
+      <div id="index">
+        <a href="https://ziglang.org/documentation/0.1.1">0.1.1</a> |
+        <a href="https://ziglang.org/documentation/0.2.0">0.2.0</a> |
+        <a href="https://ziglang.org/documentation/0.3.0">0.3.0</a> |
+        <a href="https://ziglang.org/documentation/0.4.0">0.4.0</a> |
+        <a href="https://ziglang.org/documentation/0.5.0">0.5.0</a> |
+        master
+        <h1>Index</h1>
+        {#nav#}
+      </div>
+      <div id="contents-wrapper"><div id="contents">
       {#header_open|Introduction#}
       <p>
-      Zig is a general-purpose programming language for maintaining <strong>robust</strong>,
-      <strong>optimal</strong>, and <strong>reusable</strong> code.
+      Zig is a general-purpose programming language and toolchain for maintaining
+      <strong>robust</strong>, <strong>optimal</strong>, and <strong>reusable</strong> software.
       </p>
       <ul>
         <li><strong>Robust</strong> - behavior is correct even for edge cases such as out of memory.</li>
@@ -194,10 +224,6 @@
       </p>
       {#header_close#}
 
-      {#header_open|Index#}
-      {#nav#}
-      {#header_close#}
-
       {#header_open|Hello World#}
 
       {#code_begin|exe|hello#}
@@ -205,7 +231,7 @@ const std = @import("std");
 
 pub fn main() !void {
     const stdout = &std.io.getStdOut().outStream().stream;
-    try stdout.print("Hello, {}!\n", "world");
+    try stdout.print("Hello, {}!\n", .{"world"});
 }
       {#code_end#}
       <p>
@@ -217,7 +243,7 @@ pub fn main() !void {
 const warn = @import("std").debug.warn;
 
 pub fn main() void {
-    warn("Hello, world!\n");
+    warn("Hello, world!\n", .{});
 }
       {#code_end#}
       <p>
@@ -289,41 +315,50 @@ const assert = std.debug.assert;
 pub fn main() void {
     // integers
     const one_plus_one: i32 = 1 + 1;
-    warn("1 + 1 = {}\n", one_plus_one);
+    warn("1 + 1 = {}\n", .{one_plus_one});
 
     // floats
     const seven_div_three: f32 = 7.0 / 3.0;
-    warn("7.0 / 3.0 = {}\n", seven_div_three);
+    warn("7.0 / 3.0 = {}\n", .{seven_div_three});
 
     // boolean
-    warn("{}\n{}\n{}\n",
+    warn("{}\n{}\n{}\n", .{
         true and false,
         true or false,
-        !true);
+        !true,
+    });
 
     // optional
     var optional_value: ?[]const u8 = null;
     assert(optional_value == null);
 
-    warn("\noptional 1\ntype: {}\nvalue: {}\n",
-        @typeName(@typeOf(optional_value)), optional_value);
+    warn("\noptional 1\ntype: {}\nvalue: {}\n", .{
+        @typeName(@TypeOf(optional_value)),
+        optional_value,
+    });
 
     optional_value = "hi";
     assert(optional_value != null);
 
-    warn("\noptional 2\ntype: {}\nvalue: {}\n",
-        @typeName(@typeOf(optional_value)), optional_value);
+    warn("\noptional 2\ntype: {}\nvalue: {}\n", .{
+        @typeName(@TypeOf(optional_value)),
+        optional_value,
+    });
 
     // error union
     var number_or_error: anyerror!i32 = error.ArgNotFound;
 
-    warn("\nerror union 1\ntype: {}\nvalue: {}\n",
-        @typeName(@typeOf(number_or_error)), number_or_error);
+    warn("\nerror union 1\ntype: {}\nvalue: {}\n", .{
+        @typeName(@TypeOf(number_or_error)),
+        number_or_error,
+    });
 
     number_or_error = 1234;
 
-    warn("\nerror union 2\ntype: {}\nvalue: {}\n",
-        @typeName(@typeOf(number_or_error)), number_or_error);
+    warn("\nerror union 2\ntype: {}\nvalue: {}\n", .{
+        @typeName(@TypeOf(number_or_error)),
+        number_or_error,
+    });
 }
       {#code_end#}
       {#header_open|Primitive Types#}
@@ -511,7 +546,7 @@ pub fn main() void {
       </div>
       <p>
       In addition to the integer types above, arbitrary bit-width integers can be referenced by using
-      an identifier of <code>i</code> or </code>u</code> followed by digits. For example, the identifier
+      an identifier of <code>i</code> or <code>u</code> followed by digits. For example, the identifier
       {#syntax#}i7{#endsyntax#} refers to a signed 7-bit integer. The maximum allowed bit-width of an
       integer type is {#syntax#}65535{#endsyntax#}.
       </p>
@@ -563,7 +598,7 @@ const mem = @import("std").mem;
 
 test "string literals" {
     const bytes = "hello";
-    assert(@typeOf(bytes) == *const [5:0]u8);
+    assert(@TypeOf(bytes) == *const [5:0]u8);
     assert(bytes.len == 5);
     assert(bytes[1] == 'e');
     assert(bytes[5] == 0);
@@ -878,7 +913,7 @@ fn divide(a: i32, b: i32) i32 {
       </p>
       <p>
       Zig supports arbitrary bit-width integers, referenced by using
-      an identifier of <code>i</code> or </code>u</code> followed by digits. For example, the identifier
+      an identifier of <code>i</code> or <code>u</code> followed by digits. For example, the identifier
       {#syntax#}i7{#endsyntax#} refers to a signed 7-bit integer. The maximum allowed bit-width of an
       integer type is {#syntax#}65535{#endsyntax#}.
       </p>
@@ -954,8 +989,8 @@ extern fn foo_optimized(x: f64) f64;
 
 pub fn main() void {
     const x = 0.001;
-    warn("optimized = {}\n", foo_optimized(x));
-    warn("strict = {}\n", foo_strict(x));
+    warn("optimized = {}\n", .{foo_optimized(x)});
+    warn("strict = {}\n", .{foo_strict(x)});
 }
       {#code_end#}
       {#see_also|@setFloatMode|Division by Zero#}
@@ -1019,7 +1054,7 @@ a +%= b{#endsyntax#}</pre></td>
             </ul>
           </td>
           <td>
-            <pre>{#syntax#}u32(std.math.maxInt(u32)) +% 1 == 0{#endsyntax#}</pre>
+            <pre>{#syntax#}@as(u32, std.math.maxInt(u32)) +% 1 == 0{#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1058,7 +1093,7 @@ a -%= b{#endsyntax#}</pre></td>
             </ul>
           </td>
           <td>
-            <pre>{#syntax#}u32(0) -% 1 == std.math.maxInt(u32){#endsyntax#}</pre>
+            <pre>{#syntax#}@as(u32, 0) -% 1 == std.math.maxInt(u32){#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1093,7 +1128,7 @@ a -%= b{#endsyntax#}</pre></td>
             </ul>
           </td>
           <td>
-            <pre>{#syntax#}-%i32(std.math.minInt(i32)) == std.math.minInt(i32){#endsyntax#}</pre>
+            <pre>{#syntax#}-%@as(i32, std.math.minInt(i32)) == std.math.minInt(i32){#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1132,7 +1167,7 @@ a *%= b{#endsyntax#}</pre></td>
             </ul>
           </td>
           <td>
-            <pre>{#syntax#}u8(200) *% 2 == 144{#endsyntax#}</pre>
+            <pre>{#syntax#}@as(u8, 200) *% 2 == 144{#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1284,7 +1319,7 @@ a ^= b{#endsyntax#}</pre></td>
             Bitwise NOT.
           </td>
           <td>
-            <pre>{#syntax#}~u8(0b10101111) == 0b01010000{#endsyntax#}</pre>
+            <pre>{#syntax#}~@as(u8, 0b10101111) == 0b01010000{#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -1793,7 +1828,7 @@ const assert = std.debug.assert;
 test "null terminated array" {
     const array = [_:0]u8 {1, 2, 3, 4};
 
-    assert(@typeOf(array) == [4:0]u8);
+    assert(@TypeOf(array) == [4:0]u8);
     assert(array.len == 4);
     assert(array[4] == 0);
 }
@@ -1876,12 +1911,12 @@ test "address of syntax" {
     assert(x_ptr.* == 1234);
 
     // When you get the address of a const variable, you get a const pointer to a single item.
-    assert(@typeOf(x_ptr) == *const i32);
+    assert(@TypeOf(x_ptr) == *const i32);
 
     // If you want to mutate the value, you'd need an address of a mutable variable:
     var y: i32 = 5678;
     const y_ptr = &y;
-    assert(@typeOf(y_ptr) == *i32);
+    assert(@TypeOf(y_ptr) == *i32);
     y_ptr.* += 1;
     assert(y_ptr.* == 5679);
 }
@@ -1892,7 +1927,7 @@ test "pointer array access" {
     // does not support pointer arithmetic.
     var array = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
     const ptr = &array[2];
-    assert(@typeOf(ptr) == *u8);
+    assert(@TypeOf(ptr) == *u8);
 
     assert(array[2] == 3);
     ptr.* += 1;
@@ -1942,10 +1977,10 @@ test "comptime pointers" {
 const assert = @import("std").debug.assert;
 
 test "@ptrToInt and @intToPtr" {
-    const ptr = @intToPtr(*i32, 0xdeadbeef);
+    const ptr = @intToPtr(*i32, 0xdeadbee0);
     const addr = @ptrToInt(ptr);
-    assert(@typeOf(addr) == usize);
-    assert(addr == 0xdeadbeef);
+    assert(@TypeOf(addr) == usize);
+    assert(addr == 0xdeadbee0);
 }
       {#code_end#}
       <p>Zig is able to preserve memory addresses in comptime code, as long as
@@ -1957,10 +1992,10 @@ test "comptime @intToPtr" {
     comptime {
         // Zig is able to do this at compile-time, as long as
         // ptr is never dereferenced.
-        const ptr = @intToPtr(*i32, 0xdeadbeef);
+        const ptr = @intToPtr(*i32, 0xdeadbee0);
         const addr = @ptrToInt(ptr);
-        assert(@typeOf(addr) == usize);
-        assert(addr == 0xdeadbeef);
+        assert(@TypeOf(addr) == usize);
+        assert(addr == 0xdeadbee0);
     }
 }
       {#code_end#}
@@ -1975,7 +2010,7 @@ const assert = @import("std").debug.assert;
 
 test "volatile" {
     const mmio_ptr = @intToPtr(*volatile u8, 0x12345678);
-    assert(@typeOf(mmio_ptr) == *volatile u8);
+    assert(@TypeOf(mmio_ptr) == *volatile u8);
 }
       {#code_end#}
       <p>
@@ -2032,8 +2067,8 @@ const builtin = @import("builtin");
 
 test "variable alignment" {
     var x: i32 = 1234;
-    const align_of_i32 = @alignOf(@typeOf(x));
-    assert(@typeOf(&x) == *i32);
+    const align_of_i32 = @alignOf(@TypeOf(x));
+    assert(@TypeOf(&x) == *i32);
     assert(*i32 == *align(align_of_i32) i32);
     if (builtin.arch == builtin.Arch.x86_64) {
         assert((*i32).alignment == 4);
@@ -2054,10 +2089,10 @@ const assert = @import("std").debug.assert;
 var foo: u8 align(4) = 100;
 
 test "global variable alignment" {
-    assert(@typeOf(&foo).alignment == 4);
-    assert(@typeOf(&foo) == *align(4) u8);
+    assert(@TypeOf(&foo).alignment == 4);
+    assert(@TypeOf(&foo) == *align(4) u8);
     const slice = @as(*[1]u8, &foo)[0..];
-    assert(@typeOf(slice) == []align(4) u8);
+    assert(@TypeOf(slice) == []align(4) u8);
 }
 
 fn derp() align(@sizeOf(usize) * 2) i32 { return 1234; }
@@ -2066,8 +2101,8 @@ fn noop4() align(4) void {}
 
 test "function alignment" {
     assert(derp() == 1234);
-    assert(@typeOf(noop1) == fn() align(1) void);
-    assert(@typeOf(noop4) == fn() align(4) void);
+    assert(@TypeOf(noop1) == fn() align(1) void);
+    assert(@TypeOf(noop4) == fn() align(4) void);
     noop1();
     noop4();
 }
@@ -2098,8 +2133,10 @@ fn foo(bytes: []u8) u32 {
       <p>
       This pointer attribute allows a pointer to have address zero. This is only ever needed on the
       freestanding OS target, where the address zero is mappable. If you want to represent null pointers, use
-      {#link|Optional Pointers#} instead. In this code example, if the pointer did not have the
-      {#syntax#}allowzero{#endsyntax#} attribute, this would be a {#link|Pointer Cast Invalid Null#} panic:
+      {#link|Optional Pointers#} instead. {#link|Optional Pointers#} with {#syntax#}allowzero{#endsyntax#}
+      are not the same size as pointers. In this code example, if the pointer
+      did not have the {#syntax#}allowzero{#endsyntax#} attribute, this would be a
+      {#link|Pointer Cast Invalid Null#} panic:
       </p>
       {#code_begin|test|allowzero#}
 const std = @import("std");
@@ -2153,8 +2190,8 @@ test "basic slices" {
 
     // Using the address-of operator on a slice gives a pointer to a single
     // item, while using the `ptr` field gives an unknown length pointer.
-    assert(@typeOf(slice.ptr) == [*]i32);
-    assert(@typeOf(&slice[0]) == *i32);
+    assert(@TypeOf(slice.ptr) == [*]i32);
+    assert(@TypeOf(&slice[0]) == *i32);
     assert(@ptrToInt(slice.ptr) == @ptrToInt(&slice[0]));
 
     // Slices have array bounds checking. If you try to access something out
@@ -2182,7 +2219,7 @@ test "using slices for strings" {
     // You can use slice syntax on an array to convert an array into a slice.
     const all_together_slice = all_together[0..];
     // String concatenation example.
-    const hello_world = try fmt.bufPrint(all_together_slice, "{} {}", hello, world);
+    const hello_world = try fmt.bufPrint(all_together_slice, "{} {}", .{hello, world});
 
     // Generally, you can use UTF-8 and not worry about whether something is a
     // string. If you don't need to deal with individual characters, no need
@@ -2199,7 +2236,7 @@ test "slice pointer" {
     slice[2] = 3;
     assert(slice[2] == 3);
     // The slice is mutable because we sliced a mutable pointer.
-    assert(@typeOf(slice) == []u8);
+    assert(@TypeOf(slice) == []u8);
 
     // You can also slice a slice:
     const slice2 = slice[2..3];
@@ -2623,9 +2660,9 @@ const std = @import("std");
 
 pub fn main() void {
     const Foo = struct {};
-    std.debug.warn("variable: {}\n", @typeName(Foo));
-    std.debug.warn("anonymous: {}\n", @typeName(struct {}));
-    std.debug.warn("function: {}\n", @typeName(List(i32)));
+    std.debug.warn("variable: {}\n", .{@typeName(Foo)});
+    std.debug.warn("anonymous: {}\n", .{@typeName(struct {})});
+    std.debug.warn("function: {}\n", .{@typeName(List(i32))});
 }
 
 fn List(comptime T: type) type {
@@ -3557,7 +3594,7 @@ test "for basics" {
     // This is zero-indexed.
     var sum2: i32 = 0;
     for (items) |value, i| {
-        assert(@typeOf(i) == usize);
+        assert(@TypeOf(i) == usize);
         sum2 += @intCast(i32, i);
     }
     assert(sum2 == 10);
@@ -3677,6 +3714,14 @@ fn typeNameLength(comptime T: type) usize {
 
 const assert = @import("std").debug.assert;
 
+test "if expression" {
+    // If expressions are used instead of a ternary expression.
+    const a: u32 = 5;
+    const b: u32 = 4;
+    const result = if (a != b) 47 else 3089;
+    assert(result == 47);
+}
+
 test "if boolean" {
     // If expressions test boolean conditions.
     const a: u32 = 5;
@@ -3688,10 +3733,6 @@ test "if boolean" {
     } else {
         unreachable;
     }
-
-    // If expressions are used instead of a ternary expression.
-    const result = if (a != b) 47 else 3089;
-    assert(result == 47);
 }
 
 test "if optional" {
@@ -3806,18 +3847,18 @@ test "defer basics" {
 // If multiple defer statements are specified, they will be executed in
 // the reverse order they were run.
 fn deferUnwindExample() void {
-    warn("\n");
+    warn("\n", .{});
 
     defer {
-        warn("1 ");
+        warn("1 ", .{});
     }
     defer {
-        warn("2 ");
+        warn("2 ", .{});
     }
     if (false) {
         // defers are not run if they are never executed.
         defer {
-            warn("3 ");
+            warn("3 ", .{});
         }
     }
 }
@@ -3832,15 +3873,15 @@ test "defer unwinding" {
 // This is especially useful in allowing a function to clean up properly
 // on error, and replaces goto error handling tactics as seen in c.
 fn deferErrorExample(is_error: bool) !void {
-    warn("\nstart of function\n");
+    warn("\nstart of function\n", .{});
 
     // This will always be executed on exit
     defer {
-        warn("end of function\n");
+        warn("end of function\n", .{});
     }
 
     errdefer {
-        warn("encountered an error!\n");
+        warn("encountered an error!\n", .{});
     }
 
     if (is_error) {
@@ -3900,7 +3941,7 @@ test "type of unreachable" {
         // However this assertion will still fail because
         // evaluating unreachable at compile-time is a compile error.
 
-        assert(@typeOf(unreachable) == noreturn);
+        assert(@TypeOf(unreachable) == noreturn);
     }
 }
       {#code_end#}
@@ -4009,7 +4050,7 @@ test "function" {
 const assert = @import("std").debug.assert;
 
 comptime {
-    assert(@typeOf(foo) == fn()void);
+    assert(@TypeOf(foo) == fn()void);
     assert(@sizeOf(fn()void) == @sizeOf(?fn()void));
 }
 
@@ -4053,35 +4094,35 @@ test "pass struct to function" {
       </p>
       {#header_close#}
       {#header_open|Function Parameter Type Inference#}
-      <p> 
-      Function parameters can be declared with {#syntax#}var{#endsyntax#} in place of the type. 
+      <p>
+      Function parameters can be declared with {#syntax#}var{#endsyntax#} in place of the type.
       In this case the parameter types will be inferred when the function is called.
-      Use {#link|@typeOf#} and {#link|@typeInfo#} to get information about the inferred type.
+      Use {#link|@TypeOf#} and {#link|@typeInfo#} to get information about the inferred type.
       </p>
       {#code_begin|test#}
 const assert = @import("std").debug.assert;
 
-fn addFortyTwo(x: var) @typeOf(x) {
+fn addFortyTwo(x: var) @TypeOf(x) {
     return x + 42;
 }
 
 test "fn type inference" {
     assert(addFortyTwo(1) == 43);
-    assert(@typeOf(addFortyTwo(1)) == comptime_int);
+    assert(@TypeOf(addFortyTwo(1)) == comptime_int);
     var y: i64 = 2;
     assert(addFortyTwo(y) == 44);
-    assert(@typeOf(addFortyTwo(y)) == i64);
+    assert(@TypeOf(addFortyTwo(y)) == i64);
 }
       {#code_end#}
-      
+
       {#header_close#}
       {#header_open|Function Reflection#}
       {#code_begin|test#}
 const assert = @import("std").debug.assert;
 
 test "fn reflection" {
-    assert(@typeOf(assert).ReturnType == void);
-    assert(@typeOf(assert).is_var_args == false);
+    assert(@TypeOf(assert).ReturnType == void);
+    assert(@TypeOf(assert).is_var_args == false);
 }
       {#code_end#}
       {#header_close#}
@@ -4381,10 +4422,10 @@ test "error union" {
     foo = error.SomeError;
 
     // Use compile-time reflection to access the payload type of an error union:
-    comptime assert(@typeOf(foo).Payload == i32);
+    comptime assert(@TypeOf(foo).Payload == i32);
 
     // Use compile-time reflection to access the error set type of an error union:
-    comptime assert(@typeOf(foo).ErrorSet == anyerror);
+    comptime assert(@TypeOf(foo).ErrorSet == anyerror);
 }
       {#code_end#}
       {#header_open|Merging Error Sets#}
@@ -4761,7 +4802,7 @@ test "optional type" {
     foo = 1234;
 
     // Use compile-time reflection to access the child type of the optional:
-    comptime assert(@typeOf(foo).Child == i32);
+    comptime assert(@TypeOf(foo).Child == i32);
 }
       {#code_end#}
       {#header_close#}
@@ -5145,7 +5186,7 @@ test "peer resolve int widening" {
     var b: i16 = 34;
     var c = a + b;
     assert(c == 46);
-    assert(@typeOf(c) == i16);
+    assert(@TypeOf(c) == i16);
 }
 
 test "peer resolve arrays of different size to const slice" {
@@ -5223,8 +5264,8 @@ fn peerTypeEmptyArrayAndSliceAndError(a: bool, slice: []u8) anyerror![]u8 {
 }
 
 test "peer type resolution: *const T and ?*T" {
-    const a = @intToPtr(*const usize, 0x123456789);
-    const b = @intToPtr(?*usize, 0x123456789);
+    const a = @intToPtr(*const usize, 0x123456780);
+    const b = @intToPtr(?*usize, 0x123456780);
     assert(a == b);
     assert(b == a);
 }
@@ -5444,8 +5485,6 @@ fn gimmeTheBiggerInteger(a: u64, b: u64) u64 {
         <li>At the callsite, the value must be known at compile-time, or it is a compile error.</li>
         <li>In the function definition, the value is known at compile-time.</li>
       </ul>
-      <p>
-      </p>
       <p>
       For example, if we were to introduce another function to the above snippet:
       </p>
@@ -5845,7 +5884,7 @@ const a_number: i32 = 1234;
 const a_string = "foobar";
 
 pub fn main() void {
-    warn("here is a string: '{}' here is a number: {}\n", a_string, a_number);
+    warn("here is a string: '{}' here is a number: {}\n", .{a_string, a_number});
 }
       {#code_end#}
 
@@ -5855,7 +5894,7 @@ pub fn main() void {
 
       {#code_begin|syntax#}
 /// Calls print and then flushes the buffer.
-pub fn printf(self: *OutStream, comptime format: []const u8, args: ...) anyerror!void {
+pub fn printf(self: *OutStream, comptime format: []const u8, args: var) anyerror!void {
     const State = enum {
         Start,
         OpenBrace,
@@ -5942,7 +5981,7 @@ pub fn printf(self: *OutStream, arg0: i32, arg1: []const u8) !void {
       </p>
       {#code_begin|syntax#}
 pub fn printValue(self: *OutStream, value: var) !void {
-    const T = @typeOf(value);
+    const T = @TypeOf(value);
     if (@isInteger(T)) {
         return self.printInt(T, value);
     } else if (@isFloat(T)) {
@@ -5962,8 +6001,11 @@ const a_number: i32 = 1234;
 const a_string = "foobar";
 
 test "printf too many arguments" {
-    warn("here is a string: '{}' here is a number: {}\n",
-        a_string, a_number, a_number);
+    warn("here is a string: '{}' here is a number: {}\n", .{
+        a_string,
+        a_number,
+        a_number,
+    });
 }
       {#code_end#}
       <p>
@@ -5981,7 +6023,7 @@ const a_string = "foobar";
 const fmt = "here is a string: '{}' here is a number: {}\n";
 
 pub fn main() void {
-    warn(fmt, a_string, a_number);
+    warn(fmt, .{a_string, a_number});
 }
       {#code_end#}
       <p>
@@ -6006,7 +6048,7 @@ pub fn main() void {
       {#target_linux_x86_64#}
 pub fn main() noreturn {
     const msg = "hello world\n";
-    _ = syscall3(SYS_write, STDOUT_FILENO, @ptrToInt(&msg), msg.len);
+    _ = syscall3(SYS_write, STDOUT_FILENO, @ptrToInt(msg), msg.len);
     _ = syscall1(SYS_exit, 0);
     unreachable;
 }
@@ -6255,7 +6297,7 @@ test "async function suspend with block" {
 
 fn testSuspendBlock() void {
     suspend {
-        comptime assert(@typeOf(@frame()) == *@Frame(testSuspendBlock));
+        comptime assert(@TypeOf(@frame()) == *@Frame(testSuspendBlock));
         the_frame = @frame();
     }
     result = true;
@@ -6322,7 +6364,7 @@ test "async and await" {
 
 fn amain() void {
     var frame = async func();
-    comptime assert(@typeOf(frame) == @Frame(func));
+    comptime assert(@TypeOf(frame) == @Frame(func));
 
     const ptr: anyframe->void = &frame;
     const any_ptr: anyframe = ptr;
@@ -6419,7 +6461,7 @@ pub fn main() void {
 
 fn amainWrap() void {
     amain() catch |e| {
-        std.debug.warn("{}\n", e);
+        std.debug.warn("{}\n", .{e});
         if (@errorReturnTrace()) |trace| {
             std.debug.dumpStackTrace(trace.*);
         }
@@ -6449,8 +6491,8 @@ fn amain() !void {
     const download_text = try await download_frame;
     defer allocator.free(download_text);
 
-    std.debug.warn("download_text: {}\n", download_text);
-    std.debug.warn("file_text: {}\n", file_text);
+    std.debug.warn("download_text: {}\n", .{download_text});
+    std.debug.warn("file_text: {}\n", .{file_text});
 }
 
 var global_download_frame: anyframe = undefined;
@@ -6460,7 +6502,7 @@ fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
     suspend {
         global_download_frame = @frame();
     }
-    std.debug.warn("fetchUrl returning\n");
+    std.debug.warn("fetchUrl returning\n", .{});
     return result;
 }
 
@@ -6471,7 +6513,7 @@ fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
     suspend {
         global_file_frame = @frame();
     }
-    std.debug.warn("readFile returning\n");
+    std.debug.warn("readFile returning\n", .{});
     return result;
 }
       {#code_end#}
@@ -6489,7 +6531,7 @@ pub fn main() void {
 
 fn amainWrap() void {
     amain() catch |e| {
-        std.debug.warn("{}\n", e);
+        std.debug.warn("{}\n", .{e});
         if (@errorReturnTrace()) |trace| {
             std.debug.dumpStackTrace(trace.*);
         }
@@ -6519,21 +6561,21 @@ fn amain() !void {
     const download_text = try await download_frame;
     defer allocator.free(download_text);
 
-    std.debug.warn("download_text: {}\n", download_text);
-    std.debug.warn("file_text: {}\n", file_text);
+    std.debug.warn("download_text: {}\n", .{download_text});
+    std.debug.warn("file_text: {}\n", .{file_text});
 }
 
 fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
     const result = try std.mem.dupe(allocator, u8, "this is the downloaded url contents");
     errdefer allocator.free(result);
-    std.debug.warn("fetchUrl returning\n");
+    std.debug.warn("fetchUrl returning\n", .{});
     return result;
 }
 
 fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
     const result = try std.mem.dupe(allocator, u8, "this is the file contents");
     errdefer allocator.free(result);
-    std.debug.warn("readFile returning\n");
+    std.debug.warn("readFile returning\n", .{});
     return result;
 }
       {#code_end#}
@@ -6546,7 +6588,7 @@ fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
       {#header_close#}
 
       {#header_close#}
-      {#header_open|Builtin Functions|3col#}
+        {#header_open|Builtin Functions|2col#}
       <p>
       Builtin functions are provided by the compiler and are prefixed with <code>@</code>.
       The {#syntax#}comptime{#endsyntax#} keyword on a parameter means that the parameter must be known
@@ -6657,7 +6699,7 @@ async fn func(y: *i32) void {
       This builtin function atomically dereferences a pointer and returns the value.
       </p>
       <p>
-      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#}
+      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#}, a float,
       an integer whose bit count meets these requirements:
       </p>
       <ul>
@@ -6692,7 +6734,7 @@ async fn func(y: *i32) void {
       Supported operations:
       </p>
       <ul>
-        <li>{#syntax#}.Xchg{#endsyntax#} - stores the operand unmodified.</li>
+        <li>{#syntax#}.Xchg{#endsyntax#} - stores the operand unmodified. Supports enums, integers and floats.</li>
         <li>{#syntax#}.Add{#endsyntax#} - for integers, twos complement wraparound addition.
             Also supports {#link|Floats#}.</li>
         <li>{#syntax#}.Sub{#endsyntax#} - for integers, twos complement wraparound subtraction.
@@ -6711,7 +6753,7 @@ async fn func(y: *i32) void {
       This builtin function atomically stores a value.
       </p>
       <p>
-      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#}
+      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#}, a float,
       an integer whose bit count meets these requirements:
       </p>
       <ul>
@@ -6730,7 +6772,7 @@ async fn func(y: *i32) void {
       Converts a value of one type to another type.
       </p>
       <p>
-      Asserts that {#syntax#}@sizeOf(@typeOf(value)) == @sizeOf(DestType){#endsyntax#}.
+      Asserts that {#syntax#}@sizeOf(@TypeOf(value)) == @sizeOf(DestType){#endsyntax#}.
       </p>
       <p>
       Asserts that {#syntax#}@typeId(DestType) != @import("builtin").TypeId.Pointer{#endsyntax#}. Use {#syntax#}@ptrCast{#endsyntax#} or {#syntax#}@intToPtr{#endsyntax#} if you need this.
@@ -6841,6 +6883,102 @@ async fn func(y: *i32) void {
       </p>
       {#header_close#}
 
+      {#header_open|@call#}
+      <pre>{#syntax#}@call(options: std.builtin.CallOptions, function: var, args: var) var{#endsyntax#}</pre>
+      <p>
+      Calls a function, in the same way that invoking an expression with parentheses does:
+      </p>
+      {#code_begin|test|call#}
+const assert = @import("std").debug.assert;
+
+test "noinline function call" {
+    assert(@call(.{}, add, .{3, 9}) == 12);
+}
+
+fn add(a: i32, b: i32) i32 {
+    return a + b;
+}
+      {#code_end#}
+      <p>
+      {#syntax#}@call{#endsyntax#} allows more flexibility than normal function call syntax does. The
+      {#syntax#}CallOptions{#endsyntax#} struct is reproduced here:
+      </p>
+      {#code_begin|syntax#}
+pub const CallOptions = struct {
+    modifier: Modifier = .auto,
+    stack: ?[]align(std.Target.stack_align) u8 = null,
+
+    pub const Modifier = enum {
+        /// Equivalent to function call syntax.
+        auto,
+
+        /// Equivalent to async keyword used with function call syntax.
+        async_kw,
+
+        /// Prevents tail call optimization. This guarantees that the return
+        /// address will point to the callsite, as opposed to the callsite's
+        /// callsite. If the call is otherwise required to be tail-called
+        /// or inlined, a compile error is emitted instead.
+        never_tail,
+
+        /// Guarantees that the call will not be inlined. If the call is
+        /// otherwise required to be inlined, a compile error is emitted instead.
+        never_inline,
+
+        /// Asserts that the function call will not suspend. This allows a
+        /// non-async function to call an async function.
+        no_async,
+
+        /// Guarantees that the call will be generated with tail call optimization.
+        /// If this is not possible, a compile error is emitted instead.
+        always_tail,
+
+        /// Guarantees that the call will inlined at the callsite.
+        /// If this is not possible, a compile error is emitted instead.
+        always_inline,
+
+        /// Evaluates the call at compile-time. If the call cannot be completed at
+        /// compile-time, a compile error is emitted instead.
+        compile_time,
+    };
+};
+      {#code_end#}
+
+      {#header_open|Calling with a New Stack#}
+      <p>
+      When the {#syntax#}stack{#endsyntax#} option is provided, instead of using the same stack as the caller, the function uses the provided stack.
+      </p>
+      {#code_begin|test|new_stack_call#}
+const std = @import("std");
+const assert = std.debug.assert;
+
+var new_stack_bytes: [1024]u8 align(16) = undefined;
+
+test "calling a function with a new stack" {
+    const arg = 1234;
+
+    const a = @call(.{.stack = new_stack_bytes[0..512]}, targetFunction, .{arg});
+    const b = @call(.{.stack = new_stack_bytes[512..]}, targetFunction, .{arg});
+    _ = targetFunction(arg);
+
+    assert(arg == 1234);
+    assert(a < b);
+}
+
+fn targetFunction(x: i32) usize {
+    assert(x == 1234);
+
+    var local_variable: i32 = 42;
+    const ptr = &local_variable;
+    ptr.* += 1;
+
+    assert(local_variable == 43);
+    return @ptrToInt(ptr);
+}
+      {#code_end#}
+      {#header_close#}
+      {#header_close#}
+
       {#header_open|@cDefine#}
       <pre>{#syntax#}@cDefine(comptime name: []u8, value){#endsyntax#}</pre>
       <p>
@@ -6891,7 +7029,7 @@ async fn func(y: *i32) void {
       This function can only occur inside {#syntax#}@cImport{#endsyntax#}.
       </p>
       <p>
-      This appends <code>#include <$path>\n</code> to the {#syntax#}c_import{#endsyntax#}
+      This appends <code>#include &lt;$path&gt;\n</code> to the {#syntax#}c_import{#endsyntax#}
       temporary buffer.
       </p>
       {#see_also|Import from C Header File|@cImport|@cDefine|@cUndef#}
@@ -6939,7 +7077,7 @@ fn cmpxchgStrongButNotAtomic(comptime T: type, ptr: *T, expected_value: T, new_v
       <p>
       {#syntax#}AtomicOrder{#endsyntax#} can be found with {#syntax#}@import("builtin").AtomicOrder{#endsyntax#}.
       </p>
-      <p>{#syntax#}@typeOf(ptr).alignment{#endsyntax#} must be {#syntax#}>= @sizeOf(T).{#endsyntax#}</p>
+      <p>{#syntax#}@TypeOf(ptr).alignment{#endsyntax#} must be {#syntax#}>= @sizeOf(T).{#endsyntax#}</p>
       {#see_also|Compile Variables|cmpxchgWeak#}
       {#header_close#}
       {#header_open|@cmpxchgWeak#}
@@ -6967,7 +7105,7 @@ fn cmpxchgWeakButNotAtomic(comptime T: type, ptr: *T, expected_value: T, new_val
       <p>
       {#syntax#}AtomicOrder{#endsyntax#} can be found with {#syntax#}@import("builtin").AtomicOrder{#endsyntax#}.
       </p>
-      <p>{#syntax#}@typeOf(ptr).alignment{#endsyntax#} must be {#syntax#}>= @sizeOf(T).{#endsyntax#}</p>
+      <p>{#syntax#}@TypeOf(ptr).alignment{#endsyntax#} must be {#syntax#}>= @sizeOf(T).{#endsyntax#}</p>
       {#see_also|Compile Variables|cmpxchgStrong#}
       {#header_close#}
 
@@ -7012,10 +7150,9 @@ const num1 = blk: {
 test "main" {
     @compileLog("comptime in main");
 
-    warn("Runtime in main, num1 = {}.\n", num1);
+    warn("Runtime in main, num1 = {}.\n", .{num1});
 }
       {#code_end#}
-      </p>
       <p>
       will ouput:
       </p>
@@ -7034,7 +7171,7 @@ const num1 = blk: {
 };
 
 test "main" {
-    warn("Runtime in main, num1 = {}.\n", num1);
+    warn("Runtime in main, num1 = {}.\n", .{num1});
 }
       {#code_end#}
       {#header_close#}
@@ -7427,27 +7564,6 @@ test "@hasDecl" {
       {#see_also|Compile Variables|@embedFile#}
       {#header_close#}
 
-      {#header_open|@inlineCall#}
-      <pre>{#syntax#}@inlineCall(function: X, args: ...) Y{#endsyntax#}</pre>
-      <p>
-      This calls a function, in the same way that invoking an expression with parentheses does:
-      </p>
-      {#code_begin|test#}
-const assert = @import("std").debug.assert;
-
-test "inline function call" {
-    assert(@inlineCall(add, 3, 9) == 12);
-}
-
-fn add(a: i32, b: i32) i32 { return a + b; }
-      {#code_end#}
-      <p>
-      Unlike a normal function call, however, {#syntax#}@inlineCall{#endsyntax#} guarantees that the call
-      will be inlined. If the call cannot be inlined, a compile error is emitted.
-      </p>
-      {#see_also|@noInlineCall#}
-      {#header_close#}
-
       {#header_open|@intCast#}
       <pre>{#syntax#}@intCast(comptime DestType: type, int: var) DestType{#endsyntax#}</pre>
       <p>
@@ -7603,71 +7719,6 @@ mem.set(u8, dest, c);{#endsyntax#}</pre>
           stores the overflowed bits in {#syntax#}result{#endsyntax#} and returns {#syntax#}true{#endsyntax#}.
                   If no overflow or underflow occurs, returns {#syntax#}false{#endsyntax#}.
       </p>
-      {#header_close#}
-
-      {#header_open|@newStackCall#}
-      <pre>{#syntax#}@newStackCall(new_stack: []align(target_stack_align) u8, function: var, args: ...) var{#endsyntax#}</pre>
-      <p>
-      This calls a function, in the same way that invoking an expression with parentheses does. However,
-      instead of using the same stack as the caller, the function uses the stack provided in the {#syntax#}new_stack{#endsyntax#}
-      parameter.
-      </p>
-      <p>
-      The new stack must be aligned to {#syntax#}target_stack_align{#endsyntax#} bytes. This is a target-specific
-      number. A safe value that will work on all targets is {#syntax#}16{#endsyntax#}. This value can
-      also be obtained by using {#link|@sizeOf#} on the {#link|@Frame#} type of {#link|Async Functions#}.
-      </p>
-      {#code_begin|test#}
-const std = @import("std");
-const assert = std.debug.assert;
-
-var new_stack_bytes: [1024]u8 align(16) = undefined;
-
-test "calling a function with a new stack" {
-    const arg = 1234;
-
-    const a = @newStackCall(new_stack_bytes[0..512], targetFunction, arg);
-    const b = @newStackCall(new_stack_bytes[512..], targetFunction, arg);
-    _ = targetFunction(arg);
-
-    assert(arg == 1234);
-    assert(a < b);
-}
-
-fn targetFunction(x: i32) usize {
-    assert(x == 1234);
-
-    var local_variable: i32 = 42;
-    const ptr = &local_variable;
-    ptr.* += 1;
-
-    assert(local_variable == 43);
-    return @ptrToInt(ptr);
-}
-      {#code_end#}
-      {#header_close#}
-
-      {#header_open|@noInlineCall#}
-      <pre>{#syntax#}@noInlineCall(function: var, args: ...) var{#endsyntax#}</pre>
-      <p>
-      This calls a function, in the same way that invoking an expression with parentheses does:
-      </p>
-      {#code_begin|test#}
-const assert = @import("std").debug.assert;
-
-test "noinline function call" {
-    assert(@noInlineCall(add, 3, 9) == 12);
-}
-
-fn add(a: i32, b: i32) i32 {
-    return a + b;
-}
-      {#code_end#}
-      <p>
-      Unlike a normal function call, however, {#syntax#}@noInlineCall{#endsyntax#} guarantees that the call
-      will not be inlined. If the call must be inlined, a compile error is emitted.
-      </p>
-      {#see_also|@inlineCall#}
       {#header_close#}
 
       {#header_open|@OpaqueType#}
@@ -7947,7 +7998,7 @@ test "@setRuntimeSafety" {
       {#syntax#}b{#endsyntax#}. Positive numbers select from {#syntax#}a{#endsyntax#} starting at 0.
       Negative values select from {#syntax#}b{#endsyntax#}, starting at {#syntax#}-1{#endsyntax#} and going down.
       It is recommended to use the {#syntax#}~{#endsyntax#} operator from indexes from {#syntax#}b{#endsyntax#}
-      so that both indexes can start from {#syntax#}0{#endsyntax#} (i.e. {#syntax#}~i32(0){#endsyntax#} is
+      so that both indexes can start from {#syntax#}0{#endsyntax#} (i.e. {#syntax#}~@as(i32, 0){#endsyntax#} is
       {#syntax#}-1{#endsyntax#}).
       </p>
       <p>
@@ -8001,7 +8052,7 @@ test "@setRuntimeSafety" {
       {#header_close#}
 
       {#header_open|@splat#}
-      <pre>{#syntax#}@splat(comptime len: u32, scalar: var) @Vector(len, @typeOf(scalar)){#endsyntax#}</pre>
+      <pre>{#syntax#}@splat(comptime len: u32, scalar: var) @Vector(len, @TypeOf(scalar)){#endsyntax#}</pre>
       <p>
       Produces a vector of length {#syntax#}len{#endsyntax#} where each element is the value
       {#syntax#}scalar{#endsyntax#}:
@@ -8013,7 +8064,7 @@ const assert = std.debug.assert;
 test "vector @splat" {
     const scalar: u32 = 5;
     const result = @splat(4, scalar);
-    comptime assert(@typeOf(result) == @Vector(4, u32));
+    comptime assert(@TypeOf(result) == @Vector(4, u32));
     assert(std.mem.eql(u32, &@as([4]u32, result), &[_]u32{ 5, 5, 5, 5 }));
 }
       {#code_end#}
@@ -8226,13 +8277,13 @@ test "integer truncation" {
           <li>{#syntax#}noreturn{#endsyntax#}</li>
           <li>{#syntax#}void{#endsyntax#}</li>
           <li>{#syntax#}bool{#endsyntax#}</li>
-          <li>{#link|Integers#}</li> - The maximum bit count for an integer type is {#syntax#}65535{#endsyntax#}.
+          <li>{#link|Integers#} - The maximum bit count for an integer type is {#syntax#}65535{#endsyntax#}.</li>
           <li>{#link|Floats#}</li>
           <li>{#link|Pointers#}</li>
           <li>{#syntax#}comptime_int{#endsyntax#}</li>
           <li>{#syntax#}comptime_float{#endsyntax#}</li>
-          <li>{#syntax#}@typeOf(undefined){#endsyntax#}</li>
-          <li>{#syntax#}@typeOf(null){#endsyntax#}</li>
+          <li>{#syntax#}@TypeOf(undefined){#endsyntax#}</li>
+          <li>{#syntax#}@TypeOf(null){#endsyntax#}</li>
       </ul>
       <p>
       For these types it is a
@@ -8258,7 +8309,6 @@ test "integer truncation" {
           <li>{#link|union#}</li>
           <li>{#link|Functions#}</li>
           <li>BoundFn</li>
-          <li>ArgTuple</li>
           <li>{#link|struct#}</li>
       </ul>
       {#header_close#}
@@ -8291,199 +8341,16 @@ pub const TypeId = enum {
     Fn,
     Block,
     BoundFn,
-    ArgTuple,
     Opaque,
 };
       {#code_end#}
       {#header_close#}
 
       {#header_open|@typeInfo#}
-      <pre>{#syntax#}@typeInfo(comptime T: type) @import("builtin").TypeInfo{#endsyntax#}</pre>
+      <pre>{#syntax#}@typeInfo(comptime T: type) @import("std").builtin.TypeInfo{#endsyntax#}</pre>
       <p>
-      Returns information on the type. Returns a value of the following union:
+      Provides type reflection.
       </p>
-      {#code_begin|syntax#}
-pub const TypeInfo = union(TypeId) {
-    Type: void,
-    Void: void,
-    Bool: void,
-    NoReturn: void,
-    Int: Int,
-    Float: Float,
-    Pointer: Pointer,
-    Array: Array,
-    Struct: Struct,
-    ComptimeFloat: void,
-    ComptimeInt: void,
-    Undefined: void,
-    Null: void,
-    Optional: Optional,
-    ErrorUnion: ErrorUnion,
-    ErrorSet: ErrorSet,
-    Enum: Enum,
-    Union: Union,
-    Fn: Fn,
-    BoundFn: Fn,
-    ArgTuple: void,
-    Opaque: void,
-    Promise: Promise,
-    Vector: Vector,
-    EnumLiteral: void,
-
-
-    pub const Int = struct {
-        is_signed: bool,
-        bits: comptime_int,
-    };
-
-    pub const Float = struct {
-        bits: comptime_int,
-    };
-
-    pub const Pointer = struct {
-        size: Size,
-        is_const: bool,
-        is_volatile: bool,
-        alignment: comptime_int,
-        child: type,
-        is_allowzero: bool,
-
-        pub const Size = enum {
-            One,
-            Many,
-            Slice,
-            C,
-        };
-    };
-
-    pub const Array = struct {
-        len: comptime_int,
-        child: type,
-    };
-
-    pub const ContainerLayout = enum {
-        Auto,
-        Extern,
-        Packed,
-    };
-
-    pub const StructField = struct {
-        name: []const u8,
-        offset: ?comptime_int,
-        field_type: type,
-    };
-
-    pub const Struct = struct {
-        layout: ContainerLayout,
-        fields: []StructField,
-        decls: []Declaration,
-    };
-
-    pub const Optional = struct {
-        child: type,
-    };
-
-    pub const ErrorUnion = struct {
-        error_set: type,
-        payload: type,
-    };
-
-    pub const Error = struct {
-        name: []const u8,
-        value: comptime_int,
-    };
-
-    pub const ErrorSet = ?[]Error;
-
-    pub const EnumField = struct {
-        name: []const u8,
-        value: comptime_int,
-    };
-
-    pub const Enum = struct {
-        layout: ContainerLayout,
-        tag_type: type,
-        fields: []EnumField,
-        decls: []Declaration,
-    };
-
-    pub const UnionField = struct {
-        name: []const u8,
-        enum_field: ?EnumField,
-        field_type: type,
-    };
-
-    pub const Union = struct {
-        layout: ContainerLayout,
-        tag_type: ?type,
-        fields: []UnionField,
-        decls: []Declaration,
-    };
-
-    pub const CallingConvention = enum {
-        Unspecified,
-        C,
-        Cold,
-        Naked,
-        Stdcall,
-        Async,
-    };
-
-    pub const FnArg = struct {
-        is_generic: bool,
-        is_noalias: bool,
-        arg_type: ?type,
-    };
-
-    pub const Fn = struct {
-        calling_convention: CallingConvention,
-        is_generic: bool,
-        is_var_args: bool,
-        return_type: ?type,
-        async_allocator_type: ?type,
-        args: []FnArg,
-    };
-
-    pub const Promise = struct {
-        child: ?type,
-    };
-
-    pub const Vector = struct {
-        len: comptime_int,
-        child: type,
-    };
-
-    pub const Declaration = struct {
-        name: []const u8,
-        is_pub: bool,
-        data: Data,
-
-        pub const Data = union(enum) {
-            Type: type,
-            Var: type,
-            Fn: FnDecl,
-
-            pub const FnDecl = struct {
-                fn_type: type,
-                inline_type: Inline,
-                calling_convention: CallingConvention,
-                is_var_args: bool,
-                is_extern: bool,
-                is_export: bool,
-                lib_name: ?[]const u8,
-                return_type: type,
-                arg_names: [][] const u8,
-
-                pub const Inline = enum {
-                    Auto,
-                    Always,
-                    Never,
-                };
-            };
-        };
-    };
-};
-      {#code_end#}
       <p>
       For {#link|structs|struct#}, {#link|unions|union#}, {#link|enums|enum#}, and
       {#link|error sets|Error Set Type#}, the fields are guaranteed to be in the same
@@ -8500,20 +8367,20 @@ pub const TypeInfo = union(TypeId) {
 
       {#header_close#}
 
-      {#header_open|@typeOf#}
-      <pre>{#syntax#}@typeOf(expression) type{#endsyntax#}</pre>
+      {#header_open|@TypeOf#}
+      <pre>{#syntax#}@TypeOf(expression) type{#endsyntax#}</pre>
       <p>
       This function returns a compile-time constant, which is the type of the
       expression passed as an argument. The expression is evaluated.
       </p>
-      <p>{#syntax#}@typeOf{#endsyntax#} guarantees no run-time side-effects within the expression:</p>
+      <p>{#syntax#}@TypeOf{#endsyntax#} guarantees no run-time side-effects within the expression:</p>
       {#code_begin|test#}
 const std = @import("std");
 const assert = std.debug.assert;
 
 test "no runtime side effects" {
     var data: i32 = 0;
-    const T = @typeOf(foo(i32, &data));
+    const T = @TypeOf(foo(i32, &data));
     comptime assert(T == i32);
     assert(data == 0);
 }
@@ -8620,7 +8487,7 @@ pub fn build(b: *Builder) void {
       {#header_close#}
 
       {#header_open|Single Threaded Builds#}
-      <p>Zig has a compile option <code>--single-threaded</code> which has the following effects:
+      <p>Zig has a compile option <code>--single-threaded</code> which has the following effects:</p>
       <ul>
         <li>All {#link|Thread Local Variables#} are treated as {#link|Global Variables#}.</li>
         <li>The overhead of {#link|Async Functions#} becomes equivalent to function call overhead.</li>
@@ -8629,7 +8496,6 @@ pub fn build(b: *Builder) void {
           For example {#syntax#}std.Mutex{#endsyntax#} becomes
           an empty data structure and all of its functions become no-ops.</li>
       </ul>
-      </p>
       {#header_close#}
 
       {#header_open|Undefined Behavior#}
@@ -8703,7 +8569,7 @@ const std = @import("std");
 pub fn main() void {
     var value: i32 = -1;
     var unsigned = @intCast(u32, value);
-    std.debug.warn("value: {}\n", unsigned);
+    std.debug.warn("value: {}\n", .{unsigned});
 }
       {#code_end#}
       <p>
@@ -8725,7 +8591,7 @@ const std = @import("std");
 pub fn main() void {
     var spartan_count: u16 = 300;
     const byte = @intCast(u8, spartan_count);
-    std.debug.warn("value: {}\n", byte);
+    std.debug.warn("value: {}\n", .{byte});
 }
       {#code_end#}
       <p>
@@ -8759,7 +8625,7 @@ const std = @import("std");
 pub fn main() void {
     var byte: u8 = 255;
     byte += 1;
-    std.debug.warn("value: {}\n", byte);
+    std.debug.warn("value: {}\n", .{byte});
 }
       {#code_end#}
       {#header_close#}
@@ -8782,11 +8648,11 @@ pub fn main() !void {
     var byte: u8 = 255;
 
     byte = if (math.add(u8, byte, 1)) |result| result else |err| {
-        warn("unable to add one: {}\n", @errorName(err));
+        warn("unable to add one: {}\n", .{@errorName(err)});
         return err;
     };
 
-    warn("result: {}\n", byte);
+    warn("result: {}\n", .{byte});
 }
       {#code_end#}
       {#header_close#}
@@ -8811,9 +8677,9 @@ pub fn main() void {
 
     var result: u8 = undefined;
     if (@addWithOverflow(u8, byte, 10, &result)) {
-        warn("overflowed result: {}\n", result);
+        warn("overflowed result: {}\n", .{result});
     } else {
-        warn("result: {}\n", result);
+        warn("result: {}\n", .{result});
     }
 }
       {#code_end#}
@@ -8858,7 +8724,7 @@ const std = @import("std");
 pub fn main() void {
     var x: u8 = 0b01010101;
     var y = @shlExact(x, 2);
-    std.debug.warn("value: {}\n", y);
+    std.debug.warn("value: {}\n", .{y});
 }
       {#code_end#}
       {#header_close#}
@@ -8876,7 +8742,7 @@ const std = @import("std");
 pub fn main() void {
     var x: u8 = 0b10101010;
     var y = @shrExact(x, 2);
-    std.debug.warn("value: {}\n", y);
+    std.debug.warn("value: {}\n", .{y});
 }
       {#code_end#}
       {#header_close#}
@@ -8897,7 +8763,7 @@ pub fn main() void {
     var a: u32 = 1;
     var b: u32 = 0;
     var c = a / b;
-    std.debug.warn("value: {}\n", c);
+    std.debug.warn("value: {}\n", .{c});
 }
       {#code_end#}
       {#header_close#}
@@ -8918,7 +8784,7 @@ pub fn main() void {
     var a: u32 = 10;
     var b: u32 = 0;
     var c = a % b;
-    std.debug.warn("value: {}\n", c);
+    std.debug.warn("value: {}\n", .{c});
 }
       {#code_end#}
       {#header_close#}
@@ -8939,7 +8805,7 @@ pub fn main() void {
     var a: u32 = 10;
     var b: u32 = 3;
     var c = @divExact(a, b);
-    std.debug.warn("value: {}\n", c);
+    std.debug.warn("value: {}\n", .{c});
 }
       {#code_end#}
       {#header_close#}
@@ -8958,7 +8824,7 @@ const std = @import("std");
 pub fn main() void {
     var bytes = [5]u8{ 1, 2, 3, 4, 5 };
     var slice = @bytesToSlice(u32, bytes[0..]);
-    std.debug.warn("value: {}\n", slice[0]);
+    std.debug.warn("value: {}\n", .{slice[0]});
 }
       {#code_end#}
       {#header_close#}
@@ -8977,7 +8843,7 @@ const std = @import("std");
 pub fn main() void {
     var optional_number: ?i32 = null;
     var number = optional_number.?;
-    std.debug.warn("value: {}\n", number);
+    std.debug.warn("value: {}\n", .{number});
 }
       {#code_end#}
       <p>One way to avoid this crash is to test for null instead of assuming non-null, with
@@ -8988,9 +8854,9 @@ pub fn main() void {
     const optional_number: ?i32 = null;
 
     if (optional_number) |number| {
-        warn("got number: {}\n", number);
+        warn("got number: {}\n", .{number});
     } else {
-        warn("it's null\n");
+        warn("it's null\n", .{});
     }
 }
       {#code_end#}
@@ -9013,7 +8879,7 @@ const std = @import("std");
 
 pub fn main() void {
     const number = getNumberOrFail() catch unreachable;
-    std.debug.warn("value: {}\n", number);
+    std.debug.warn("value: {}\n", .{number});
 }
 
 fn getNumberOrFail() !i32 {
@@ -9029,9 +8895,9 @@ pub fn main() void {
     const result = getNumberOrFail();
 
     if (result) |number| {
-        warn("got number: {}\n", number);
+        warn("got number: {}\n", .{number});
     } else |err| {
-        warn("got error: {}\n", @errorName(err));
+        warn("got error: {}\n", .{@errorName(err)});
     }
 }
 
@@ -9058,7 +8924,7 @@ pub fn main() void {
     var err = error.AnError;
     var number = @errorToInt(err) + 500;
     var invalid_err = @intToError(number);
-    std.debug.warn("value: {}\n", number);
+    std.debug.warn("value: {}\n", .{number});
 }
       {#code_end#}
       {#header_close#}
@@ -9088,7 +8954,7 @@ const Foo = enum {
 pub fn main() void {
     var a: u2 = 3;
     var b = @intToEnum(Foo, a);
-    std.debug.warn("value: {}\n", @tagName(b));
+    std.debug.warn("value: {}\n", .{@tagName(b)});
 }
       {#code_end#}
       {#header_close#}
@@ -9125,7 +8991,7 @@ pub fn main() void {
 }
 fn foo(set1: Set1) void {
     const x = @errSetCast(Set2, set1);
-    std.debug.warn("value: {}\n", x);
+    std.debug.warn("value: {}\n", .{x});
 }
       {#code_end#}
       {#header_close#}
@@ -9134,7 +9000,7 @@ fn foo(set1: Set1) void {
       <p>At compile-time:</p>
       {#code_begin|test_err|pointer address 0x1 is not aligned to 4 bytes#}
 comptime {
-    const ptr = @intToPtr(*i32, 0x1);
+    const ptr = @intToPtr(*align(1) i32, 0x1);
     const aligned = @alignCast(4, ptr);
 }
       {#code_end#}
@@ -9181,7 +9047,7 @@ pub fn main() void {
 
 fn bar(f: *Foo) void {
     f.float = 12.34;
-    std.debug.warn("value: {}\n", f.float);
+    std.debug.warn("value: {}\n", .{f.float});
 }
       {#code_end#}
       <p>
@@ -9205,7 +9071,7 @@ pub fn main() void {
 
 fn bar(f: *Foo) void {
     f.* = Foo{ .float = 12.34 };
-    std.debug.warn("value: {}\n", f.float);
+    std.debug.warn("value: {}\n", .{f.float});
 }
       {#code_end#}
       <p>
@@ -9224,7 +9090,7 @@ pub fn main() void {
     var f = Foo{ .int = 42 };
     f = Foo{ .float = undefined };
     bar(&f);
-    std.debug.warn("value: {}\n", f.float);
+    std.debug.warn("value: {}\n", .{f.float});
 }
 
 fn bar(f: *Foo) void {
@@ -9345,7 +9211,7 @@ pub fn main() !void {
     const allocator = &arena.allocator;
 
     const ptr = try allocator.create(i32);
-    std.debug.warn("ptr={*}\n", ptr);
+    std.debug.warn("ptr={*}\n", .{ptr});
 }
               {#code_end#}
               When using this kind of allocator, there is no need to free anything manually. Everything
@@ -9410,7 +9276,7 @@ test "string literal to constant slice" {
       The location of memory allocated with {#syntax#}allocator.alloc{#endsyntax#} or
       {#syntax#}allocator.create{#endsyntax#} is determined by the allocator's implementation.
       </p>
-      </p>TODO: thread local variables</p>
+      <p>TODO: thread local variables</p>
       {#header_close#}
 
       {#header_open|Implementing an Allocator#}
@@ -9878,7 +9744,7 @@ pub fn main() !void {
     defer std.process.argsFree(std.heap.page_allocator, args);
 
     for (args) |arg, i| {
-        std.debug.warn("{}: {}\n", i, arg);
+        std.debug.warn("{}: {}\n", .{i, arg});
     }
 }
       {#code_end#}
@@ -10787,6 +10653,7 @@ keyword &lt;- KEYWORD_align / KEYWORD_and / KEYWORD_allowzero / KEYWORD_asm
         <li>Together we serve end users.</li>
       </ul>
       {#header_close#}
+      </div></div>
     </div>
   </body>
 </html>

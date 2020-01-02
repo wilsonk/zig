@@ -64,13 +64,15 @@ ZIG_EXTERN_C LLVMTargetMachineRef ZigLLVMCreateTargetMachine(LLVMTargetRef T, co
 
 ZIG_EXTERN_C LLVMTypeRef ZigLLVMTokenTypeInContext(LLVMContextRef context_ref);
 
-enum ZigLLVM_FnInline {
-    ZigLLVM_FnInlineAuto,
-    ZigLLVM_FnInlineAlways,
-    ZigLLVM_FnInlineNever,
+enum ZigLLVM_CallAttr {
+    ZigLLVM_CallAttrAuto,
+    ZigLLVM_CallAttrNeverTail,
+    ZigLLVM_CallAttrNeverInline,
+    ZigLLVM_CallAttrAlwaysTail,
+    ZigLLVM_CallAttrAlwaysInline,
 };
 ZIG_EXTERN_C LLVMValueRef ZigLLVMBuildCall(LLVMBuilderRef B, LLVMValueRef Fn, LLVMValueRef *Args,
-        unsigned NumArgs, unsigned CC, enum ZigLLVM_FnInline fn_inline, const char *Name);
+        unsigned NumArgs, unsigned CC, enum ZigLLVM_CallAttr attr, const char *Name);
 
 ZIG_EXTERN_C LLVMValueRef ZigLLVMBuildMemCpy(LLVMBuilderRef B, LLVMValueRef Dst, unsigned DstAlign,
         LLVMValueRef Src, unsigned SrcAlign, LLVMValueRef Size, bool isVolatile);
@@ -420,6 +422,26 @@ enum ZigLLVM_ObjectFormatType {
     ZigLLVM_XCOFF,
 };
 
+enum ZigLLVM_AtomicRMWBinOp {
+    ZigLLVMAtomicRMWBinOpXchg,
+    ZigLLVMAtomicRMWBinOpAdd,
+    ZigLLVMAtomicRMWBinOpSub,
+    ZigLLVMAtomicRMWBinOpAnd,
+    ZigLLVMAtomicRMWBinOpNand,
+    ZigLLVMAtomicRMWBinOpOr,
+    ZigLLVMAtomicRMWBinOpXor,
+    ZigLLVMAtomicRMWBinOpMax,
+    ZigLLVMAtomicRMWBinOpMin,
+    ZigLLVMAtomicRMWBinOpUMax,
+    ZigLLVMAtomicRMWBinOpUMin,
+    ZigLLVMAtomicRMWBinOpFAdd,
+    ZigLLVMAtomicRMWBinOpFSub,
+};
+
+LLVMValueRef ZigLLVMBuildAtomicRMW(LLVMBuilderRef B, enum ZigLLVM_AtomicRMWBinOp op,
+    LLVMValueRef PTR, LLVMValueRef Val,
+    LLVMAtomicOrdering ordering, LLVMBool singleThread);
+
 #define ZigLLVM_DIFlags_Zero 0U
 #define ZigLLVM_DIFlags_Private 1U
 #define ZigLLVM_DIFlags_Protected 2U
@@ -473,5 +495,6 @@ ZIG_EXTERN_C void ZigLLVMGetNativeTarget(enum ZigLLVM_ArchType *arch_type, enum 
         enum ZigLLVM_ObjectFormatType *oformat);
 
 ZIG_EXTERN_C unsigned ZigLLVMDataLayoutGetStackAlignment(LLVMTargetDataRef TD);
+ZIG_EXTERN_C unsigned ZigLLVMDataLayoutGetProgramAddressSpace(LLVMTargetDataRef TD);
 
 #endif

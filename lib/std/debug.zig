@@ -46,7 +46,7 @@ var stderr_file_out_stream: File.OutStream = undefined;
 var stderr_stream: ?*io.OutStream(File.WriteError) = null;
 var stderr_mutex = std.Mutex.init();
 
-pub fn warn(comptime fmt: []const u8, args: ...) void {
+pub fn warn(comptime fmt: []const u8, args: var) void {
     const held = stderr_mutex.acquire();
     defer held.release();
     const stderr = getStderrStream();
@@ -92,15 +92,15 @@ fn wantTtyColor() bool {
 pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n") catch return;
+        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", @errorName(err)) catch return;
+        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     writeCurrentStackTrace(stderr, debug_info, wantTtyColor(), start_addr) catch |err| {
-        stderr.print("Unable to dump stack trace: {}\n", @errorName(err)) catch return;
+        stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
 }
@@ -111,11 +111,11 @@ pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
 pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n") catch return;
+        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", @errorName(err)) catch return;
+        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     const tty_color = wantTtyColor();
@@ -184,15 +184,15 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace
 pub fn dumpStackTrace(stack_trace: builtin.StackTrace) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n") catch return;
+        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", @errorName(err)) catch return;
+        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     writeStackTrace(stack_trace, stderr, getDebugInfoAllocator(), debug_info, wantTtyColor()) catch |err| {
-        stderr.print("Unable to dump stack trace: {}\n", @errorName(err)) catch return;
+        stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
 }
@@ -211,7 +211,7 @@ pub fn assert(ok: bool) void {
     if (!ok) unreachable; // assertion failure
 }
 
-pub fn panic(comptime format: []const u8, args: ...) noreturn {
+pub fn panic(comptime format: []const u8, args: var) noreturn {
     @setCold(true);
     // TODO: remove conditional once wasi / LLVM defines __builtin_return_address
     const first_trace_addr = if (builtin.os == .wasi) null else @returnAddress();
@@ -219,9 +219,9 @@ pub fn panic(comptime format: []const u8, args: ...) noreturn {
 }
 
 /// TODO multithreaded awareness
-var panicking: u8 = 0; // TODO make this a bool
+var panicking: u8 = 0;
 
-pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, comptime format: []const u8, args: ...) noreturn {
+pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, comptime format: []const u8, args: var) noreturn {
     @setCold(true);
 
     if (enable_segfault_handler) {
@@ -230,21 +230,25 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
         resetSegfaultHandler();
     }
 
-    if (@atomicRmw(u8, &panicking, builtin.AtomicRmwOp.Xchg, 1, builtin.AtomicOrder.SeqCst) == 1) {
-        // Panicked during a panic.
-
-        // TODO detect if a different thread caused the panic, because in that case
-        // we would want to return here instead of calling abort, so that the thread
-        // which first called panic can finish printing a stack trace.
-        os.abort();
+    switch (@atomicRmw(u8, &panicking, .Add, 1, .SeqCst)) {
+        0 => {
+            const stderr = getStderrStream();
+            stderr.print(format ++ "\n", args) catch os.abort();
+            if (trace) |t| {
+                dumpStackTrace(t.*);
+            }
+            dumpCurrentStackTrace(first_trace_addr);
+        },
+        1 => {
+            // TODO detect if a different thread caused the panic, because in that case
+            // we would want to return here instead of calling abort, so that the thread
+            // which first called panic can finish printing a stack trace.
+            warn("Panicked during a panic. Aborting.\n", .{});
+        },
+        else => {
+            // Panicked while printing "Panicked during a panic."
+        },
     }
-    const stderr = getStderrStream();
-    stderr.print(format ++ "\n", args) catch os.abort();
-    if (trace) |t| {
-        dumpStackTrace(t.*);
-    }
-    dumpCurrentStackTrace(first_trace_addr);
-
     os.abort();
 }
 
@@ -376,13 +380,13 @@ fn printSourceAtAddressWindows(di: *DebugInfo, out_stream: var, relocated_addres
     } else {
         // we have no information to add to the address
         if (tty_color) {
-            try out_stream.print("???:?:?: ");
+            try out_stream.print("???:?:?: ", .{});
             setTtyColor(TtyColor.Dim);
-            try out_stream.print("0x{x} in ??? (???)", relocated_address);
+            try out_stream.print("0x{x} in ??? (???)", .{relocated_address});
             setTtyColor(TtyColor.Reset);
-            try out_stream.print("\n\n\n");
+            try out_stream.print("\n\n\n", .{});
         } else {
-            try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", relocated_address);
+            try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", .{relocated_address});
         }
         return;
     };
@@ -509,18 +513,18 @@ fn printSourceAtAddressWindows(di: *DebugInfo, out_stream: var, relocated_addres
     if (tty_color) {
         setTtyColor(TtyColor.White);
         if (opt_line_info) |li| {
-            try out_stream.print("{}:{}:{}", li.file_name, li.line, li.column);
+            try out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
         } else {
-            try out_stream.print("???:?:?");
+            try out_stream.print("???:?:?", .{});
         }
         setTtyColor(TtyColor.Reset);
-        try out_stream.print(": ");
+        try out_stream.print(": ", .{});
         setTtyColor(TtyColor.Dim);
-        try out_stream.print("0x{x} in {} ({})", relocated_address, symbol_name, obj_basename);
+        try out_stream.print("0x{x} in {} ({})", .{ relocated_address, symbol_name, obj_basename });
         setTtyColor(TtyColor.Reset);
 
         if (opt_line_info) |line_info| {
-            try out_stream.print("\n");
+            try out_stream.print("\n", .{});
             if (printLineFromFileAnyOs(out_stream, line_info)) {
                 if (line_info.column == 0) {
                     try out_stream.write("\n");
@@ -546,13 +550,24 @@ fn printSourceAtAddressWindows(di: *DebugInfo, out_stream: var, relocated_addres
                 else => return err,
             }
         } else {
-            try out_stream.print("\n\n\n");
+            try out_stream.print("\n\n\n", .{});
         }
     } else {
         if (opt_line_info) |li| {
-            try out_stream.print("{}:{}:{}: 0x{x} in {} ({})\n\n\n", li.file_name, li.line, li.column, relocated_address, symbol_name, obj_basename);
+            try out_stream.print("{}:{}:{}: 0x{x} in {} ({})\n\n\n", .{
+                li.file_name,
+                li.line,
+                li.column,
+                relocated_address,
+                symbol_name,
+                obj_basename,
+            });
         } else {
-            try out_stream.print("???:?:?: 0x{x} in {} ({})\n\n\n", relocated_address, symbol_name, obj_basename);
+            try out_stream.print("???:?:?: 0x{x} in {} ({})\n\n\n", .{
+                relocated_address,
+                symbol_name,
+                obj_basename,
+            });
         }
     }
 }
@@ -697,9 +712,9 @@ fn printSourceAtAddressMacOs(di: *DebugInfo, out_stream: var, address: usize, tt
 
     const symbol = machoSearchSymbols(di.symbols, adjusted_addr) orelse {
         if (tty_color) {
-            try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? (???)" ++ RESET ++ "\n\n\n", address);
+            try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? (???)" ++ RESET ++ "\n\n\n", .{address});
         } else {
-            try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", address);
+            try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", .{address});
         }
         return;
     };
@@ -723,9 +738,11 @@ fn printSourceAtAddressMacOs(di: *DebugInfo, out_stream: var, address: usize, tt
     } else |err| switch (err) {
         error.MissingDebugInfo, error.InvalidDebugInfo => {
             if (tty_color) {
-                try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in {} ({})" ++ RESET ++ "\n\n\n", address, symbol_name, compile_unit_name);
+                try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in {} ({})" ++ RESET ++ "\n\n\n", .{
+                    address, symbol_name, compile_unit_name,
+                });
             } else {
-                try out_stream.print("???:?:?: 0x{x} in {} ({})\n\n\n", address, symbol_name, compile_unit_name);
+                try out_stream.print("???:?:?: 0x{x} in {} ({})\n\n\n", .{ address, symbol_name, compile_unit_name });
             }
         },
         else => return err,
@@ -746,15 +763,14 @@ fn printLineInfo(
     comptime printLineFromFile: var,
 ) !void {
     if (tty_color) {
-        try out_stream.print(
-            WHITE ++ "{}:{}:{}" ++ RESET ++ ": " ++ DIM ++ "0x{x} in {} ({})" ++ RESET ++ "\n",
+        try out_stream.print(WHITE ++ "{}:{}:{}" ++ RESET ++ ": " ++ DIM ++ "0x{x} in {} ({})" ++ RESET ++ "\n", .{
             line_info.file_name,
             line_info.line,
             line_info.column,
             address,
             symbol_name,
             compile_unit_name,
-        );
+        });
         if (printLineFromFile(out_stream, line_info)) {
             if (line_info.column == 0) {
                 try out_stream.write("\n");
@@ -772,15 +788,14 @@ fn printLineInfo(
             else => return err,
         }
     } else {
-        try out_stream.print(
-            "{}:{}:{}: 0x{x} in {} ({})\n",
+        try out_stream.print("{}:{}:{}: 0x{x} in {} ({})\n", .{
             line_info.file_name,
             line_info.line,
             line_info.column,
             address,
             symbol_name,
             compile_unit_name,
-        );
+        });
     }
 }
 
@@ -1226,9 +1241,9 @@ pub const DwarfInfo = struct {
     ) !void {
         const compile_unit = self.findCompileUnit(address) catch {
             if (tty_color) {
-                try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? (???)" ++ RESET ++ "\n\n\n", address);
+                try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? (???)" ++ RESET ++ "\n\n\n", .{address});
             } else {
-                try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", address);
+                try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", .{address});
             }
             return;
         };
@@ -1248,9 +1263,11 @@ pub const DwarfInfo = struct {
         } else |err| switch (err) {
             error.MissingDebugInfo, error.InvalidDebugInfo => {
                 if (tty_color) {
-                    try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? ({})" ++ RESET ++ "\n\n\n", address, compile_unit_name);
+                    try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? ({})" ++ RESET ++ "\n\n\n", .{
+                        address, compile_unit_name,
+                    });
                 } else {
-                    try out_stream.print("???:?:?: 0x{x} in ??? ({})\n\n\n", address, compile_unit_name);
+                    try out_stream.print("???:?:?: 0x{x} in ??? ({})\n\n\n", .{ address, compile_unit_name });
                 }
             },
             else => return err,
@@ -1277,7 +1294,7 @@ pub const DwarfInfo = struct {
             try di.dwarf_seekable_stream.seekTo(this_unit_offset);
 
             var is_64: bool = undefined;
-            const unit_length = try readInitialLength(@typeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
+            const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
             if (unit_length == 0) return;
             const next_offset = unit_length + (if (is_64) @as(usize, 12) else @as(usize, 4));
 
@@ -1379,7 +1396,7 @@ pub const DwarfInfo = struct {
             try di.dwarf_seekable_stream.seekTo(this_unit_offset);
 
             var is_64: bool = undefined;
-            const unit_length = try readInitialLength(@typeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
+            const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
             if (unit_length == 0) return;
             const next_offset = unit_length + (if (is_64) @as(usize, 12) else @as(usize, 4));
 
@@ -1538,7 +1555,7 @@ pub const DwarfInfo = struct {
         try di.dwarf_seekable_stream.seekTo(di.debug_line.offset + line_info_offset);
 
         var is_64: bool = undefined;
-        const unit_length = try readInitialLength(@typeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
+        const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
         if (unit_length == 0) {
             return error.MissingDebugInfo;
         }
@@ -2067,7 +2084,7 @@ fn parseFormValue(allocator: *mem.Allocator, in_stream: var, form_id: u64, is_64
         DW.FORM_strp => FormValue{ .StrPtr = try parseFormValueDwarfOffsetSize(in_stream, is_64) },
         DW.FORM_indirect => {
             const child_form_id = try noasync leb.readULEB128(u64, in_stream);
-            const F = @typeOf(async parseFormValue(allocator, in_stream, child_form_id, is_64));
+            const F = @TypeOf(async parseFormValue(allocator, in_stream, child_form_id, is_64));
             var frame = try allocator.create(F);
             defer allocator.destroy(frame);
             return await @asyncCall(frame, {}, parseFormValue, allocator, in_stream, child_form_id, is_64);
@@ -2391,6 +2408,7 @@ pub fn attachSegfaultHandler() void {
     };
 
     os.sigaction(os.SIGSEGV, &act, null);
+    os.sigaction(os.SIGILL, &act, null);
 }
 
 fn resetSegfaultHandler() void {
@@ -2407,6 +2425,7 @@ fn resetSegfaultHandler() void {
         .flags = 0,
     };
     os.sigaction(os.SIGSEGV, &act, null);
+    os.sigaction(os.SIGILL, &act, null);
 }
 
 extern fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_void) noreturn {
@@ -2416,8 +2435,11 @@ extern fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *con
     resetSegfaultHandler();
 
     const addr = @ptrToInt(info.fields.sigfault.addr);
-    std.debug.warn("Segmentation fault at address 0x{x}\n", addr);
-
+    switch (sig) {
+        os.SIGSEGV => std.debug.warn("Segmentation fault at address 0x{x}\n", .{addr}),
+        os.SIGILL => std.debug.warn("Illegal instruction at address 0x{x}\n", .{addr}),
+        else => unreachable,
+    }
     switch (builtin.arch) {
         .i386 => {
             const ctx = @ptrCast(*const os.ucontext_t, @alignCast(@alignOf(os.ucontext_t), ctx_ptr));
@@ -2456,10 +2478,10 @@ extern fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *con
 stdcallcc fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) c_long {
     const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
     switch (info.ExceptionRecord.ExceptionCode) {
-        windows.EXCEPTION_DATATYPE_MISALIGNMENT => panicExtra(null, exception_address, "Unaligned Memory Access"),
-        windows.EXCEPTION_ACCESS_VIOLATION => panicExtra(null, exception_address, "Segmentation fault at address 0x{x}", info.ExceptionRecord.ExceptionInformation[1]),
-        windows.EXCEPTION_ILLEGAL_INSTRUCTION => panicExtra(null, exception_address, "Illegal Instruction"),
-        windows.EXCEPTION_STACK_OVERFLOW => panicExtra(null, exception_address, "Stack Overflow"),
+        windows.EXCEPTION_DATATYPE_MISALIGNMENT => panicExtra(null, exception_address, "Unaligned Memory Access", .{}),
+        windows.EXCEPTION_ACCESS_VIOLATION => panicExtra(null, exception_address, "Segmentation fault at address 0x{x}", .{info.ExceptionRecord.ExceptionInformation[1]}),
+        windows.EXCEPTION_ILLEGAL_INSTRUCTION => panicExtra(null, exception_address, "Illegal Instruction", .{}),
+        windows.EXCEPTION_STACK_OVERFLOW => panicExtra(null, exception_address, "Stack Overflow", .{}),
         else => return windows.EXCEPTION_CONTINUE_SEARCH,
     }
 }
@@ -2468,7 +2490,7 @@ pub fn dumpStackPointerAddr(prefix: []const u8) void {
     const sp = asm (""
         : [argc] "={rsp}" (-> usize)
     );
-    std.debug.warn("{} sp = 0x{x}\n", prefix, sp);
+    std.debug.warn("{} sp = 0x{x}\n", .{ prefix, sp });
 }
 
 // Reference everything so it gets tested.

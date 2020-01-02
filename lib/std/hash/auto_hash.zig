@@ -22,7 +22,7 @@ pub const HashStrategy = enum {
 
 /// Helper function to hash a pointer and mutate the strategy if needed.
 pub fn hashPointer(hasher: var, key: var, comptime strat: HashStrategy) void {
-    const info = @typeInfo(@typeOf(key));
+    const info = @typeInfo(@TypeOf(key));
 
     switch (info.Pointer.size) {
         builtin.TypeInfo.Pointer.Size.One => switch (strat) {
@@ -74,12 +74,11 @@ pub fn hashArray(hasher: var, key: var, comptime strat: HashStrategy) void {
 /// Provides generic hashing for any eligible type.
 /// Strategy is provided to determine if pointers should be followed or not.
 pub fn hash(hasher: var, key: var, comptime strat: HashStrategy) void {
-    const Key = @typeOf(key);
+    const Key = @TypeOf(key);
     switch (@typeInfo(Key)) {
         .NoReturn,
         .Opaque,
         .Undefined,
-        .ArgTuple,
         .Void,
         .Null,
         .BoundFn,
@@ -92,7 +91,7 @@ pub fn hash(hasher: var, key: var, comptime strat: HashStrategy) void {
 
         // Help the optimizer see that hashing an int is easy by inlining!
         // TODO Check if the situation is better after #561 is resolved.
-        .Int => @inlineCall(hasher.update, std.mem.asBytes(&key)),
+        .Int => @call(.{ .modifier = .always_inline }, hasher.update, .{std.mem.asBytes(&key)}),
 
         .Float => |info| hash(hasher, @bitCast(@IntType(false, info.bits), key), strat),
 
@@ -101,7 +100,7 @@ pub fn hash(hasher: var, key: var, comptime strat: HashStrategy) void {
         .ErrorSet => hash(hasher, @errorToInt(key), strat),
         .AnyFrame, .Fn => hash(hasher, @ptrToInt(key), strat),
 
-        .Pointer => @inlineCall(hashPointer, hasher, key, strat),
+        .Pointer => @call(.{ .modifier = .always_inline }, hashPointer, .{ hasher, key, strat }),
 
         .Optional => if (key) |k| hash(hasher, k, strat),
 
@@ -165,7 +164,7 @@ pub fn hash(hasher: var, key: var, comptime strat: HashStrategy) void {
 /// Only hashes `key` itself, pointers are not followed.
 /// Slices are rejected to avoid ambiguity on the user's intention.
 pub fn autoHash(hasher: var, key: var) void {
-    const Key = @typeOf(key);
+    const Key = @TypeOf(key);
     if (comptime meta.trait.isSlice(Key)) {
         comptime assert(@hasDecl(std, "StringHashMap")); // detect when the following message needs updated
         const extra_help = if (Key == []const u8)

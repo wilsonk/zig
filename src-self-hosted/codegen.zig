@@ -45,13 +45,11 @@ pub async fn renderToLlvm(comp: *Compilation, fn_val: *Value.Fn, code: *ir.Code)
 
     // Don't use ZIG_VERSION_STRING here. LLVM misparses it when it includes
     // the git revision.
-    const producer = try std.Buffer.allocPrint(
-        &code.arena.allocator,
-        "zig {}.{}.{}",
+    const producer = try std.Buffer.allocPrint(&code.arena.allocator, "zig {}.{}.{}", .{
         @as(u32, c.ZIG_VERSION_MAJOR),
         @as(u32, c.ZIG_VERSION_MINOR),
         @as(u32, c.ZIG_VERSION_PATCH),
-    );
+    });
     const flags = "";
     const runtime_version = 0;
     const compile_unit_file = llvm.CreateFile(
@@ -93,7 +91,7 @@ pub async fn renderToLlvm(comp: *Compilation, fn_val: *Value.Fn, code: *ir.Code)
     llvm.DIBuilderFinalize(dibuilder);
 
     if (comp.verbose_llvm_ir) {
-        std.debug.warn("raw module:\n");
+        std.debug.warn("raw module:\n", .{});
         llvm.DumpModule(ofile.module);
     }
 
@@ -102,8 +100,6 @@ pub async fn renderToLlvm(comp: *Compilation, fn_val: *Value.Fn, code: *ir.Code)
         var error_ptr: ?[*:0]u8 = null;
         _ = llvm.VerifyModule(ofile.module, llvm.AbortProcessAction, &error_ptr);
     }
-
-    assert(comp.emit_file_type == Compilation.Emit.Binary); // TODO support other types
 
     const is_small = comp.build_mode == .ReleaseSmall;
     const is_debug = comp.build_mode == .Debug;
@@ -120,18 +116,18 @@ pub async fn renderToLlvm(comp: *Compilation, fn_val: *Value.Fn, code: *ir.Code)
         is_small,
     )) {
         if (std.debug.runtime_safety) {
-            std.debug.panic("unable to write object file {}: {s}\n", output_path.toSliceConst(), err_msg);
+            std.debug.panic("unable to write object file {}: {s}\n", .{ output_path.toSliceConst(), err_msg });
         }
         return error.WritingObjectFileFailed;
     }
     //validate_inline_fns(g); TODO
     fn_val.containing_object = output_path;
     if (comp.verbose_llvm_ir) {
-        std.debug.warn("optimized module:\n");
+        std.debug.warn("optimized module:\n", .{});
         llvm.DumpModule(ofile.module);
     }
     if (comp.verbose_link) {
-        std.debug.warn("created {}\n", output_path.toSliceConst());
+        std.debug.warn("created {}\n", .{output_path.toSliceConst()});
     }
 }
 

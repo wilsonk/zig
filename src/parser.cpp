@@ -536,8 +536,8 @@ static void ast_parse_container_doc_comments(ParseContext *pc, Buf *buf) {
 //     <- TestDecl ContainerMembers
 //      / TopLevelComptime ContainerMembers
 //      / KEYWORD_pub? TopLevelDecl ContainerMembers
-//      / ContainerField COMMA ContainerMembers
-//      / ContainerField
+//      / KEYWORD_comptime? ContainerField COMMA ContainerMembers
+//      / KEYWORD_comptime? ContainerField
 //      /
 static AstNodeContainerDecl ast_parse_container_members(ParseContext *pc) {
     AstNodeContainerDecl res = {};
@@ -574,10 +574,13 @@ static AstNodeContainerDecl ast_parse_container_members(ParseContext *pc) {
             ast_error(pc, peek_token(pc), "expected function or variable declaration after pub");
         }
 
+        Token *comptime_token = eat_token_if(pc, TokenIdKeywordCompTime);
+
         AstNode *container_field = ast_parse_container_field(pc);
         if (container_field != nullptr) {
             assert(container_field->type == NodeTypeStructField);
             container_field->data.struct_field.doc_comments = doc_comment_buf;
+            container_field->data.struct_field.comptime_token = comptime_token;
             res.fields.append(container_field);
             if (eat_token_if(pc, TokenIdComma) != nullptr) {
                 continue;
@@ -611,6 +614,13 @@ static AstNode *ast_parse_top_level_comptime(ParseContext *pc) {
     Token *comptime = eat_token_if(pc, TokenIdKeywordCompTime);
     if (comptime == nullptr)
         return nullptr;
+
+    // 1 token lookahead because it could be a comptime struct field
+    Token *lbrace = peek_token(pc);
+    if (lbrace->id != TokenIdLBrace) {
+        put_back_token(pc);
+        return nullptr;
+    }
 
     AstNode *block = ast_expect(pc, ast_parse_block_expr);
     AstNode *res = ast_create_node(pc, NodeTypeCompTime, comptime);
@@ -792,12 +802,6 @@ static AstNode *ast_parse_fn_proto(ParseContext *pc) {
     res->data.fn_proto.auto_err_set = exmark != nullptr;
     res->data.fn_proto.return_type = return_type;
 
-    // It seems that the Zig compiler expects varargs to be the
-    // last parameter in the decl list. This is not encoded in
-    // the grammar, which allows varargs anywhere in the decl.
-    // Since varargs is gonna be removed at some point, I'm not
-    // gonna encode this "varargs is always last" rule in the
-    // grammar, and just enforce it here, until varargs is removed.
     for (size_t i = 0; i < params.length; i++) {
         AstNode *param_decl = params.at(i);
         assert(param_decl->type == NodeTypeParamDecl);
@@ -1919,7 +1923,11 @@ static AstNode *ast_parse_anon_lit(ParseContext *pc) {
     }
 
     // anon container literal
-    return ast_parse_init_list(pc);
+    AstNode *res = ast_parse_init_list(pc);
+    if (res != nullptr)
+        return res;
+    put_back_token(pc);
+    return nullptr;
 }
 
 // AsmOutput <- COLON AsmOutputList AsmInput?
@@ -2715,7 +2723,7 @@ static AstNode *ast_parse_prefix_type_op(ParseContext *pc) {
 }
 
 // SuffixOp
-//     <- LBRACKET Expr (DOT2 Expr?)? RBRACKET
+//     <- LBRACKET Expr (DOT2 (Expr (COLON Expr)?)?)? RBRACKET
 //      / DOT IDENTIFIER
 //      / DOTASTERISK
 //      / DOTQUESTIONMARK
@@ -2725,12 +2733,17 @@ static AstNode *ast_parse_suffix_op(ParseContext *pc) {
         AstNode *start = ast_expect(pc, ast_parse_expr);
         AstNode *end = nullptr;
         if (eat_token_if(pc, TokenIdEllipsis2) != nullptr) {
+            AstNode *sentinel = nullptr;
             end = ast_parse_expr(pc);
+            if (eat_token_if(pc, TokenIdColon) != nullptr) {
+                sentinel = ast_parse_expr(pc);
+            }
             expect_token(pc, TokenIdRBracket);
 
             AstNode *res = ast_create_node(pc, NodeTypeSliceExpr, lbracket);
             res->data.slice_expr.start = start;
             res->data.slice_expr.end = end;
+            res->data.slice_expr.sentinel = sentinel;
             return res;
         }
 
@@ -3033,6 +3046,7 @@ void ast_visit_node_children(AstNode *node, void (*visit)(AstNode **, void *cont
             visit_field(&node->data.slice_expr.array_ref_expr, visit, context);
             visit_field(&node->data.slice_expr.start, visit, context);
             visit_field(&node->data.slice_expr.end, visit, context);
+            visit_field(&node->data.slice_expr.sentinel, visit, context);
             break;
         case NodeTypeFieldAccessExpr:
             visit_field(&node->data.field_access_expr.struct_expr, visit, context);

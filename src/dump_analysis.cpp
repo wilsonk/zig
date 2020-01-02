@@ -744,7 +744,7 @@ static void anal_dump_type(AnalDumpCtx *ctx, ZigType *ty) {
         case ZigTypeIdEnumLiteral:
             break;
         case ZigTypeIdStruct: {
-            if (ty->data.structure.is_slice) {
+            if (ty->data.structure.special == StructSpecialSlice) {
                 jw_object_field(jw, "len");
                 jw_int(jw, 2);
                 anal_dump_pointer_attrs(ctx, ty->data.structure.fields[slice_ptr_index]->type_entry);
@@ -1216,7 +1216,7 @@ void zig_print_analysis_dump(CodeGen *g, FILE *f, const char *one_indent, const 
     jw_end_object(jw);
 
     jw_object_field(jw, "rootPkg");
-    anal_dump_pkg_ref(&ctx, g->root_package);
+    anal_dump_pkg_ref(&ctx, g->main_pkg);
 
     // Poke the functions
     for (size_t i = 0; i < g->fn_defs.length; i += 1) {
