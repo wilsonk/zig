@@ -119,11 +119,11 @@ fn linkDiagCallbackErrorable(ctx: *Context, msg: []const u8) !void {
 
 fn toExternObjectFormatType(ofmt: ObjectFormat) c.ZigLLVM_ObjectFormatType {
     return switch (ofmt) {
-        .unknown => c.ZigLLVM_UnknownObjectFormat,
-        .coff => c.ZigLLVM_COFF,
-        .elf => c.ZigLLVM_ELF,
-        .macho => c.ZigLLVM_MachO,
-        .wasm => c.ZigLLVM_Wasm,
+        .unknown => .ZigLLVM_UnknownObjectFormat,
+        .coff => .ZigLLVM_COFF,
+        .elf => .ZigLLVM_ELF,
+        .macho => .ZigLLVM_MachO,
+        .wasm => .ZigLLVM_Wasm,
     };
 }
 
@@ -144,6 +144,9 @@ fn constructLinkerArgsElf(ctx: *Context) !void {
     //    lj->args.append(g->linker_script);
     //}
     try ctx.args.append("--gc-sections");
+    if (ctx.comp.link_eh_frame_hdr) {
+        try ctx.args.append("--eh-frame-hdr");
+    }
 
     //lj->args.append("-m");
     //lj->args.append(getLDMOption(&g->zig_target));
