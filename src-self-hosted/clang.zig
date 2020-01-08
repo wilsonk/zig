@@ -760,10 +760,15 @@ pub extern fn ZigClangASTUnit_visitLocalTopLevelDecls(self: *struct_ZigClangASTU
 pub extern fn ZigClangRecordType_getDecl(record_ty: ?*const struct_ZigClangRecordType) *const struct_ZigClangRecordDecl;
 pub extern fn ZigClangEnumType_getDecl(record_ty: ?*const struct_ZigClangEnumType) *const struct_ZigClangEnumDecl;
 pub extern fn ZigClangRecordDecl_getCanonicalDecl(record_decl: ?*const struct_ZigClangRecordDecl) ?*const struct_ZigClangTagDecl;
+pub extern fn ZigClangFieldDecl_getCanonicalDecl(field_decl: ?*const struct_ZigClangFieldDecl) ?*const struct_ZigClangFieldDecl;
 pub extern fn ZigClangEnumDecl_getCanonicalDecl(self: ?*const struct_ZigClangEnumDecl) ?*const struct_ZigClangTagDecl;
 pub extern fn ZigClangTypedefNameDecl_getCanonicalDecl(self: ?*const struct_ZigClangTypedefNameDecl) ?*const struct_ZigClangTypedefNameDecl;
 pub extern fn ZigClangFunctionDecl_getCanonicalDecl(self: ?*const struct_ZigClangFunctionDecl) ?*const struct_ZigClangFunctionDecl;
 pub extern fn ZigClangVarDecl_getCanonicalDecl(self: ?*const struct_ZigClangVarDecl) ?*const struct_ZigClangVarDecl;
+pub extern fn ZigClangVarDecl_getSectionAttribute(self: *const ZigClangVarDecl, len: *usize) ?[*]const u8;
+pub extern fn ZigClangFunctionDecl_getAlignedAttribute(self: *const ZigClangFunctionDecl, *const ZigClangASTContext) c_uint;
+pub extern fn ZigClangVarDecl_getAlignedAttribute(self: *const ZigClangVarDecl, *const ZigClangASTContext) c_uint;
+pub extern fn ZigClangRecordDecl_getPackedAttribute(self: ?*const struct_ZigClangRecordDecl) bool;
 pub extern fn ZigClangRecordDecl_getDefinition(self: ?*const struct_ZigClangRecordDecl) ?*const struct_ZigClangRecordDecl;
 pub extern fn ZigClangEnumDecl_getDefinition(self: ?*const struct_ZigClangEnumDecl) ?*const struct_ZigClangEnumDecl;
 pub extern fn ZigClangRecordDecl_getLocation(self: ?*const struct_ZigClangRecordDecl) struct_ZigClangSourceLocation;
@@ -799,8 +804,13 @@ pub extern fn ZigClangQualType_isRestrictQualified(self: struct_ZigClangQualType
 pub extern fn ZigClangType_getTypeClass(self: ?*const struct_ZigClangType) ZigClangTypeClass;
 pub extern fn ZigClangType_getPointeeType(self: ?*const struct_ZigClangType) struct_ZigClangQualType;
 pub extern fn ZigClangType_isVoidType(self: ?*const struct_ZigClangType) bool;
+pub extern fn ZigClangType_isRecordType(self: ?*const struct_ZigClangType) bool;
+pub extern fn ZigClangType_isArrayType(self: ?*const struct_ZigClangType) bool;
+pub extern fn ZigClangType_isBooleanType(self: ?*const struct_ZigClangType) bool;
 pub extern fn ZigClangType_getTypeClassName(self: *const struct_ZigClangType) [*:0]const u8;
 pub extern fn ZigClangType_getAsArrayTypeUnsafe(self: *const ZigClangType) *const ZigClangArrayType;
+pub extern fn ZigClangType_getAsRecordType(self: *const ZigClangType) ?*const ZigClangRecordType;
+pub extern fn ZigClangType_getAsUnionType(self: *const ZigClangType) ?*const ZigClangRecordType;
 pub extern fn ZigClangStmt_getBeginLoc(self: *const struct_ZigClangStmt) struct_ZigClangSourceLocation;
 pub extern fn ZigClangStmt_getStmtClass(self: ?*const struct_ZigClangStmt) ZigClangStmtClass;
 pub extern fn ZigClangStmt_classof_Expr(self: ?*const struct_ZigClangStmt) bool;
@@ -810,6 +820,7 @@ pub extern fn ZigClangExpr_getBeginLoc(self: *const struct_ZigClangExpr) struct_
 pub extern fn ZigClangInitListExpr_getInit(self: ?*const struct_ZigClangInitListExpr, i: c_uint) *const ZigClangExpr;
 pub extern fn ZigClangInitListExpr_getArrayFiller(self: ?*const struct_ZigClangInitListExpr) *const ZigClangExpr;
 pub extern fn ZigClangInitListExpr_getNumInits(self: ?*const struct_ZigClangInitListExpr) c_uint;
+pub extern fn ZigClangInitListExpr_getInitializedFieldInUnion(self: ?*const struct_ZigClangInitListExpr) ?*ZigClangFieldDecl;
 pub extern fn ZigClangAPValue_getKind(self: ?*const struct_ZigClangAPValue) ZigClangAPValueKind;
 pub extern fn ZigClangAPValue_getInt(self: ?*const struct_ZigClangAPValue) *const struct_ZigClangAPSInt;
 pub extern fn ZigClangAPValue_getArrayInitializedElts(self: ?*const struct_ZigClangAPValue) c_uint;
@@ -834,6 +845,7 @@ pub extern fn ZigClangFunctionDecl_getParamDecl(self: *const ZigClangFunctionDec
 pub extern fn ZigClangFunctionDecl_getBody(self: *const ZigClangFunctionDecl) *const struct_ZigClangStmt;
 pub extern fn ZigClangFunctionDecl_doesDeclarationForceExternallyVisibleDefinition(self: *const ZigClangFunctionDecl) bool;
 pub extern fn ZigClangFunctionDecl_isInlineSpecified(self: *const ZigClangFunctionDecl) bool;
+pub extern fn ZigClangFunctionDecl_getSectionAttribute(self: *const ZigClangFunctionDecl, len: *usize) ?[*]const u8;
 
 pub extern fn ZigClangBuiltinType_getKind(self: *const struct_ZigClangBuiltinType) ZigClangBuiltinTypeKind;
 
@@ -1046,6 +1058,7 @@ pub extern fn ZigClangStringLiteral_getString_bytes_begin_size(*const ZigClangSt
 
 pub extern fn ZigClangParenExpr_getSubExpr(*const ZigClangParenExpr) *const ZigClangExpr;
 
+pub extern fn ZigClangFieldDecl_isAnonymousStructOrUnion(*const struct_ZigClangFieldDecl) bool;
 pub extern fn ZigClangFieldDecl_isBitField(*const struct_ZigClangFieldDecl) bool;
 pub extern fn ZigClangFieldDecl_getType(*const struct_ZigClangFieldDecl) struct_ZigClangQualType;
 pub extern fn ZigClangFieldDecl_getLocation(*const struct_ZigClangFieldDecl) struct_ZigClangSourceLocation;
