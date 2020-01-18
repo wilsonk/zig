@@ -2569,14 +2569,7 @@ static Error resolve_enum_zero_bits(CodeGen *g, ZigType *enum_type) {
         return ErrorSemanticAnalyzeFail;
     }
 
-    enum_type->data.enumeration.src_field_count = field_count;
-    enum_type->data.enumeration.fields = allocate<TypeEnumField>(field_count);
-    enum_type->data.enumeration.fields_by_name.init(field_count);
-
     Scope *scope = &enum_type->data.enumeration.decls_scope->base;
-
-    HashMap<BigInt, AstNode *, bigint_hash, bigint_eql> occupied_tag_values = {};
-    occupied_tag_values.init(field_count);
 
     ZigType *tag_int_type;
     if (enum_type->data.enumeration.layout == ContainerLayoutExtern) {
@@ -2619,6 +2612,7 @@ static Error resolve_enum_zero_bits(CodeGen *g, ZigType *enum_type) {
         }
     }
 
+    enum_type->data.enumeration.non_exhaustive = false;
     enum_type->data.enumeration.tag_int_type = tag_int_type;
     enum_type->size_in_bits = tag_int_type->size_in_bits;
     enum_type->abi_size = tag_int_type->abi_size;
@@ -2626,6 +2620,31 @@ static Error resolve_enum_zero_bits(CodeGen *g, ZigType *enum_type) {
 
     BigInt bi_one;
     bigint_init_unsigned(&bi_one, 1);
+
+    AstNode *last_field_node = decl_node->data.container_decl.fields.at(field_count - 1);
+    if (buf_eql_str(last_field_node->data.struct_field.name, "_")) {
+        field_count -= 1;
+        if (field_count > 1 && log2_u64(field_count) == enum_type->size_in_bits) {
+            add_node_error(g, last_field_node, buf_sprintf("non-exhaustive enum specifies every value"));
+            enum_type->data.enumeration.resolve_status = ResolveStatusInvalid;
+        }
+        if (decl_node->data.container_decl.init_arg_expr == nullptr) {
+            add_node_error(g, last_field_node, buf_sprintf("non-exhaustive enum must specify size"));
+            enum_type->data.enumeration.resolve_status = ResolveStatusInvalid;
+        }
+        if (last_field_node->data.struct_field.value != nullptr) {
+            add_node_error(g, last_field_node, buf_sprintf("value assigned to '_' field of non-exhaustive enum"));
+            enum_type->data.enumeration.resolve_status = ResolveStatusInvalid;
+        }
+        enum_type->data.enumeration.non_exhaustive = true;
+    }
+
+    enum_type->data.enumeration.src_field_count = field_count;
+    enum_type->data.enumeration.fields = allocate<TypeEnumField>(field_count);
+    enum_type->data.enumeration.fields_by_name.init(field_count);
+
+    HashMap<BigInt, AstNode *, bigint_hash, bigint_eql> occupied_tag_values = {};
+    occupied_tag_values.init(field_count);
 
     TypeEnumField *last_enum_field = nullptr;
 
@@ -2646,6 +2665,11 @@ static Error resolve_enum_zero_bits(CodeGen *g, ZigType *enum_type) {
                 buf_sprintf("structs and unions, not enums, support field alignment"));
             add_error_note(g, msg, decl_node,
                     buf_sprintf("consider 'union(enum)' here"));
+        }
+
+        if (buf_eql_str(type_enum_field->name, "_")) {
+            add_node_error(g, field_node, buf_sprintf("'_' field of non-exhaustive enum must be last"));
+            enum_type->data.enumeration.resolve_status = ResolveStatusInvalid;
         }
 
         auto field_entry = enum_type->data.enumeration.fields_by_name.put_unique(type_enum_field->name, type_enum_field);
@@ -3622,9 +3646,11 @@ void init_tld(Tld *tld, TldId id, Buf *name, VisibMod visib_mod, AstNode *source
 }
 
 void update_compile_var(CodeGen *g, Buf *name, ZigValue *value) {
-    Tld *tld = get_container_scope(g->compile_var_import)->decl_table.get(name);
+    ScopeDecls *builtin_scope = get_container_scope(g->compile_var_import);
+    Tld *tld = find_container_decl(g, builtin_scope, name);
+    assert(tld != nullptr);
     resolve_top_level_decl(g, tld, tld->source_node, false);
-    assert(tld->id == TldIdVar);
+    assert(tld->id == TldIdVar && tld->resolution == TldResolutionOk);
     TldVar *tld_var = (TldVar *)tld;
     copy_const_val(tld_var->var->const_value, value);
     tld_var->var->var_type = value->type;
@@ -3955,8 +3981,8 @@ static void resolve_decl_var(CodeGen *g, TldVar *tld_var, bool allow_lazy) {
     }
 
     if (var_decl->section_expr != nullptr) {
-        if (!analyze_const_string(g, tld_var->base.parent_scope, var_decl->section_expr, &tld_var->section_name)) {
-            tld_var->section_name = nullptr;
+        if (!analyze_const_string(g, tld_var->base.parent_scope, var_decl->section_expr, &tld_var->var->section_name)) {
+            tld_var->var->section_name = nullptr;
         }
     }
 
@@ -4787,11 +4813,16 @@ static void analyze_fn_body(CodeGen *g, ZigFn *fn_table_entry) {
     ZigType *fn_type = fn_table_entry->type_entry;
     assert(!fn_type->data.fn.is_generic);
 
-    ir_gen_fn(g, fn_table_entry);
+    if (!ir_gen_fn(g, fn_table_entry)) {
+        fn_table_entry->anal_state = FnAnalStateInvalid;
+        return;
+    }
+
     if (fn_table_entry->ir_executable->first_err_trace_msg != nullptr) {
         fn_table_entry->anal_state = FnAnalStateInvalid;
         return;
     }
+
     if (g->verbose_ir) {
         fprintf(stderr, "\n");
         ast_render(stderr, fn_table_entry->body_node, 4);
@@ -5282,7 +5313,10 @@ static uint32_t hash_const_val(ZigValue *const_val) {
         case ZigTypeIdAnyFrame:
             // TODO better hashing algorithm
             return 3747294894;
-        case ZigTypeIdBoundFn:
+        case ZigTypeIdBoundFn: {
+            assert(const_val->data.x_bound_fn.fn != nullptr);
+            return 3677364617 ^ hash_ptr(const_val->data.x_bound_fn.fn);
+        }
         case ZigTypeIdInvalid:
         case ZigTypeIdUnreachable:
             zig_unreachable();
@@ -6386,6 +6420,8 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
         }
         instruction->field_index = fields.length;
 
+        src_assert(child_type->id != ZigTypeIdPointer || child_type->data.pointer.inferred_struct_field == nullptr,
+                instruction->base.source_node);
         fields.append({name, child_type, instruction->align});
     }
 
@@ -7583,9 +7619,11 @@ bool err_ptr_eql(const ErrorTableEntry *a, const ErrorTableEntry *b) {
 }
 
 ZigValue *get_builtin_value(CodeGen *codegen, const char *name) {
-    Tld *tld = get_container_scope(codegen->compile_var_import)->decl_table.get(buf_create_from_str(name));
+    ScopeDecls *builtin_scope = get_container_scope(codegen->compile_var_import);
+    Tld *tld = find_container_decl(codegen, builtin_scope, buf_create_from_str(name));
+    assert(tld != nullptr);
     resolve_top_level_decl(codegen, tld, nullptr, false);
-    assert(tld->id == TldIdVar);
+    assert(tld->id == TldIdVar && tld->resolution == TldResolutionOk);
     TldVar *tld_var = (TldVar *)tld;
     ZigValue *var_value = tld_var->var->const_value;
     assert(var_value != nullptr);
