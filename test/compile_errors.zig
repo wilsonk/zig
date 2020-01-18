@@ -2,6 +2,106 @@ const tests = @import("tests.zig");
 const builtin = @import("builtin");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.addTest("non-exhaustive enums",
+        \\const A = enum {
+        \\    a,
+        \\    b,
+        \\    _ = 1,
+        \\};
+        \\const B = enum(u1) {
+        \\    a,
+        \\    _,
+        \\    b,
+        \\};
+        \\const C = enum(u1) {
+        \\    a,
+        \\    b,
+        \\    _,
+        \\};
+        \\pub export fn entry() void {
+        \\    _ = A;
+        \\    _ = B;
+        \\    _ = C;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:4:5: error: non-exhaustive enum must specify size",
+        "error: value assigned to '_' field of non-exhaustive enum",
+        "error: non-exhaustive enum specifies every value",
+        "error: '_' field of non-exhaustive enum must be last",
+    });
+
+    cases.addTest("switching with non-exhaustive enums",
+        \\const E = enum(u8) {
+        \\    a,
+        \\    b,
+        \\    _,
+        \\};
+        \\pub export fn entry() void {
+        \\    var e: E = .b;
+        \\    switch (e) { // error: switch not handling the tag `b`
+        \\        .a => {},
+        \\        _ => {},
+        \\    }
+        \\    switch (e) { // error: switch on non-exhaustive enum must include `else` or `_` prong
+        \\        .a => {},
+        \\        .b => {},
+        \\    }
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:8:5: error: enumeration value 'E.b' not handled in switch",
+        "tmp.zig:12:5: error: switch on non-exhaustive enum must include `else` or `_` prong",
+    });
+
+    cases.addTest("@export with empty name string",
+        \\pub export fn entry() void { }
+        \\comptime {
+        \\    @export(entry, .{ .name = "" });
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:5: error: exported symbol name cannot be empty",
+    });
+
+    cases.addTest("switch ranges endpoints are validated",
+        \\pub export fn entry() void {
+        \\    var x: i32 = 0;
+        \\    switch (x) {
+        \\        6...1 => {},
+        \\        -1...-5 => {},
+        \\        else => unreachable,
+        \\    }
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:4:9: error: range start value is greater than the end value",
+        "tmp.zig:5:9: error: range start value is greater than the end value",
+    });
+
+    cases.addTest("errors in for loop bodies are propagated",
+        \\pub export fn entry() void {
+        \\    var arr: [100]u8 = undefined;
+        \\    for (arr) |bits| _ = @popCount(bits);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:26: error: expected 2 arguments, found 1",
+    });
+
+    cases.addTest("@call rejects non comptime-known fn - always_inline",
+        \\pub export fn entry() void {
+        \\    var call_me: fn () void = undefined;
+        \\    @call(.{ .modifier = .always_inline }, call_me, .{});
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:5: error: the specified modifier requires a comptime-known function",
+    });
+
+    cases.addTest("@call rejects non comptime-known fn - compile_time",
+        \\pub export fn entry() void {
+        \\    var call_me: fn () void = undefined;
+        \\    @call(.{ .modifier = .compile_time }, call_me, .{});
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:5: error: the specified modifier requires a comptime-known function",
+    });
+
     cases.addTest("error in struct initializer doesn't crash the compiler",
         \\pub export fn entry() void {
         \\    const bitfield = struct {
@@ -89,25 +189,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:2:13: error: pointer type '[*]align(4) u8' requires aligned address",
     });
 
-    cases.add("switch on extern enum missing else prong",
-        \\const i = extern enum {
-        \\    n = 0,
-        \\    o = 2,
-        \\    p = 4,
-        \\    q = 4,
-        \\};
-        \\pub fn main() void {
-        \\    var x = @intToEnum(i, 52);
-        \\    switch (x) {
-        \\        .n,
-        \\        .o,
-        \\        .p => unreachable,
-        \\    }
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:9:5: error: switch on an extern enum must have an else prong",
-    });
-
     cases.add("invalid float literal",
         \\const std = @import("std");
         \\
@@ -166,7 +247,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:5:14: error: unable to perform 'never_inline' call at compile-time",
         "tmp.zig:8:14: error: unable to perform 'never_tail' call at compile-time",
         "tmp.zig:11:5: error: no-inline call of inline function",
-        "tmp.zig:15:43: error: unable to evaluate constant expression",
+        "tmp.zig:15:5: error: the specified modifier requires a comptime-known function",
     });
 
     cases.add("exported async function",
@@ -5650,10 +5731,10 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add("wrong types given to @export",
         \\fn entry() callconv(.C) void { }
         \\comptime {
-        \\    @export("entry", entry, @as(u32, 1234));
+        \\    @export(entry, .{.name = "entry", .linkage = @as(u32, 1234) });
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:29: error: expected type 'std.builtin.GlobalLinkage', found 'u32'",
+        "tmp.zig:3:50: error: expected type 'std.builtin.GlobalLinkage', found 'u32'",
     });
 
     cases.add("struct with invalid field",
