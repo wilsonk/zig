@@ -1,7 +1,33 @@
 const tests = @import("tests.zig");
 const builtin = @import("builtin");
+const Target = @import("std").Target;
 
 pub fn addCases(cases: *tests.TranslateCContext) void {
+    cases.add("array initializer w/ typedef",
+        \\typedef unsigned char uuid_t[16];
+        \\static const uuid_t UUID_NULL __attribute__ ((unused)) = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    , &[_][]const u8{
+        \\pub const uuid_t = [16]u8;
+        \\pub const UUID_NULL: uuid_t = .{
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
+        \\};
+    });
+
     cases.add("empty declaration",
         \\;
     , &[_][]const u8{""});
@@ -1005,7 +1031,12 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     });
 
     cases.addWithTarget("Calling convention", tests.Target{
-        .Cross = .{ .os = .linux, .arch = .i386, .abi = .none },
+        .Cross = .{
+            .os = .linux,
+            .arch = .i386,
+            .abi = .none,
+            .cpu_features = Target.Arch.i386.getBaselineCpuFeatures(),
+        },
     },
         \\void __attribute__((fastcall)) foo1(float *a);
         \\void __attribute__((stdcall)) foo2(float *a);
@@ -1021,7 +1052,12 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     });
 
     cases.addWithTarget("Calling convention", tests.Target{
-        .Cross = .{ .os = .linux, .arch = .{ .arm = .v8_5a }, .abi = .none },
+        .Cross = .{
+            .os = .linux,
+            .arch = .{ .arm = .v8_5a },
+            .abi = .none,
+            .cpu_features = (Target.Arch{ .arm = .v8_5a }).getBaselineCpuFeatures(),
+        },
     },
         \\void __attribute__((pcs("aapcs"))) foo1(float *a);
         \\void __attribute__((pcs("aapcs-vfp"))) foo2(float *a);
@@ -1031,7 +1067,12 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     });
 
     cases.addWithTarget("Calling convention", tests.Target{
-        .Cross = .{ .os = .linux, .arch = .{ .aarch64 = .v8_5a }, .abi = .none },
+        .Cross = .{
+            .os = .linux,
+            .arch = .{ .aarch64 = .v8_5a },
+            .abi = .none,
+            .cpu_features = (Target.Arch{ .aarch64 = .v8_5a }).getBaselineCpuFeatures(),
+        },
     },
         \\void __attribute__((aarch64_vector_pcs)) foo1(float *a);
     , &[_][]const u8{
@@ -2590,4 +2631,16 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    return foo((@intCast(c_int, @bitCast(i1, @intCast(u1, @boolToInt(c)))) != @intCast(c_int, @bitCast(i1, @intCast(u1, @boolToInt(b))))));
         \\}
     });
+
+    cases.add("Don't make const parameters mutable",
+        \\int max(const int x, int y) {
+        \\    return (x > y) ? x : y;
+        \\}
+    , &[_][]const u8{
+        \\pub export fn max(x: c_int, arg_y: c_int) c_int {
+        \\    var y = arg_y;
+        \\    return if (x > y) x else y;
+        \\}
+    });
+            
 }

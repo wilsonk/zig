@@ -81,10 +81,20 @@ pub fn getSelfDebugInfo() !*DebugInfo {
     }
 }
 
-fn wantTtyColor() bool {
+pub fn detectTTYConfig() TTY.Config {
     var bytes: [128]u8 = undefined;
     const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-    return if (process.getEnvVarOwned(allocator, "ZIG_DEBUG_COLOR")) |_| true else |_| stderr_file.isTty();
+    if (process.getEnvVarOwned(allocator, "ZIG_DEBUG_COLOR")) |_| {
+        return .escape_codes;
+    } else |_| {
+        if (stderr_file.supportsAnsiEscapeCodes()) {
+            return .escape_codes;
+        } else if (builtin.os == .windows and stderr_file.isTty()) {
+            return .windows_api;
+        } else {
+            return .no_color;
+        }
+    }
 }
 
 /// Tries to print the current stack trace to stderr, unbuffered, and ignores any error returned.
@@ -99,7 +109,7 @@ pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
         stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
-    writeCurrentStackTrace(stderr, debug_info, wantTtyColor(), start_addr) catch |err| {
+    writeCurrentStackTrace(stderr, debug_info, detectTTYConfig(), start_addr) catch |err| {
         stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
@@ -118,16 +128,16 @@ pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
         stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
-    const tty_color = wantTtyColor();
-    printSourceAtAddress(debug_info, stderr, ip, tty_color) catch return;
+    const tty_config = detectTTYConfig();
+    printSourceAtAddress(debug_info, stderr, ip, tty_config) catch return;
     const first_return_address = @intToPtr(*const usize, bp + @sizeOf(usize)).*;
-    printSourceAtAddress(debug_info, stderr, first_return_address - 1, tty_color) catch return;
+    printSourceAtAddress(debug_info, stderr, first_return_address - 1, tty_config) catch return;
     var it = StackIterator{
         .first_addr = null,
         .fp = bp,
     };
     while (it.next()) |return_address| {
-        printSourceAtAddress(debug_info, stderr, return_address - 1, tty_color) catch return;
+        printSourceAtAddress(debug_info, stderr, return_address - 1, tty_config) catch return;
     }
 }
 
@@ -191,7 +201,7 @@ pub fn dumpStackTrace(stack_trace: builtin.StackTrace) void {
         stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
-    writeStackTrace(stack_trace, stderr, getDebugInfoAllocator(), debug_info, wantTtyColor()) catch |err| {
+    writeStackTrace(stack_trace, stderr, getDebugInfoAllocator(), debug_info, detectTTYConfig()) catch |err| {
         stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
@@ -264,7 +274,7 @@ pub fn writeStackTrace(
     out_stream: var,
     allocator: *mem.Allocator,
     debug_info: *DebugInfo,
-    tty_color: bool,
+    tty_config: TTY.Config,
 ) !void {
     if (builtin.strip_debug_info) return error.MissingDebugInfo;
     var frame_index: usize = 0;
@@ -275,7 +285,7 @@ pub fn writeStackTrace(
         frame_index = (frame_index + 1) % stack_trace.instruction_addresses.len;
     }) {
         const return_address = stack_trace.instruction_addresses[frame_index];
-        try printSourceAtAddress(debug_info, out_stream, return_address - 1, tty_color);
+        try printSourceAtAddress(debug_info, out_stream, return_address - 1, tty_config);
     }
 }
 
@@ -319,20 +329,25 @@ pub const StackIterator = struct {
     }
 };
 
-pub fn writeCurrentStackTrace(out_stream: var, debug_info: *DebugInfo, tty_color: bool, start_addr: ?usize) !void {
+pub fn writeCurrentStackTrace(
+    out_stream: var,
+    debug_info: *DebugInfo,
+    tty_config: TTY.Config,
+    start_addr: ?usize,
+) !void {
     if (builtin.os == .windows) {
-        return writeCurrentStackTraceWindows(out_stream, debug_info, tty_color, start_addr);
+        return writeCurrentStackTraceWindows(out_stream, debug_info, tty_config, start_addr);
     }
     var it = StackIterator.init(start_addr);
     while (it.next()) |return_address| {
-        try printSourceAtAddress(debug_info, out_stream, return_address - 1, tty_color);
+        try printSourceAtAddress(debug_info, out_stream, return_address - 1, tty_config);
     }
 }
 
 pub fn writeCurrentStackTraceWindows(
     out_stream: var,
     debug_info: *DebugInfo,
-    tty_color: bool,
+    tty_config: TTY.Config,
     start_addr: ?usize,
 ) !void {
     var addr_buf: [1024]usize = undefined;
@@ -345,23 +360,28 @@ pub fn writeCurrentStackTraceWindows(
         return;
     } else 0;
     for (addrs[start_i..]) |addr| {
-        try printSourceAtAddress(debug_info, out_stream, addr, tty_color);
+        try printSourceAtAddress(debug_info, out_stream, addr, tty_config);
     }
 }
 
 /// TODO once https://github.com/ziglang/zig/issues/3157 is fully implemented,
 /// make this `noasync fn` and remove the individual noasync calls.
-pub fn printSourceAtAddress(debug_info: *DebugInfo, out_stream: var, address: usize, tty_color: bool) !void {
+pub fn printSourceAtAddress(debug_info: *DebugInfo, out_stream: var, address: usize, tty_config: TTY.Config) !void {
     if (builtin.os == .windows) {
-        return noasync printSourceAtAddressWindows(debug_info, out_stream, address, tty_color);
+        return noasync printSourceAtAddressWindows(debug_info, out_stream, address, tty_config);
     }
     if (comptime std.Target.current.isDarwin()) {
-        return noasync printSourceAtAddressMacOs(debug_info, out_stream, address, tty_color);
+        return noasync printSourceAtAddressMacOs(debug_info, out_stream, address, tty_config);
     }
-    return noasync printSourceAtAddressPosix(debug_info, out_stream, address, tty_color);
+    return noasync printSourceAtAddressPosix(debug_info, out_stream, address, tty_config);
 }
 
-fn printSourceAtAddressWindows(di: *DebugInfo, out_stream: var, relocated_address: usize, tty_color: bool) !void {
+fn printSourceAtAddressWindows(
+    di: *DebugInfo,
+    out_stream: var,
+    relocated_address: usize,
+    tty_config: TTY.Config,
+) !void {
     const allocator = getDebugInfoAllocator();
     const base_address = process.getBaseAddress();
     const relative_address = relocated_address - base_address;
@@ -379,16 +399,7 @@ fn printSourceAtAddressWindows(di: *DebugInfo, out_stream: var, relocated_addres
         }
     } else {
         // we have no information to add to the address
-        if (tty_color) {
-            try out_stream.print("???:?:?: ", .{});
-            setTtyColor(TtyColor.Dim);
-            try out_stream.print("0x{x} in ??? (???)", .{relocated_address});
-            setTtyColor(TtyColor.Reset);
-            try out_stream.print("\n\n\n", .{});
-        } else {
-            try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", .{relocated_address});
-        }
-        return;
+        return printLineInfo(out_stream, null, relocated_address, "???", "???", tty_config, printLineFromFileAnyOs);
     };
 
     const mod = &di.modules[mod_index];
@@ -510,137 +521,86 @@ fn printSourceAtAddressWindows(di: *DebugInfo, out_stream: var, relocated_addres
         }
     };
 
-    if (tty_color) {
-        setTtyColor(TtyColor.White);
-        if (opt_line_info) |li| {
-            try out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
-        } else {
-            try out_stream.print("???:?:?", .{});
-        }
-        setTtyColor(TtyColor.Reset);
-        try out_stream.print(": ", .{});
-        setTtyColor(TtyColor.Dim);
-        try out_stream.print("0x{x} in {} ({})", .{ relocated_address, symbol_name, obj_basename });
-        setTtyColor(TtyColor.Reset);
+    try printLineInfo(
+        out_stream,
+        opt_line_info,
+        relocated_address,
+        symbol_name,
+        obj_basename,
+        tty_config,
+        printLineFromFileAnyOs,
+    );
+}
 
-        if (opt_line_info) |line_info| {
-            try out_stream.print("\n", .{});
-            if (printLineFromFileAnyOs(out_stream, line_info)) {
-                if (line_info.column == 0) {
-                    try out_stream.write("\n");
-                } else {
-                    {
-                        var col_i: usize = 1;
-                        while (col_i < line_info.column) : (col_i += 1) {
-                            try out_stream.writeByte(' ');
-                        }
-                    }
-                    setTtyColor(TtyColor.Green);
-                    try out_stream.write("^");
-                    setTtyColor(TtyColor.Reset);
-                    try out_stream.write("\n");
-                }
-            } else |err| switch (err) {
-                error.EndOfFile => {},
-                error.FileNotFound => {
-                    setTtyColor(TtyColor.Dim);
-                    try out_stream.write("file not found\n\n");
-                    setTtyColor(TtyColor.White);
+pub const TTY = struct {
+    pub const Color = enum {
+        Red,
+        Green,
+        Cyan,
+        White,
+        Dim,
+        Bold,
+        Reset,
+    };
+
+    pub const Config = enum {
+        no_color,
+        escape_codes,
+        // TODO give this a payload of file handle
+        windows_api,
+
+        fn setColor(conf: Config, out_stream: var, color: Color) void {
+            switch (conf) {
+                .no_color => return,
+                .escape_codes => switch (color) {
+                    .Red => out_stream.write(RED) catch return,
+                    .Green => out_stream.write(GREEN) catch return,
+                    .Cyan => out_stream.write(CYAN) catch return,
+                    .White, .Bold => out_stream.write(WHITE) catch return,
+                    .Dim => out_stream.write(DIM) catch return,
+                    .Reset => out_stream.write(RESET) catch return,
                 },
-                else => return err,
+                .windows_api => if (builtin.os == .windows) {
+                    const S = struct {
+                        var attrs: windows.WORD = undefined;
+                        var init_attrs = false;
+                    };
+                    if (!S.init_attrs) {
+                        S.init_attrs = true;
+                        var info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
+                        // TODO handle error
+                        _ = windows.kernel32.GetConsoleScreenBufferInfo(stderr_file.handle, &info);
+                        S.attrs = info.wAttributes;
+                    }
+
+                    // TODO handle errors
+                    switch (color) {
+                        .Red => {
+                            _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_RED | windows.FOREGROUND_INTENSITY) catch {};
+                        },
+                        .Green => {
+                            _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_GREEN | windows.FOREGROUND_INTENSITY) catch {};
+                        },
+                        .Cyan => {
+                            _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_GREEN | windows.FOREGROUND_BLUE | windows.FOREGROUND_INTENSITY) catch {};
+                        },
+                        .White, .Bold => {
+                            _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_RED | windows.FOREGROUND_GREEN | windows.FOREGROUND_BLUE | windows.FOREGROUND_INTENSITY) catch {};
+                        },
+                        .Dim => {
+                            _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_INTENSITY) catch {};
+                        },
+                        .Reset => {
+                            _ = windows.SetConsoleTextAttribute(stderr_file.handle, S.attrs) catch {};
+                        },
+                    }
+                } else {
+                    unreachable;
+                },
             }
-        } else {
-            try out_stream.print("\n\n\n", .{});
         }
-    } else {
-        if (opt_line_info) |li| {
-            try out_stream.print("{}:{}:{}: 0x{x} in {} ({})\n\n\n", .{
-                li.file_name,
-                li.line,
-                li.column,
-                relocated_address,
-                symbol_name,
-                obj_basename,
-            });
-        } else {
-            try out_stream.print("???:?:?: 0x{x} in {} ({})\n\n\n", .{
-                relocated_address,
-                symbol_name,
-                obj_basename,
-            });
-        }
-    }
-}
-
-const TtyColor = enum {
-    Red,
-    Green,
-    Cyan,
-    White,
-    Dim,
-    Bold,
-    Reset,
+    };
 };
-
-/// TODO this is a special case hack right now. clean it up and maybe make it part of std.fmt
-fn setTtyColor(tty_color: TtyColor) void {
-    if (stderr_file.supportsAnsiEscapeCodes()) {
-        switch (tty_color) {
-            TtyColor.Red => {
-                stderr_file.write(RED) catch return;
-            },
-            TtyColor.Green => {
-                stderr_file.write(GREEN) catch return;
-            },
-            TtyColor.Cyan => {
-                stderr_file.write(CYAN) catch return;
-            },
-            TtyColor.White, TtyColor.Bold => {
-                stderr_file.write(WHITE) catch return;
-            },
-            TtyColor.Dim => {
-                stderr_file.write(DIM) catch return;
-            },
-            TtyColor.Reset => {
-                stderr_file.write(RESET) catch return;
-            },
-        }
-    } else {
-        const S = struct {
-            var attrs: windows.WORD = undefined;
-            var init_attrs = false;
-        };
-        if (!S.init_attrs) {
-            S.init_attrs = true;
-            var info: windows.CONSOLE_SCREEN_BUFFER_INFO = undefined;
-            // TODO handle error
-            _ = windows.kernel32.GetConsoleScreenBufferInfo(stderr_file.handle, &info);
-            S.attrs = info.wAttributes;
-        }
-
-        // TODO handle errors
-        switch (tty_color) {
-            TtyColor.Red => {
-                _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_RED | windows.FOREGROUND_INTENSITY) catch {};
-            },
-            TtyColor.Green => {
-                _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_GREEN | windows.FOREGROUND_INTENSITY) catch {};
-            },
-            TtyColor.Cyan => {
-                _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_GREEN | windows.FOREGROUND_BLUE | windows.FOREGROUND_INTENSITY) catch {};
-            },
-            TtyColor.White, TtyColor.Bold => {
-                _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_RED | windows.FOREGROUND_GREEN | windows.FOREGROUND_BLUE | windows.FOREGROUND_INTENSITY) catch {};
-            },
-            TtyColor.Dim => {
-                _ = windows.SetConsoleTextAttribute(stderr_file.handle, windows.FOREGROUND_INTENSITY) catch {};
-            },
-            TtyColor.Reset => {
-                _ = windows.SetConsoleTextAttribute(stderr_file.handle, S.attrs) catch {};
-            },
-        }
-    }
-}
 
 fn populateModule(di: *DebugInfo, mod: *Module) !void {
     if (mod.populated)
@@ -706,17 +666,12 @@ fn machoSearchSymbols(symbols: []const MachoSymbol, address: usize) ?*const Mach
     return null;
 }
 
-fn printSourceAtAddressMacOs(di: *DebugInfo, out_stream: var, address: usize, tty_color: bool) !void {
+fn printSourceAtAddressMacOs(di: *DebugInfo, out_stream: var, address: usize, tty_config: TTY.Config) !void {
     const base_addr = process.getBaseAddress();
     const adjusted_addr = 0x100000000 + (address - base_addr);
 
     const symbol = machoSearchSymbols(di.symbols, adjusted_addr) orelse {
-        if (tty_color) {
-            try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? (???)" ++ RESET ++ "\n\n\n", .{address});
-        } else {
-            try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", .{address});
-        }
-        return;
+        return printLineInfo(out_stream, null, address, "???", "???", tty_config, printLineFromFileAnyOs);
     };
 
     const symbol_name = mem.toSliceConst(u8, @ptrCast([*:0]const u8, di.strings.ptr + symbol.nlist.n_strx));
@@ -724,78 +679,70 @@ fn printSourceAtAddressMacOs(di: *DebugInfo, out_stream: var, address: usize, tt
         const ofile_path = mem.toSliceConst(u8, @ptrCast([*:0]const u8, di.strings.ptr + ofile.n_strx));
         break :blk fs.path.basename(ofile_path);
     } else "???";
-    if (getLineNumberInfoMacOs(di, symbol.*, adjusted_addr)) |line_info| {
-        defer line_info.deinit();
-        try printLineInfo(
-            out_stream,
-            line_info,
-            address,
-            symbol_name,
-            compile_unit_name,
-            tty_color,
-            printLineFromFileAnyOs,
-        );
-    } else |err| switch (err) {
-        error.MissingDebugInfo, error.InvalidDebugInfo => {
-            if (tty_color) {
-                try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in {} ({})" ++ RESET ++ "\n\n\n", .{
-                    address, symbol_name, compile_unit_name,
-                });
-            } else {
-                try out_stream.print("???:?:?: 0x{x} in {} ({})\n\n\n", .{ address, symbol_name, compile_unit_name });
-            }
-        },
+
+    const line_info = getLineNumberInfoMacOs(di, symbol.*, adjusted_addr) catch |err| switch (err) {
+        error.MissingDebugInfo, error.InvalidDebugInfo => null,
         else => return err,
-    }
+    };
+    defer if (line_info) |li| li.deinit();
+
+    try printLineInfo(
+        out_stream,
+        line_info,
+        address,
+        symbol_name,
+        compile_unit_name,
+        tty_config,
+        printLineFromFileAnyOs,
+    );
 }
 
-pub fn printSourceAtAddressPosix(debug_info: *DebugInfo, out_stream: var, address: usize, tty_color: bool) !void {
-    return debug_info.printSourceAtAddress(out_stream, address, tty_color, printLineFromFileAnyOs);
+pub fn printSourceAtAddressPosix(debug_info: *DebugInfo, out_stream: var, address: usize, tty_config: TTY.Config) !void {
+    return debug_info.printSourceAtAddress(out_stream, address, tty_config, printLineFromFileAnyOs);
 }
 
 fn printLineInfo(
     out_stream: var,
-    line_info: LineInfo,
+    line_info: ?LineInfo,
     address: usize,
     symbol_name: []const u8,
     compile_unit_name: []const u8,
-    tty_color: bool,
+    tty_config: TTY.Config,
     comptime printLineFromFile: var,
 ) !void {
-    if (tty_color) {
-        try out_stream.print(WHITE ++ "{}:{}:{}" ++ RESET ++ ": " ++ DIM ++ "0x{x} in {} ({})" ++ RESET ++ "\n", .{
-            line_info.file_name,
-            line_info.line,
-            line_info.column,
-            address,
-            symbol_name,
-            compile_unit_name,
-        });
-        if (printLineFromFile(out_stream, line_info)) {
-            if (line_info.column == 0) {
-                try out_stream.write("\n");
-            } else {
-                {
-                    var col_i: usize = 1;
-                    while (col_i < line_info.column) : (col_i += 1) {
-                        try out_stream.writeByte(' ');
-                    }
-                }
-                try out_stream.write(GREEN ++ "^" ++ RESET ++ "\n");
+    tty_config.setColor(out_stream, .White);
+
+    if (line_info) |*li| {
+        try out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
+    } else {
+        try out_stream.print("???:?:?", .{});
+    }
+
+    tty_config.setColor(out_stream, .Reset);
+    try out_stream.write(": ");
+    tty_config.setColor(out_stream, .Dim);
+    try out_stream.print("0x{x} in {} ({})", .{ address, symbol_name, compile_unit_name });
+    tty_config.setColor(out_stream, .Reset);
+    try out_stream.write("\n");
+
+    // Show the matching source code line if possible
+    if (line_info) |li| {
+        if (noasync printLineFromFile(out_stream, li)) {
+            if (li.column > 0) {
+                // The caret already takes one char
+                const space_needed = @intCast(usize, li.column - 1);
+
+                try out_stream.writeByteNTimes(' ', space_needed);
+                tty_config.setColor(out_stream, .Green);
+                try out_stream.write("^");
+                tty_config.setColor(out_stream, .Reset);
             }
+            try out_stream.write("\n");
         } else |err| switch (err) {
             error.EndOfFile, error.FileNotFound => {},
+            error.BadPathName => {},
             else => return err,
         }
-    } else {
-        try out_stream.print("{}:{}:{}: 0x{x} in {} ({})\n", .{
-            line_info.file_name,
-            line_info.line,
-            line_info.column,
-            address,
-            symbol_name,
-            compile_unit_name,
-        });
     }
 }
 
@@ -1236,42 +1183,30 @@ pub const DwarfInfo = struct {
         self: *DwarfInfo,
         out_stream: var,
         address: usize,
-        tty_color: bool,
+        tty_config: TTY.Config,
         comptime printLineFromFile: var,
     ) !void {
         const compile_unit = self.findCompileUnit(address) catch {
-            if (tty_color) {
-                try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? (???)" ++ RESET ++ "\n\n\n", .{address});
-            } else {
-                try out_stream.print("???:?:?: 0x{x} in ??? (???)\n\n\n", .{address});
-            }
-            return;
+            return printLineInfo(out_stream, null, address, "???", "???", tty_config, printLineFromFile);
         };
+
         const compile_unit_name = try compile_unit.die.getAttrString(self, DW.AT_name);
-        if (self.getLineNumberInfo(compile_unit.*, address)) |line_info| {
-            defer line_info.deinit();
-            const symbol_name = self.getSymbolName(address) orelse "???";
-            try printLineInfo(
-                out_stream,
-                line_info,
-                address,
-                symbol_name,
-                compile_unit_name,
-                tty_color,
-                printLineFromFile,
-            );
-        } else |err| switch (err) {
-            error.MissingDebugInfo, error.InvalidDebugInfo => {
-                if (tty_color) {
-                    try out_stream.print("???:?:?: " ++ DIM ++ "0x{x} in ??? ({})" ++ RESET ++ "\n\n\n", .{
-                        address, compile_unit_name,
-                    });
-                } else {
-                    try out_stream.print("???:?:?: 0x{x} in ??? ({})\n\n\n", .{ address, compile_unit_name });
-                }
-            },
+        const symbol_name = self.getSymbolName(address) orelse "???";
+        const line_info = self.getLineNumberInfo(compile_unit.*, address) catch |err| switch (err) {
+            error.MissingDebugInfo, error.InvalidDebugInfo => null,
             else => return err,
-        }
+        };
+        defer if (line_info) |li| li.deinit();
+
+        try printLineInfo(
+            out_stream,
+            line_info,
+            address,
+            symbol_name,
+            compile_unit_name,
+            tty_config,
+            printLineFromFile,
+        );
     }
 
     fn getSymbolName(di: *DwarfInfo, address: u64) ?[]const u8 {
@@ -1458,9 +1393,13 @@ pub const DwarfInfo = struct {
             if (compile_unit.pc_range) |range| {
                 if (target_address >= range.start and target_address < range.end) return compile_unit;
             }
-            if (compile_unit.die.getAttrSecOffset(DW.AT_ranges)) |ranges_offset| {
-                var base_address: usize = 0;
-                if (di.debug_ranges) |debug_ranges| {
+            if (di.debug_ranges) |debug_ranges| {
+                if (compile_unit.die.getAttrSecOffset(DW.AT_ranges)) |ranges_offset| {
+                    // All the addresses in the list are relative to the value
+                    // specified by DW_AT_low_pc or to some other value encoded
+                    // in the list itself
+                    var base_address = try compile_unit.die.getAttrAddr(DW.AT_low_pc);
+
                     try di.dwarf_seekable_stream.seekTo(debug_ranges.offset + ranges_offset);
                     while (true) {
                         const begin_addr = try di.dwarf_in_stream.readIntLittle(usize);
@@ -1468,18 +1407,21 @@ pub const DwarfInfo = struct {
                         if (begin_addr == 0 and end_addr == 0) {
                             break;
                         }
+                        // This entry selects a new value for the base address
                         if (begin_addr == maxInt(usize)) {
-                            base_address = begin_addr;
+                            base_address = end_addr;
                             continue;
                         }
-                        if (target_address >= begin_addr and target_address < end_addr) {
+                        if (target_address >= base_address + begin_addr and target_address < base_address + end_addr) {
                             return compile_unit;
                         }
                     }
+
+                    return error.InvalidDebugInfo;
+                } else |err| {
+                    if (err != error.MissingDebugInfo) return err;
+                    continue;
                 }
-            } else |err| {
-                if (err != error.MissingDebugInfo) return err;
-                continue;
             }
         }
         return error.MissingDebugInfo;
@@ -1552,7 +1494,8 @@ pub const DwarfInfo = struct {
 
         assert(line_info_offset < di.debug_line.size);
 
-        try di.dwarf_seekable_stream.seekTo(di.debug_line.offset + line_info_offset);
+        const this_unit_offset = di.debug_line.offset + line_info_offset;
+        try di.dwarf_seekable_stream.seekTo(this_unit_offset);
 
         var is_64: bool = undefined;
         const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
@@ -1620,7 +1563,9 @@ pub const DwarfInfo = struct {
 
         try di.dwarf_seekable_stream.seekTo(prog_start_offset);
 
-        while (true) {
+        const next_unit_pos = this_unit_offset + next_offset;
+
+        while ((try di.dwarf_seekable_stream.getPos()) < next_unit_pos) {
             const opcode = try di.dwarf_in_stream.readByte();
 
             if (opcode == DW.LNS_extended_op) {
@@ -1631,7 +1576,7 @@ pub const DwarfInfo = struct {
                     DW.LNE_end_sequence => {
                         prog.end_sequence = true;
                         if (try prog.checkLineMatch()) |info| return info;
-                        return error.MissingDebugInfo;
+                        prog.reset();
                     },
                     DW.LNE_set_address => {
                         const addr = try di.dwarf_in_stream.readInt(usize, di.endian);
@@ -1888,6 +1833,7 @@ const LineNumberProgram = struct {
     basic_block: bool,
     end_sequence: bool,
 
+    default_is_stmt: bool,
     target_address: usize,
     include_dirs: []const []const u8,
     file_entries: *ArrayList(FileEntry),
@@ -1900,6 +1846,25 @@ const LineNumberProgram = struct {
     prev_basic_block: bool,
     prev_end_sequence: bool,
 
+    // Reset the state machine following the DWARF specification
+    pub fn reset(self: *LineNumberProgram) void {
+        self.address = 0;
+        self.file = 1;
+        self.line = 1;
+        self.column = 0;
+        self.is_stmt = self.default_is_stmt;
+        self.basic_block = false;
+        self.end_sequence = false;
+        // Invalidate all the remaining fields
+        self.prev_address = 0;
+        self.prev_file = undefined;
+        self.prev_line = undefined;
+        self.prev_column = undefined;
+        self.prev_is_stmt = undefined;
+        self.prev_basic_block = undefined;
+        self.prev_end_sequence = undefined;
+    }
+
     pub fn init(is_stmt: bool, include_dirs: []const []const u8, file_entries: *ArrayList(FileEntry), target_address: usize) LineNumberProgram {
         return LineNumberProgram{
             .address = 0,
@@ -1911,6 +1876,7 @@ const LineNumberProgram = struct {
             .end_sequence = false,
             .include_dirs = include_dirs,
             .file_entries = file_entries,
+            .default_is_stmt = is_stmt,
             .target_address = target_address,
             .prev_address = 0,
             .prev_file = undefined,
