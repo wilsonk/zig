@@ -103,6 +103,9 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  -D[macro]=[value]            define C [macro] to [value] (1 if [value] omitted)\n"
         "  -target-cpu [cpu]            target one specific CPU by name\n"
         "  -target-feature [features]   specify the set of CPU features to target\n"
+        "  -code-model [default|tiny|   set target code model\n"
+        "               small|kernel|\n"
+        "               medium|large]\n"
         "\n"
         "Link Options:\n"
         "  --bundle-compiler-rt         for static libraries, include compiler-rt symbols\n"
@@ -132,6 +135,7 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --test-name-prefix [text]    add prefix to all tests\n"
         "  --test-cmd [arg]             specify test execution command one arg at a time\n"
         "  --test-cmd-bin               appends test binary path to test cmd args\n"
+        "  --test-evented-io            runs the test in evented I/O mode\n"
     , arg0);
     return return_code;
 }
@@ -425,6 +429,7 @@ int main(int argc, char **argv) {
     ZigList<CFile *> c_source_files = {0};
     const char *test_filter = nullptr;
     const char *test_name_prefix = nullptr;
+    bool test_evented_io = false;
     size_t ver_major = 0;
     size_t ver_minor = 0;
     size_t ver_patch = 0;
@@ -452,6 +457,7 @@ int main(int argc, char **argv) {
     bool function_sections = false;
     const char *cpu = nullptr;
     const char *features = nullptr;
+    CodeModel code_model = CodeModelDefault;
 
     ZigList<const char *> llvm_argv = {0};
     llvm_argv.append("zig (LLVM option parsing)");
@@ -705,6 +711,8 @@ int main(int argc, char **argv) {
                 cur_pkg = cur_pkg->parent;
             } else if (strcmp(arg, "-ffunction-sections") == 0) {
                 function_sections = true;
+            } else if (strcmp(arg, "--test-evented-io") == 0) {
+                test_evented_io = true;
             } else if (i + 1 >= argc) {
                 fprintf(stderr, "Expected another argument after %s\n", arg);
                 return print_error_usage(arg0);
@@ -768,6 +776,23 @@ int main(int argc, char **argv) {
                     clang_argv.append(argv[i]);
 
                     llvm_argv.append(argv[i]);
+                } else if (strcmp(arg, "-code-model") == 0) {
+                    if (strcmp(argv[i], "default") == 0) {
+                        code_model = CodeModelDefault;
+                    } else if (strcmp(argv[i], "tiny") == 0) {
+                        code_model = CodeModelTiny;
+                    } else if (strcmp(argv[i], "small") == 0) {
+                        code_model = CodeModelSmall;
+                    } else if (strcmp(argv[i], "kernel") == 0) {
+                        code_model = CodeModelKernel;
+                    } else if (strcmp(argv[i], "medium") == 0) {
+                        code_model = CodeModelMedium;
+                    } else if (strcmp(argv[i], "large") == 0) {
+                        code_model = CodeModelLarge;
+                    } else {
+                        fprintf(stderr, "-code-model options are 'default', 'tiny', 'small', 'kernel', 'medium', or 'large'\n");
+                        return print_error_usage(arg0);
+                    }
                 } else if (strcmp(arg, "--override-lib-dir") == 0) {
                     override_lib_dir = buf_create_from_str(argv[i]);
                 } else if (strcmp(arg, "--main-pkg-path") == 0) {
@@ -1038,6 +1063,7 @@ int main(int argc, char **argv) {
         g->want_stack_check = want_stack_check;
         g->want_sanitize_c = want_sanitize_c;
         g->want_single_threaded = want_single_threaded;
+        g->test_is_evented = test_evented_io;
         Buf *builtin_source = codegen_generate_builtin_source(g);
         if (fwrite(buf_ptr(builtin_source), 1, buf_len(builtin_source), stdout) != buf_len(builtin_source)) {
             fprintf(stderr, "unable to write to stdout: %s\n", strerror(ferror(stdout)));
@@ -1170,6 +1196,7 @@ int main(int argc, char **argv) {
             codegen_set_errmsg_color(g, color);
             g->system_linker_hack = system_linker_hack;
             g->function_sections = function_sections;
+            g->code_model = code_model;
 
 
             for (size_t i = 0; i < lib_dirs.length; i += 1) {
@@ -1210,6 +1237,7 @@ int main(int argc, char **argv) {
             if (test_filter) {
                 codegen_set_test_filter(g, buf_create_from_str(test_filter));
             }
+            g->test_is_evented = test_evented_io;
 
             if (test_name_prefix) {
                 codegen_set_test_name_prefix(g, buf_create_from_str(test_name_prefix));

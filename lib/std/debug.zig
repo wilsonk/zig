@@ -19,8 +19,8 @@ const windows = std.os.windows;
 
 pub const leb = @import("debug/leb128.zig");
 
-pub const FailingAllocator = @import("debug/failing_allocator.zig").FailingAllocator;
-pub const failing_allocator = &FailingAllocator.init(global_allocator, 0).allocator;
+pub const global_allocator = @compileError("Please switch to std.testing.allocator.");
+pub const failing_allocator = @compileError("Please switch to std.testing.failing_allocator.");
 
 pub const runtime_safety = switch (builtin.mode) {
     .Debug, .ReleaseSafe => true,
@@ -50,7 +50,7 @@ pub fn warn(comptime fmt: []const u8, args: var) void {
     const held = stderr_mutex.acquire();
     defer held.release();
     const stderr = getStderrStream();
-    stderr.print(fmt, args) catch return;
+    noasync stderr.print(fmt, args) catch return;
 }
 
 pub fn getStderrStream() *io.OutStream(File.WriteError) {
@@ -102,15 +102,15 @@ pub fn detectTTYConfig() TTY.Config {
 pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
+        noasync stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     writeCurrentStackTrace(stderr, debug_info, detectTTYConfig(), start_addr) catch |err| {
-        stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
 }
@@ -121,21 +121,16 @@ pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
 pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
+        noasync stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     const tty_config = detectTTYConfig();
     printSourceAtAddress(debug_info, stderr, ip, tty_config) catch return;
-    const first_return_address = @intToPtr(*const usize, bp + @sizeOf(usize)).*;
-    printSourceAtAddress(debug_info, stderr, first_return_address - 1, tty_config) catch return;
-    var it = StackIterator{
-        .first_addr = null,
-        .fp = bp,
-    };
+    var it = StackIterator.init(null, bp);
     while (it.next()) |return_address| {
         printSourceAtAddress(debug_info, stderr, return_address - 1, tty_config) catch return;
     }
@@ -178,7 +173,7 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace
         }
         stack_trace.index = slice.len;
     } else {
-        var it = StackIterator.init(first_address);
+        var it = StackIterator.init(first_address, null);
         for (stack_trace.instruction_addresses) |*addr, i| {
             addr.* = it.next() orelse {
                 stack_trace.index = i;
@@ -194,15 +189,15 @@ pub fn captureStackTrace(first_address: ?usize, stack_trace: *builtin.StackTrace
 pub fn dumpStackTrace(stack_trace: builtin.StackTrace) void {
     const stderr = getStderrStream();
     if (builtin.strip_debug_info) {
-        stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
+        noasync stderr.print("Unable to dump stack trace: debug info stripped\n", .{}) catch return;
         return;
     }
     const debug_info = getSelfDebugInfo() catch |err| {
-        stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
         return;
     };
     writeStackTrace(stack_trace, stderr, getDebugInfoAllocator(), debug_info, detectTTYConfig()) catch |err| {
-        stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
+        noasync stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
         return;
     };
 }
@@ -243,7 +238,7 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
     switch (@atomicRmw(u8, &panicking, .Add, 1, .SeqCst)) {
         0 => {
             const stderr = getStderrStream();
-            stderr.print(format ++ "\n", args) catch os.abort();
+            noasync stderr.print(format ++ "\n", args) catch os.abort();
             if (trace) |t| {
                 dumpStackTrace(t.*);
             }
@@ -290,13 +285,15 @@ pub fn writeStackTrace(
 }
 
 pub const StackIterator = struct {
-    first_addr: ?usize,
+    // Skip every frame before this address is found
+    first_address: ?usize,
+    // Last known value of the frame pointer register
     fp: usize,
 
-    pub fn init(first_addr: ?usize) StackIterator {
+    pub fn init(first_address: ?usize, fp: ?usize) StackIterator {
         return StackIterator{
-            .first_addr = first_addr,
-            .fp = @frameAddress(),
+            .first_address = first_address,
+            .fp = fp orelse @frameAddress(),
         };
     }
 
@@ -304,28 +301,45 @@ pub const StackIterator = struct {
     // the previous fp is stored, while on some other architectures such as
     // RISC-V it points to the "top" of the frame, just above where the previous
     // fp and the return address are stored.
-    const fp_adjust_factor = if (builtin.arch == .riscv32 or builtin.arch == .riscv64)
+    const fp_offset = if (builtin.arch.isRISCV())
         2 * @sizeOf(usize)
     else
         0;
 
     fn next(self: *StackIterator) ?usize {
-        if (self.fp <= fp_adjust_factor) return null;
-        self.fp = @intToPtr(*const usize, self.fp - fp_adjust_factor).*;
-        if (self.fp <= fp_adjust_factor) return null;
+        var address = self.next_internal() orelse return null;
 
-        if (self.first_addr) |addr| {
-            while (self.fp > fp_adjust_factor) : (self.fp = @intToPtr(*const usize, self.fp - fp_adjust_factor).*) {
-                const return_address = @intToPtr(*const usize, self.fp - fp_adjust_factor + @sizeOf(usize)).*;
-                if (addr == return_address) {
-                    self.first_addr = null;
-                    return return_address;
-                }
+        if (self.first_address) |first_address| {
+            while (address != first_address) {
+                address = self.next_internal() orelse return null;
             }
+            self.first_address = null;
         }
 
-        const return_address = @intToPtr(*const usize, self.fp - fp_adjust_factor + @sizeOf(usize)).*;
-        return return_address;
+        return address;
+    }
+
+    fn next_internal(self: *StackIterator) ?usize {
+        const fp = math.sub(usize, self.fp, fp_offset) catch return null;
+
+        // Sanity check
+        if (fp == 0 or !mem.isAligned(fp, @alignOf(usize)))
+            return null;
+
+        const new_fp = @intToPtr(*const usize, fp).*;
+
+        // Sanity check: the stack grows down thus all the parent frames must be
+        // be at addresses that are greater (or equal) than the previous one.
+        // A zero frame pointer often signals this is the last frame, that case
+        // is gracefully handled by the next call to next_internal
+        if (new_fp != 0 and new_fp < self.fp)
+            return null;
+
+        const new_pc = @intToPtr(*const usize, fp + @sizeOf(usize)).*;
+
+        self.fp = new_fp;
+
+        return new_pc;
     }
 };
 
@@ -338,7 +352,7 @@ pub fn writeCurrentStackTrace(
     if (builtin.os == .windows) {
         return writeCurrentStackTraceWindows(out_stream, debug_info, tty_config, start_addr);
     }
-    var it = StackIterator.init(start_addr);
+    var it = StackIterator.init(start_addr, null);
     while (it.next()) |return_address| {
         try printSourceAtAddress(debug_info, out_stream, return_address - 1, tty_config);
     }
@@ -360,7 +374,7 @@ pub fn writeCurrentStackTraceWindows(
         return;
     } else 0;
     for (addrs[start_i..]) |addr| {
-        try printSourceAtAddress(debug_info, out_stream, addr, tty_config);
+        try printSourceAtAddress(debug_info, out_stream, addr - 1, tty_config);
     }
 }
 
@@ -376,6 +390,7 @@ pub fn printSourceAtAddress(debug_info: *DebugInfo, out_stream: var, address: us
     return noasync printSourceAtAddressPosix(debug_info, out_stream, address, tty_config);
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn printSourceAtAddressWindows(
     di: *DebugInfo,
     out_stream: var,
@@ -412,7 +427,7 @@ fn printSourceAtAddressWindows(
         if (prefix.RecordLen < 2)
             return error.InvalidDebugInfo;
         switch (prefix.RecordKind) {
-            pdb.SymbolKind.S_LPROC32 => {
+            .S_LPROC32, .S_GPROC32 => {
                 const proc_sym = @ptrCast(*pdb.ProcSym, &mod.symbols[symbol_i + @sizeOf(pdb.RecordPrefix)]);
                 const vaddr_start = coff_section.header.virtual_address + proc_sym.CodeOffset;
                 const vaddr_end = vaddr_start + proc_sym.CodeSize;
@@ -470,7 +485,7 @@ fn printSourceAtAddressWindows(
                                 line_index += @sizeOf(pdb.LineNumberEntry);
 
                                 const vaddr_start = frag_vaddr_start + line_num_entry.Offset;
-                                if (relative_address <= vaddr_start) {
+                                if (relative_address < vaddr_start) {
                                     break;
                                 }
                             }
@@ -553,12 +568,12 @@ pub const TTY = struct {
             switch (conf) {
                 .no_color => return,
                 .escape_codes => switch (color) {
-                    .Red => out_stream.write(RED) catch return,
-                    .Green => out_stream.write(GREEN) catch return,
-                    .Cyan => out_stream.write(CYAN) catch return,
-                    .White, .Bold => out_stream.write(WHITE) catch return,
-                    .Dim => out_stream.write(DIM) catch return,
-                    .Reset => out_stream.write(RESET) catch return,
+                    .Red => noasync out_stream.write(RED) catch return,
+                    .Green => noasync out_stream.write(GREEN) catch return,
+                    .Cyan => noasync out_stream.write(CYAN) catch return,
+                    .White, .Bold => noasync out_stream.write(WHITE) catch return,
+                    .Dim => noasync out_stream.write(DIM) catch return,
+                    .Reset => noasync out_stream.write(RESET) catch return,
                 },
                 .windows_api => if (builtin.os == .windows) {
                     const S = struct {
@@ -602,6 +617,7 @@ pub const TTY = struct {
     };
 };
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn populateModule(di: *DebugInfo, mod: *Module) !void {
     if (mod.populated)
         return;
@@ -713,17 +729,17 @@ fn printLineInfo(
     tty_config.setColor(out_stream, .White);
 
     if (line_info) |*li| {
-        try out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
+        try noasync out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
     } else {
-        try out_stream.print("???:?:?", .{});
+        try noasync out_stream.write("???:?:?");
     }
 
     tty_config.setColor(out_stream, .Reset);
-    try out_stream.write(": ");
+    try noasync out_stream.write(": ");
     tty_config.setColor(out_stream, .Dim);
-    try out_stream.print("0x{x} in {} ({})", .{ address, symbol_name, compile_unit_name });
+    try noasync out_stream.print("0x{x} in {} ({})", .{ address, symbol_name, compile_unit_name });
     tty_config.setColor(out_stream, .Reset);
-    try out_stream.write("\n");
+    try noasync out_stream.write("\n");
 
     // Show the matching source code line if possible
     if (line_info) |li| {
@@ -732,12 +748,12 @@ fn printLineInfo(
                 // The caret already takes one char
                 const space_needed = @intCast(usize, li.column - 1);
 
-                try out_stream.writeByteNTimes(' ', space_needed);
+                try noasync out_stream.writeByteNTimes(' ', space_needed);
                 tty_config.setColor(out_stream, .Green);
-                try out_stream.write("^");
+                try noasync out_stream.write("^");
                 tty_config.setColor(out_stream, .Reset);
             }
-            try out_stream.write("\n");
+            try noasync out_stream.write("\n");
         } else |err| switch (err) {
             error.EndOfFile, error.FileNotFound => {},
             error.BadPathName => {},
@@ -753,6 +769,7 @@ pub const OpenSelfDebugInfoError = error{
     UnsupportedOperatingSystem,
 };
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 /// TODO once https://github.com/ziglang/zig/issues/3157 is fully implemented,
 /// make this `noasync fn` and remove the individual noasync calls.
 pub fn openSelfDebugInfo(allocator: *mem.Allocator) !DebugInfo {
@@ -944,8 +961,8 @@ fn readSparseBitVector(stream: var, allocator: *mem.Allocator) ![]usize {
 fn findDwarfSectionFromElf(elf_file: *elf.Elf, name: []const u8) !?DwarfInfo.Section {
     const elf_header = (try elf_file.findSection(name)) orelse return null;
     return DwarfInfo.Section{
-        .offset = elf_header.offset,
-        .size = elf_header.size,
+        .offset = elf_header.sh_offset,
+        .size = elf_header.sh_size,
     };
 }
 
@@ -961,63 +978,66 @@ pub fn openDwarfDebugInfo(di: *DwarfInfo, allocator: *mem.Allocator) !void {
     try di.scanAllCompileUnits();
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 pub fn openElfDebugInfo(
     allocator: *mem.Allocator,
-    elf_seekable_stream: *DwarfSeekableStream,
-    elf_in_stream: *DwarfInStream,
+    data: []u8,
 ) !DwarfInfo {
-    var efile = try elf.Elf.openStream(allocator, elf_seekable_stream, elf_in_stream);
-    errdefer efile.close();
+    var seekable_stream = io.SliceSeekableInStream.init(data);
+    var efile = try elf.Elf.openStream(
+        allocator,
+        @ptrCast(*DwarfSeekableStream, &seekable_stream.seekable_stream),
+        @ptrCast(*DwarfInStream, &seekable_stream.stream),
+    );
+    defer efile.close();
+
+    const debug_info = (try efile.findSection(".debug_info")) orelse
+        return error.MissingDebugInfo;
+    const debug_abbrev = (try efile.findSection(".debug_abbrev")) orelse
+        return error.MissingDebugInfo;
+    const debug_str = (try efile.findSection(".debug_str")) orelse
+        return error.MissingDebugInfo;
+    const debug_line = (try efile.findSection(".debug_line")) orelse
+        return error.MissingDebugInfo;
+    const opt_debug_ranges = try efile.findSection(".debug_ranges");
 
     var di = DwarfInfo{
-        .dwarf_seekable_stream = elf_seekable_stream,
-        .dwarf_in_stream = elf_in_stream,
         .endian = efile.endian,
-        .debug_info = (try findDwarfSectionFromElf(&efile, ".debug_info")) orelse return error.MissingDebugInfo,
-        .debug_abbrev = (try findDwarfSectionFromElf(&efile, ".debug_abbrev")) orelse return error.MissingDebugInfo,
-        .debug_str = (try findDwarfSectionFromElf(&efile, ".debug_str")) orelse return error.MissingDebugInfo,
-        .debug_line = (try findDwarfSectionFromElf(&efile, ".debug_line")) orelse return error.MissingDebugInfo,
-        .debug_ranges = (try findDwarfSectionFromElf(&efile, ".debug_ranges")),
-        .abbrev_table_list = undefined,
-        .compile_unit_list = undefined,
-        .func_list = undefined,
+        .debug_info = (data[@intCast(usize, debug_info.sh_offset)..@intCast(usize, debug_info.sh_offset + debug_info.sh_size)]),
+        .debug_abbrev = (data[@intCast(usize, debug_abbrev.sh_offset)..@intCast(usize, debug_abbrev.sh_offset + debug_abbrev.sh_size)]),
+        .debug_str = (data[@intCast(usize, debug_str.sh_offset)..@intCast(usize, debug_str.sh_offset + debug_str.sh_size)]),
+        .debug_line = (data[@intCast(usize, debug_line.sh_offset)..@intCast(usize, debug_line.sh_offset + debug_line.sh_size)]),
+        .debug_ranges = if (opt_debug_ranges) |debug_ranges|
+            data[@intCast(usize, debug_ranges.sh_offset)..@intCast(usize, debug_ranges.sh_offset + debug_ranges.sh_size)]
+        else
+            null,
     };
+
     try openDwarfDebugInfo(&di, allocator);
     return di;
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn openSelfDebugInfoPosix(allocator: *mem.Allocator) !DwarfInfo {
-    const S = struct {
-        var self_exe_file: File = undefined;
-        var self_exe_mmap_seekable: io.SliceSeekableInStream = undefined;
-    };
+    var exe_file = try fs.openSelfExe();
+    errdefer exe_file.close();
 
-    S.self_exe_file = try fs.openSelfExe();
-    errdefer S.self_exe_file.close();
-
-    const self_exe_len = math.cast(usize, try S.self_exe_file.getEndPos()) catch return error.DebugInfoTooLarge;
-    const self_exe_mmap_len = mem.alignForward(self_exe_len, mem.page_size);
-    const self_exe_mmap = try os.mmap(
+    const exe_len = math.cast(usize, try exe_file.getEndPos()) catch
+        return error.DebugInfoTooLarge;
+    const exe_mmap = try os.mmap(
         null,
-        self_exe_mmap_len,
+        exe_len,
         os.PROT_READ,
         os.MAP_SHARED,
-        S.self_exe_file.handle,
+        exe_file.handle,
         0,
     );
-    errdefer os.munmap(self_exe_mmap);
+    errdefer os.munmap(exe_mmap);
 
-    S.self_exe_mmap_seekable = io.SliceSeekableInStream.init(self_exe_mmap);
-
-    return openElfDebugInfo(
-        allocator,
-        // TODO https://github.com/ziglang/zig/issues/764
-        @ptrCast(*DwarfSeekableStream, &S.self_exe_mmap_seekable.seekable_stream),
-        // TODO https://github.com/ziglang/zig/issues/764
-        @ptrCast(*DwarfInStream, &S.self_exe_mmap_seekable.stream),
-    );
+    return openElfDebugInfo(allocator, exe_mmap);
 }
 
+/// TODO resources https://github.com/ziglang/zig/issues/4353
 fn openSelfDebugInfoMacOs(allocator: *mem.Allocator) !DebugInfo {
     const hdr = &std.c._mh_execute_header;
     assert(hdr.magic == std.macho.MH_MAGIC_64);
@@ -1142,39 +1162,24 @@ const MachoSymbol = struct {
     }
 };
 
-const MachOFile = struct {
-    bytes: []align(@alignOf(macho.mach_header_64)) const u8,
-    sect_debug_info: ?*const macho.section_64,
-    sect_debug_line: ?*const macho.section_64,
-};
-
 pub const DwarfSeekableStream = io.SeekableStream(anyerror, anyerror);
 pub const DwarfInStream = io.InStream(anyerror);
 
 pub const DwarfInfo = struct {
-    dwarf_seekable_stream: *DwarfSeekableStream,
-    dwarf_in_stream: *DwarfInStream,
     endian: builtin.Endian,
-    debug_info: Section,
-    debug_abbrev: Section,
-    debug_str: Section,
-    debug_line: Section,
-    debug_ranges: ?Section,
-    abbrev_table_list: ArrayList(AbbrevTableHeader),
-    compile_unit_list: ArrayList(CompileUnit),
-    func_list: ArrayList(Func),
-
-    pub const Section = struct {
-        offset: u64,
-        size: u64,
-    };
+    // No memory is owned by the DwarfInfo
+    debug_info: []u8,
+    debug_abbrev: []u8,
+    debug_str: []u8,
+    debug_line: []u8,
+    debug_ranges: ?[]u8,
+    // Filled later by the initializer
+    abbrev_table_list: ArrayList(AbbrevTableHeader) = undefined,
+    compile_unit_list: ArrayList(CompileUnit) = undefined,
+    func_list: ArrayList(Func) = undefined,
 
     pub fn allocator(self: DwarfInfo) *mem.Allocator {
         return self.abbrev_table_list.allocator;
-    }
-
-    pub fn readString(self: *DwarfInfo) ![]u8 {
-        return readStringRaw(self.allocator(), self.dwarf_in_stream);
     }
 
     /// This function works in freestanding mode.
@@ -1222,35 +1227,38 @@ pub const DwarfInfo = struct {
     }
 
     fn scanAllFunctions(di: *DwarfInfo) !void {
-        const debug_info_end = di.debug_info.offset + di.debug_info.size;
-        var this_unit_offset = di.debug_info.offset;
+        var s = io.SliceSeekableInStream.init(di.debug_info);
+        var this_unit_offset: u64 = 0;
 
-        while (this_unit_offset < debug_info_end) {
-            try di.dwarf_seekable_stream.seekTo(this_unit_offset);
+        while (true) {
+            s.seekable_stream.seekTo(this_unit_offset) catch |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            };
 
             var is_64: bool = undefined;
-            const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
+            const unit_length = try readInitialLength(@TypeOf(s.stream.readFn).ReturnType.ErrorSet, &s.stream, &is_64);
             if (unit_length == 0) return;
             const next_offset = unit_length + (if (is_64) @as(usize, 12) else @as(usize, 4));
 
-            const version = try di.dwarf_in_stream.readInt(u16, di.endian);
+            const version = try s.stream.readInt(u16, di.endian);
             if (version < 2 or version > 5) return error.InvalidDebugInfo;
 
-            const debug_abbrev_offset = if (is_64) try di.dwarf_in_stream.readInt(u64, di.endian) else try di.dwarf_in_stream.readInt(u32, di.endian);
+            const debug_abbrev_offset = if (is_64) try s.stream.readInt(u64, di.endian) else try s.stream.readInt(u32, di.endian);
 
-            const address_size = try di.dwarf_in_stream.readByte();
+            const address_size = try s.stream.readByte();
             if (address_size != @sizeOf(usize)) return error.InvalidDebugInfo;
 
-            const compile_unit_pos = try di.dwarf_seekable_stream.getPos();
+            const compile_unit_pos = try s.seekable_stream.getPos();
             const abbrev_table = try di.getAbbrevTable(debug_abbrev_offset);
 
-            try di.dwarf_seekable_stream.seekTo(compile_unit_pos);
+            try s.seekable_stream.seekTo(compile_unit_pos);
 
             const next_unit_pos = this_unit_offset + next_offset;
 
-            while ((try di.dwarf_seekable_stream.getPos()) < next_unit_pos) {
-                const die_obj = (try di.parseDie(abbrev_table, is_64)) orelse continue;
-                const after_die_offset = try di.dwarf_seekable_stream.getPos();
+            while ((try s.seekable_stream.getPos()) < next_unit_pos) {
+                const die_obj = (try di.parseDie(&s.stream, abbrev_table, is_64)) orelse continue;
+                const after_die_offset = try s.seekable_stream.getPos();
 
                 switch (die_obj.tag_id) {
                     DW.TAG_subprogram, DW.TAG_inlined_subroutine, DW.TAG_subroutine, DW.TAG_entry_point => {
@@ -1266,14 +1274,14 @@ pub const DwarfInfo = struct {
                                     // Follow the DIE it points to and repeat
                                     const ref_offset = try this_die_obj.getAttrRef(DW.AT_abstract_origin);
                                     if (ref_offset > next_offset) return error.InvalidDebugInfo;
-                                    try di.dwarf_seekable_stream.seekTo(this_unit_offset + ref_offset);
-                                    this_die_obj = (try di.parseDie(abbrev_table, is_64)) orelse return error.InvalidDebugInfo;
+                                    try s.seekable_stream.seekTo(this_unit_offset + ref_offset);
+                                    this_die_obj = (try di.parseDie(&s.stream, abbrev_table, is_64)) orelse return error.InvalidDebugInfo;
                                 } else if (this_die_obj.getAttr(DW.AT_specification)) |ref| {
                                     // Follow the DIE it points to and repeat
                                     const ref_offset = try this_die_obj.getAttrRef(DW.AT_specification);
                                     if (ref_offset > next_offset) return error.InvalidDebugInfo;
-                                    try di.dwarf_seekable_stream.seekTo(this_unit_offset + ref_offset);
-                                    this_die_obj = (try di.parseDie(abbrev_table, is_64)) orelse return error.InvalidDebugInfo;
+                                    try s.seekable_stream.seekTo(this_unit_offset + ref_offset);
+                                    this_die_obj = (try di.parseDie(&s.stream, abbrev_table, is_64)) orelse return error.InvalidDebugInfo;
                                 } else {
                                     break :x null;
                                 }
@@ -1311,12 +1319,10 @@ pub const DwarfInfo = struct {
                             .pc_range = pc_range,
                         });
                     },
-                    else => {
-                        continue;
-                    },
+                    else => {},
                 }
 
-                try di.dwarf_seekable_stream.seekTo(after_die_offset);
+                try s.seekable_stream.seekTo(after_die_offset);
             }
 
             this_unit_offset += next_offset;
@@ -1324,32 +1330,35 @@ pub const DwarfInfo = struct {
     }
 
     fn scanAllCompileUnits(di: *DwarfInfo) !void {
-        const debug_info_end = di.debug_info.offset + di.debug_info.size;
-        var this_unit_offset = di.debug_info.offset;
+        var s = io.SliceSeekableInStream.init(di.debug_info);
+        var this_unit_offset: u64 = 0;
 
-        while (this_unit_offset < debug_info_end) {
-            try di.dwarf_seekable_stream.seekTo(this_unit_offset);
+        while (true) {
+            s.seekable_stream.seekTo(this_unit_offset) catch |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            };
 
             var is_64: bool = undefined;
-            const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
+            const unit_length = try readInitialLength(@TypeOf(s.stream.readFn).ReturnType.ErrorSet, &s.stream, &is_64);
             if (unit_length == 0) return;
             const next_offset = unit_length + (if (is_64) @as(usize, 12) else @as(usize, 4));
 
-            const version = try di.dwarf_in_stream.readInt(u16, di.endian);
+            const version = try s.stream.readInt(u16, di.endian);
             if (version < 2 or version > 5) return error.InvalidDebugInfo;
 
-            const debug_abbrev_offset = if (is_64) try di.dwarf_in_stream.readInt(u64, di.endian) else try di.dwarf_in_stream.readInt(u32, di.endian);
+            const debug_abbrev_offset = if (is_64) try s.stream.readInt(u64, di.endian) else try s.stream.readInt(u32, di.endian);
 
-            const address_size = try di.dwarf_in_stream.readByte();
+            const address_size = try s.stream.readByte();
             if (address_size != @sizeOf(usize)) return error.InvalidDebugInfo;
 
-            const compile_unit_pos = try di.dwarf_seekable_stream.getPos();
+            const compile_unit_pos = try s.seekable_stream.getPos();
             const abbrev_table = try di.getAbbrevTable(debug_abbrev_offset);
 
-            try di.dwarf_seekable_stream.seekTo(compile_unit_pos);
+            try s.seekable_stream.seekTo(compile_unit_pos);
 
             const compile_unit_die = try di.allocator().create(Die);
-            compile_unit_die.* = (try di.parseDie(abbrev_table, is_64)) orelse return error.InvalidDebugInfo;
+            compile_unit_die.* = (try di.parseDie(&s.stream, abbrev_table, is_64)) orelse return error.InvalidDebugInfo;
 
             if (compile_unit_die.tag_id != DW.TAG_compile_unit) return error.InvalidDebugInfo;
 
@@ -1395,15 +1404,22 @@ pub const DwarfInfo = struct {
             }
             if (di.debug_ranges) |debug_ranges| {
                 if (compile_unit.die.getAttrSecOffset(DW.AT_ranges)) |ranges_offset| {
+                    var s = io.SliceSeekableInStream.init(debug_ranges);
+
                     // All the addresses in the list are relative to the value
                     // specified by DW_AT_low_pc or to some other value encoded
-                    // in the list itself
-                    var base_address = try compile_unit.die.getAttrAddr(DW.AT_low_pc);
+                    // in the list itself.
+                    // If no starting value is specified use zero.
+                    var base_address = compile_unit.die.getAttrAddr(DW.AT_low_pc) catch |err| switch (err) {
+                        error.MissingDebugInfo => 0,
+                        else => return err,
+                    };
 
-                    try di.dwarf_seekable_stream.seekTo(debug_ranges.offset + ranges_offset);
+                    try s.seekable_stream.seekTo(ranges_offset);
+
                     while (true) {
-                        const begin_addr = try di.dwarf_in_stream.readIntLittle(usize);
-                        const end_addr = try di.dwarf_in_stream.readIntLittle(usize);
+                        const begin_addr = try s.stream.readIntLittle(usize);
+                        const end_addr = try s.stream.readIntLittle(usize);
                         if (begin_addr == 0 and end_addr == 0) {
                             break;
                         }
@@ -1416,8 +1432,6 @@ pub const DwarfInfo = struct {
                             return compile_unit;
                         }
                     }
-
-                    return error.InvalidDebugInfo;
                 } else |err| {
                     if (err != error.MissingDebugInfo) return err;
                     continue;
@@ -1435,30 +1449,33 @@ pub const DwarfInfo = struct {
                 return &header.table;
             }
         }
-        try di.dwarf_seekable_stream.seekTo(di.debug_abbrev.offset + abbrev_offset);
         try di.abbrev_table_list.append(AbbrevTableHeader{
             .offset = abbrev_offset,
-            .table = try di.parseAbbrevTable(),
+            .table = try di.parseAbbrevTable(abbrev_offset),
         });
         return &di.abbrev_table_list.items[di.abbrev_table_list.len - 1].table;
     }
 
-    fn parseAbbrevTable(di: *DwarfInfo) !AbbrevTable {
+    fn parseAbbrevTable(di: *DwarfInfo, offset: u64) !AbbrevTable {
+        var s = io.SliceSeekableInStream.init(di.debug_abbrev);
+
+        try s.seekable_stream.seekTo(offset);
         var result = AbbrevTable.init(di.allocator());
+        errdefer result.deinit();
         while (true) {
-            const abbrev_code = try leb.readULEB128(u64, di.dwarf_in_stream);
+            const abbrev_code = try leb.readULEB128(u64, &s.stream);
             if (abbrev_code == 0) return result;
             try result.append(AbbrevTableEntry{
                 .abbrev_code = abbrev_code,
-                .tag_id = try leb.readULEB128(u64, di.dwarf_in_stream),
-                .has_children = (try di.dwarf_in_stream.readByte()) == DW.CHILDREN_yes,
+                .tag_id = try leb.readULEB128(u64, &s.stream),
+                .has_children = (try s.stream.readByte()) == DW.CHILDREN_yes,
                 .attrs = ArrayList(AbbrevAttr).init(di.allocator()),
             });
             const attrs = &result.items[result.len - 1].attrs;
 
             while (true) {
-                const attr_id = try leb.readULEB128(u64, di.dwarf_in_stream);
-                const form_id = try leb.readULEB128(u64, di.dwarf_in_stream);
+                const attr_id = try leb.readULEB128(u64, &s.stream);
+                const form_id = try leb.readULEB128(u64, &s.stream);
                 if (attr_id == 0 and form_id == 0) break;
                 try attrs.append(AbbrevAttr{
                     .attr_id = attr_id,
@@ -1468,8 +1485,8 @@ pub const DwarfInfo = struct {
         }
     }
 
-    fn parseDie(di: *DwarfInfo, abbrev_table: *const AbbrevTable, is_64: bool) !?Die {
-        const abbrev_code = try leb.readULEB128(u64, di.dwarf_in_stream);
+    fn parseDie(di: *DwarfInfo, in_stream: var, abbrev_table: *const AbbrevTable, is_64: bool) !?Die {
+        const abbrev_code = try leb.readULEB128(u64, in_stream);
         if (abbrev_code == 0) return null;
         const table_entry = getAbbrevTableEntry(abbrev_table, abbrev_code) orelse return error.InvalidDebugInfo;
 
@@ -1482,64 +1499,63 @@ pub const DwarfInfo = struct {
         for (table_entry.attrs.toSliceConst()) |attr, i| {
             result.attrs.items[i] = Die.Attr{
                 .id = attr.attr_id,
-                .value = try parseFormValue(di.allocator(), di.dwarf_in_stream, attr.form_id, is_64),
+                .value = try parseFormValue(di.allocator(), in_stream, attr.form_id, is_64),
             };
         }
         return result;
     }
 
     fn getLineNumberInfo(di: *DwarfInfo, compile_unit: CompileUnit, target_address: usize) !LineInfo {
+        var s = io.SliceSeekableInStream.init(di.debug_line);
+
         const compile_unit_cwd = try compile_unit.die.getAttrString(di, DW.AT_comp_dir);
         const line_info_offset = try compile_unit.die.getAttrSecOffset(DW.AT_stmt_list);
 
-        assert(line_info_offset < di.debug_line.size);
-
-        const this_unit_offset = di.debug_line.offset + line_info_offset;
-        try di.dwarf_seekable_stream.seekTo(this_unit_offset);
+        try s.seekable_stream.seekTo(line_info_offset);
 
         var is_64: bool = undefined;
-        const unit_length = try readInitialLength(@TypeOf(di.dwarf_in_stream.readFn).ReturnType.ErrorSet, di.dwarf_in_stream, &is_64);
+        const unit_length = try readInitialLength(@TypeOf(s.stream.readFn).ReturnType.ErrorSet, &s.stream, &is_64);
         if (unit_length == 0) {
             return error.MissingDebugInfo;
         }
         const next_offset = unit_length + (if (is_64) @as(usize, 12) else @as(usize, 4));
 
-        const version = try di.dwarf_in_stream.readInt(u16, di.endian);
+        const version = try s.stream.readInt(u16, di.endian);
         // TODO support 3 and 5
         if (version != 2 and version != 4) return error.InvalidDebugInfo;
 
-        const prologue_length = if (is_64) try di.dwarf_in_stream.readInt(u64, di.endian) else try di.dwarf_in_stream.readInt(u32, di.endian);
-        const prog_start_offset = (try di.dwarf_seekable_stream.getPos()) + prologue_length;
+        const prologue_length = if (is_64) try s.stream.readInt(u64, di.endian) else try s.stream.readInt(u32, di.endian);
+        const prog_start_offset = (try s.seekable_stream.getPos()) + prologue_length;
 
-        const minimum_instruction_length = try di.dwarf_in_stream.readByte();
+        const minimum_instruction_length = try s.stream.readByte();
         if (minimum_instruction_length == 0) return error.InvalidDebugInfo;
 
         if (version >= 4) {
             // maximum_operations_per_instruction
-            _ = try di.dwarf_in_stream.readByte();
+            _ = try s.stream.readByte();
         }
 
-        const default_is_stmt = (try di.dwarf_in_stream.readByte()) != 0;
-        const line_base = try di.dwarf_in_stream.readByteSigned();
+        const default_is_stmt = (try s.stream.readByte()) != 0;
+        const line_base = try s.stream.readByteSigned();
 
-        const line_range = try di.dwarf_in_stream.readByte();
+        const line_range = try s.stream.readByte();
         if (line_range == 0) return error.InvalidDebugInfo;
 
-        const opcode_base = try di.dwarf_in_stream.readByte();
+        const opcode_base = try s.stream.readByte();
 
         const standard_opcode_lengths = try di.allocator().alloc(u8, opcode_base - 1);
 
         {
             var i: usize = 0;
             while (i < opcode_base - 1) : (i += 1) {
-                standard_opcode_lengths[i] = try di.dwarf_in_stream.readByte();
+                standard_opcode_lengths[i] = try s.stream.readByte();
             }
         }
 
         var include_directories = ArrayList([]u8).init(di.allocator());
         try include_directories.append(compile_unit_cwd);
         while (true) {
-            const dir = try di.readString();
+            const dir = try readStringRaw(di.allocator(), &s.stream);
             if (dir.len == 0) break;
             try include_directories.append(dir);
         }
@@ -1548,11 +1564,11 @@ pub const DwarfInfo = struct {
         var prog = LineNumberProgram.init(default_is_stmt, include_directories.toSliceConst(), &file_entries, target_address);
 
         while (true) {
-            const file_name = try di.readString();
+            const file_name = try readStringRaw(di.allocator(), &s.stream);
             if (file_name.len == 0) break;
-            const dir_index = try leb.readULEB128(usize, di.dwarf_in_stream);
-            const mtime = try leb.readULEB128(usize, di.dwarf_in_stream);
-            const len_bytes = try leb.readULEB128(usize, di.dwarf_in_stream);
+            const dir_index = try leb.readULEB128(usize, &s.stream);
+            const mtime = try leb.readULEB128(usize, &s.stream);
+            const len_bytes = try leb.readULEB128(usize, &s.stream);
             try file_entries.append(FileEntry{
                 .file_name = file_name,
                 .dir_index = dir_index,
@@ -1561,17 +1577,17 @@ pub const DwarfInfo = struct {
             });
         }
 
-        try di.dwarf_seekable_stream.seekTo(prog_start_offset);
+        try s.seekable_stream.seekTo(prog_start_offset);
 
-        const next_unit_pos = this_unit_offset + next_offset;
+        const next_unit_pos = line_info_offset + next_offset;
 
-        while ((try di.dwarf_seekable_stream.getPos()) < next_unit_pos) {
-            const opcode = try di.dwarf_in_stream.readByte();
+        while ((try s.seekable_stream.getPos()) < next_unit_pos) {
+            const opcode = try s.stream.readByte();
 
             if (opcode == DW.LNS_extended_op) {
-                const op_size = try leb.readULEB128(u64, di.dwarf_in_stream);
+                const op_size = try leb.readULEB128(u64, &s.stream);
                 if (op_size < 1) return error.InvalidDebugInfo;
-                var sub_op = try di.dwarf_in_stream.readByte();
+                var sub_op = try s.stream.readByte();
                 switch (sub_op) {
                     DW.LNE_end_sequence => {
                         prog.end_sequence = true;
@@ -1579,14 +1595,14 @@ pub const DwarfInfo = struct {
                         prog.reset();
                     },
                     DW.LNE_set_address => {
-                        const addr = try di.dwarf_in_stream.readInt(usize, di.endian);
+                        const addr = try s.stream.readInt(usize, di.endian);
                         prog.address = addr;
                     },
                     DW.LNE_define_file => {
-                        const file_name = try di.readString();
-                        const dir_index = try leb.readULEB128(usize, di.dwarf_in_stream);
-                        const mtime = try leb.readULEB128(usize, di.dwarf_in_stream);
-                        const len_bytes = try leb.readULEB128(usize, di.dwarf_in_stream);
+                        const file_name = try readStringRaw(di.allocator(), &s.stream);
+                        const dir_index = try leb.readULEB128(usize, &s.stream);
+                        const mtime = try leb.readULEB128(usize, &s.stream);
+                        const len_bytes = try leb.readULEB128(usize, &s.stream);
                         try file_entries.append(FileEntry{
                             .file_name = file_name,
                             .dir_index = dir_index,
@@ -1596,7 +1612,7 @@ pub const DwarfInfo = struct {
                     },
                     else => {
                         const fwd_amt = math.cast(isize, op_size - 1) catch return error.InvalidDebugInfo;
-                        try di.dwarf_seekable_stream.seekBy(fwd_amt);
+                        try s.seekable_stream.seekBy(fwd_amt);
                     },
                 }
             } else if (opcode >= opcode_base) {
@@ -1615,19 +1631,19 @@ pub const DwarfInfo = struct {
                         prog.basic_block = false;
                     },
                     DW.LNS_advance_pc => {
-                        const arg = try leb.readULEB128(usize, di.dwarf_in_stream);
+                        const arg = try leb.readULEB128(usize, &s.stream);
                         prog.address += arg * minimum_instruction_length;
                     },
                     DW.LNS_advance_line => {
-                        const arg = try leb.readILEB128(i64, di.dwarf_in_stream);
+                        const arg = try leb.readILEB128(i64, &s.stream);
                         prog.line += arg;
                     },
                     DW.LNS_set_file => {
-                        const arg = try leb.readULEB128(usize, di.dwarf_in_stream);
+                        const arg = try leb.readULEB128(usize, &s.stream);
                         prog.file = arg;
                     },
                     DW.LNS_set_column => {
-                        const arg = try leb.readULEB128(u64, di.dwarf_in_stream);
+                        const arg = try leb.readULEB128(u64, &s.stream);
                         prog.column = arg;
                     },
                     DW.LNS_negate_stmt => {
@@ -1641,14 +1657,14 @@ pub const DwarfInfo = struct {
                         prog.address += inc_addr;
                     },
                     DW.LNS_fixed_advance_pc => {
-                        const arg = try di.dwarf_in_stream.readInt(u16, di.endian);
+                        const arg = try s.stream.readInt(u16, di.endian);
                         prog.address += arg;
                     },
                     DW.LNS_set_prologue_end => {},
                     else => {
                         if (opcode - 1 >= standard_opcode_lengths.len) return error.InvalidDebugInfo;
                         const len_bytes = standard_opcode_lengths[opcode - 1];
-                        try di.dwarf_seekable_stream.seekBy(len_bytes);
+                        try s.seekable_stream.seekBy(len_bytes);
                     },
                 }
             }
@@ -1658,9 +1674,17 @@ pub const DwarfInfo = struct {
     }
 
     fn getString(di: *DwarfInfo, offset: u64) ![]u8 {
-        const pos = di.debug_str.offset + offset;
-        try di.dwarf_seekable_stream.seekTo(pos);
-        return di.readString();
+        if (offset > di.debug_str.len)
+            return error.InvalidDebugInfo;
+        const casted_offset = math.cast(usize, offset) catch
+            return error.InvalidDebugInfo;
+
+        // Valid strings always have a terminating zero byte
+        if (mem.indexOfScalarPos(u8, di.debug_str, casted_offset, 0)) |last| {
+            return di.debug_str[casted_offset..last];
+        }
+
+        return error.InvalidDebugInfo;
     }
 };
 
@@ -1672,7 +1696,7 @@ pub const DebugInfo = switch (builtin.os) {
 
         const OFileTable = std.HashMap(
             *macho.nlist_64,
-            MachOFile,
+            DwarfInfo,
             std.hash_map.getHashPtrAddrFn(*macho.nlist_64),
             std.hash_map.getTrivialEqlFn(*macho.nlist_64),
         );
@@ -2066,24 +2090,33 @@ fn getAbbrevTableEntry(abbrev_table: *const AbbrevTable, abbrev_code: u64) ?*con
     return null;
 }
 
-fn getLineNumberInfoMacOs(di: *DebugInfo, symbol: MachoSymbol, target_address: usize) !LineInfo {
+/// TODO resources https://github.com/ziglang/zig/issues/4353
+fn getLineNumberInfoMacOs(di: *DebugInfo, symbol: MachoSymbol, address: usize) !LineInfo {
     const ofile = symbol.ofile orelse return error.MissingDebugInfo;
     const gop = try di.ofiles.getOrPut(ofile);
-    const mach_o_file = if (gop.found_existing) &gop.kv.value else blk: {
+    const dwarf_info = if (gop.found_existing) &gop.kv.value else blk: {
         errdefer _ = di.ofiles.remove(ofile);
         const ofile_path = mem.toSliceConst(u8, @ptrCast([*:0]const u8, di.strings.ptr + ofile.n_strx));
 
-        gop.kv.value = MachOFile{
-            .bytes = try std.fs.cwd().readFileAllocAligned(
-                di.ofiles.allocator,
-                ofile_path,
-                maxInt(usize),
-                @alignOf(macho.mach_header_64),
-            ),
-            .sect_debug_info = null,
-            .sect_debug_line = null,
-        };
-        const hdr = @ptrCast(*const macho.mach_header_64, gop.kv.value.bytes.ptr);
+        var exe_file = try std.fs.openFileAbsoluteC(ofile_path, .{});
+        errdefer exe_file.close();
+
+        const exe_len = math.cast(usize, try exe_file.getEndPos()) catch
+            return error.DebugInfoTooLarge;
+        const exe_mmap = try os.mmap(
+            null,
+            exe_len,
+            os.PROT_READ,
+            os.MAP_SHARED,
+            exe_file.handle,
+            0,
+        );
+        errdefer os.munmap(exe_mmap);
+
+        const hdr = @ptrCast(
+            *const macho.mach_header_64,
+            @alignCast(@alignOf(macho.mach_header_64), exe_mmap.ptr),
+        );
         if (hdr.magic != std.macho.MH_MAGIC_64) return error.InvalidDebugInfo;
 
         const hdr_base = @ptrCast([*]const u8, hdr);
@@ -2092,228 +2125,81 @@ fn getLineNumberInfoMacOs(di: *DebugInfo, symbol: MachoSymbol, target_address: u
         const segcmd = while (ncmd != 0) : (ncmd -= 1) {
             const lc = @ptrCast(*const std.macho.load_command, ptr);
             switch (lc.cmd) {
-                std.macho.LC_SEGMENT_64 => break @ptrCast(*const std.macho.segment_command_64, @alignCast(@alignOf(std.macho.segment_command_64), ptr)),
+                std.macho.LC_SEGMENT_64 => {
+                    break @ptrCast(
+                        *const std.macho.segment_command_64,
+                        @alignCast(@alignOf(std.macho.segment_command_64), ptr),
+                    );
+                },
                 else => {},
             }
             ptr = @alignCast(@alignOf(std.macho.load_command), ptr + lc.cmdsize);
         } else {
             return error.MissingDebugInfo;
         };
+
+        var opt_debug_line: ?*const macho.section_64 = null;
+        var opt_debug_info: ?*const macho.section_64 = null;
+        var opt_debug_abbrev: ?*const macho.section_64 = null;
+        var opt_debug_str: ?*const macho.section_64 = null;
+        var opt_debug_ranges: ?*const macho.section_64 = null;
+
         const sections = @ptrCast([*]const macho.section_64, @alignCast(@alignOf(macho.section_64), ptr + @sizeOf(std.macho.segment_command_64)))[0..segcmd.nsects];
         for (sections) |*sect| {
-            if (sect.flags & macho.SECTION_TYPE == macho.S_REGULAR and
-                (sect.flags & macho.SECTION_ATTRIBUTES) & macho.S_ATTR_DEBUG == macho.S_ATTR_DEBUG)
-            {
-                const sect_name = mem.toSliceConst(u8, @ptrCast([*:0]const u8, &sect.sectname));
-                if (mem.eql(u8, sect_name, "__debug_line")) {
-                    gop.kv.value.sect_debug_line = sect;
-                } else if (mem.eql(u8, sect_name, "__debug_info")) {
-                    gop.kv.value.sect_debug_info = sect;
-                }
+            // The section name may not exceed 16 chars and a trailing null may
+            // not be present
+            const name = if (mem.indexOfScalar(u8, sect.sectname[0..], 0)) |last|
+                sect.sectname[0..last]
+            else
+                sect.sectname[0..];
+
+            if (mem.eql(u8, name, "__debug_line")) {
+                opt_debug_line = sect;
+            } else if (mem.eql(u8, name, "__debug_info")) {
+                opt_debug_info = sect;
+            } else if (mem.eql(u8, name, "__debug_abbrev")) {
+                opt_debug_abbrev = sect;
+            } else if (mem.eql(u8, name, "__debug_str")) {
+                opt_debug_str = sect;
+            } else if (mem.eql(u8, name, "__debug_ranges")) {
+                opt_debug_ranges = sect;
             }
         }
+
+        var debug_line = opt_debug_line orelse
+            return error.MissingDebugInfo;
+        var debug_info = opt_debug_info orelse
+            return error.MissingDebugInfo;
+        var debug_str = opt_debug_str orelse
+            return error.MissingDebugInfo;
+        var debug_abbrev = opt_debug_abbrev orelse
+            return error.MissingDebugInfo;
+
+        gop.kv.value = DwarfInfo{
+            .endian = .Little,
+            .debug_info = exe_mmap[@intCast(usize, debug_info.offset)..@intCast(usize, debug_info.offset + debug_info.size)],
+            .debug_abbrev = exe_mmap[@intCast(usize, debug_abbrev.offset)..@intCast(usize, debug_abbrev.offset + debug_abbrev.size)],
+            .debug_str = exe_mmap[@intCast(usize, debug_str.offset)..@intCast(usize, debug_str.offset + debug_str.size)],
+            .debug_line = exe_mmap[@intCast(usize, debug_line.offset)..@intCast(usize, debug_line.offset + debug_line.size)],
+            .debug_ranges = if (opt_debug_ranges) |debug_ranges|
+                exe_mmap[@intCast(usize, debug_ranges.offset)..@intCast(usize, debug_ranges.offset + debug_ranges.size)]
+            else
+                null,
+        };
+        try openDwarfDebugInfo(&gop.kv.value, di.allocator());
 
         break :blk &gop.kv.value;
     };
 
-    const sect_debug_line = mach_o_file.sect_debug_line orelse return error.MissingDebugInfo;
-    var ptr = mach_o_file.bytes.ptr + sect_debug_line.offset;
-
-    var is_64: bool = undefined;
-    const unit_length = try readInitialLengthMem(&ptr, &is_64);
-    if (unit_length == 0) return error.MissingDebugInfo;
-
-    const version = readIntMem(&ptr, u16, builtin.Endian.Little);
-    // TODO support 3 and 5
-    if (version != 2 and version != 4) return error.InvalidDebugInfo;
-
-    const prologue_length = if (is_64)
-        readIntMem(&ptr, u64, builtin.Endian.Little)
-    else
-        readIntMem(&ptr, u32, builtin.Endian.Little);
-    const prog_start = ptr + prologue_length;
-
-    const minimum_instruction_length = readByteMem(&ptr);
-    if (minimum_instruction_length == 0) return error.InvalidDebugInfo;
-
-    if (version >= 4) {
-        // maximum_operations_per_instruction
-        ptr += 1;
-    }
-
-    const default_is_stmt = readByteMem(&ptr) != 0;
-    const line_base = readByteSignedMem(&ptr);
-
-    const line_range = readByteMem(&ptr);
-    if (line_range == 0) return error.InvalidDebugInfo;
-
-    const opcode_base = readByteMem(&ptr);
-
-    const standard_opcode_lengths = ptr[0 .. opcode_base - 1];
-    ptr += opcode_base - 1;
-
-    var include_directories = ArrayList([]const u8).init(di.allocator());
-    try include_directories.append("");
-    while (true) {
-        const dir = readStringMem(&ptr);
-        if (dir.len == 0) break;
-        try include_directories.append(dir);
-    }
-
-    var file_entries = ArrayList(FileEntry).init(di.allocator());
-    var prog = LineNumberProgram.init(default_is_stmt, include_directories.toSliceConst(), &file_entries, target_address);
-
-    while (true) {
-        const file_name = readStringMem(&ptr);
-        if (file_name.len == 0) break;
-        const dir_index = try leb.readULEB128Mem(usize, &ptr);
-        const mtime = try leb.readULEB128Mem(usize, &ptr);
-        const len_bytes = try leb.readULEB128Mem(usize, &ptr);
-        try file_entries.append(FileEntry{
-            .file_name = file_name,
-            .dir_index = dir_index,
-            .mtime = mtime,
-            .len_bytes = len_bytes,
-        });
-    }
-
-    ptr = prog_start;
-    while (true) {
-        const opcode = readByteMem(&ptr);
-
-        if (opcode == DW.LNS_extended_op) {
-            const op_size = try leb.readULEB128Mem(u64, &ptr);
-            if (op_size < 1) return error.InvalidDebugInfo;
-            var sub_op = readByteMem(&ptr);
-            switch (sub_op) {
-                DW.LNE_end_sequence => {
-                    prog.end_sequence = true;
-                    if (try prog.checkLineMatch()) |info| return info;
-                    return error.MissingDebugInfo;
-                },
-                DW.LNE_set_address => {
-                    const addr = readIntMem(&ptr, usize, builtin.Endian.Little);
-                    prog.address = symbol.reloc + addr;
-                },
-                DW.LNE_define_file => {
-                    const file_name = readStringMem(&ptr);
-                    const dir_index = try leb.readULEB128Mem(usize, &ptr);
-                    const mtime = try leb.readULEB128Mem(usize, &ptr);
-                    const len_bytes = try leb.readULEB128Mem(usize, &ptr);
-                    try file_entries.append(FileEntry{
-                        .file_name = file_name,
-                        .dir_index = dir_index,
-                        .mtime = mtime,
-                        .len_bytes = len_bytes,
-                    });
-                },
-                else => {
-                    ptr += op_size - 1;
-                },
-            }
-        } else if (opcode >= opcode_base) {
-            // special opcodes
-            const adjusted_opcode = opcode - opcode_base;
-            const inc_addr = minimum_instruction_length * (adjusted_opcode / line_range);
-            const inc_line = @as(i32, line_base) + @as(i32, adjusted_opcode % line_range);
-            prog.line += inc_line;
-            prog.address += inc_addr;
-            if (try prog.checkLineMatch()) |info| return info;
-            prog.basic_block = false;
-        } else {
-            switch (opcode) {
-                DW.LNS_copy => {
-                    if (try prog.checkLineMatch()) |info| return info;
-                    prog.basic_block = false;
-                },
-                DW.LNS_advance_pc => {
-                    const arg = try leb.readULEB128Mem(usize, &ptr);
-                    prog.address += arg * minimum_instruction_length;
-                },
-                DW.LNS_advance_line => {
-                    const arg = try leb.readILEB128Mem(i64, &ptr);
-                    prog.line += arg;
-                },
-                DW.LNS_set_file => {
-                    const arg = try leb.readULEB128Mem(usize, &ptr);
-                    prog.file = arg;
-                },
-                DW.LNS_set_column => {
-                    const arg = try leb.readULEB128Mem(u64, &ptr);
-                    prog.column = arg;
-                },
-                DW.LNS_negate_stmt => {
-                    prog.is_stmt = !prog.is_stmt;
-                },
-                DW.LNS_set_basic_block => {
-                    prog.basic_block = true;
-                },
-                DW.LNS_const_add_pc => {
-                    const inc_addr = minimum_instruction_length * ((255 - opcode_base) / line_range);
-                    prog.address += inc_addr;
-                },
-                DW.LNS_fixed_advance_pc => {
-                    const arg = readIntMem(&ptr, u16, builtin.Endian.Little);
-                    prog.address += arg;
-                },
-                DW.LNS_set_prologue_end => {},
-                else => {
-                    if (opcode - 1 >= standard_opcode_lengths.len) return error.InvalidDebugInfo;
-                    const len_bytes = standard_opcode_lengths[opcode - 1];
-                    ptr += len_bytes;
-                },
-            }
-        }
-    }
-
-    return error.MissingDebugInfo;
+    const o_file_address = address - symbol.reloc;
+    const compile_unit = try dwarf_info.findCompileUnit(o_file_address);
+    return dwarf_info.getLineNumberInfo(compile_unit.*, o_file_address);
 }
 
 const Func = struct {
     pc_range: ?PcRange,
     name: ?[]u8,
 };
-
-fn readIntMem(ptr: *[*]const u8, comptime T: type, endian: builtin.Endian) T {
-    // TODO https://github.com/ziglang/zig/issues/863
-    const size = (T.bit_count + 7) / 8;
-    const result = mem.readIntSlice(T, ptr.*[0..size], endian);
-    ptr.* += size;
-    return result;
-}
-
-fn readByteMem(ptr: *[*]const u8) u8 {
-    const result = ptr.*[0];
-    ptr.* += 1;
-    return result;
-}
-
-fn readByteSignedMem(ptr: *[*]const u8) i8 {
-    return @bitCast(i8, readByteMem(ptr));
-}
-
-fn readInitialLengthMem(ptr: *[*]const u8, is_64: *bool) !u64 {
-    // TODO this code can be improved with https://github.com/ziglang/zig/issues/863
-    const first_32_bits = mem.readIntSliceLittle(u32, ptr.*[0..4]);
-    is_64.* = (first_32_bits == 0xffffffff);
-    if (is_64.*) {
-        ptr.* += 4;
-        const result = mem.readIntSliceLittle(u64, ptr.*[0..8]);
-        ptr.* += 8;
-        return result;
-    } else {
-        if (first_32_bits >= 0xfffffff0) return error.InvalidDebugInfo;
-        ptr.* += 4;
-        // TODO this cast should not be needed
-        return @as(u64, first_32_bits);
-    }
-}
-
-fn readStringMem(ptr: *[*]const u8) [:0]const u8 {
-    const result = mem.toSliceConst(u8, @ptrCast([*:0]const u8, ptr.*));
-    ptr.* += result.len + 1;
-    return result;
-}
 
 fn readInitialLength(comptime E: type, in_stream: *io.InStream(E), is_64: *bool) !u64 {
     const first_32_bits = try in_stream.readIntLittle(u32);
@@ -2326,11 +2212,6 @@ fn readInitialLength(comptime E: type, in_stream: *io.InStream(E), is_64: *bool)
         return @as(u64, first_32_bits);
     }
 }
-
-/// This should only be used in temporary test programs.
-pub const global_allocator = &global_fixed_allocator.allocator;
-var global_fixed_allocator = std.heap.ThreadSafeFixedBufferAllocator.init(global_allocator_mem[0..]);
-var global_allocator_mem: [100 * 1024]u8 = undefined;
 
 /// TODO multithreaded awareness
 var debug_info_allocator: ?*mem.Allocator = null;
@@ -2375,6 +2256,7 @@ pub fn attachSegfaultHandler() void {
 
     os.sigaction(os.SIGSEGV, &act, null);
     os.sigaction(os.SIGILL, &act, null);
+    os.sigaction(os.SIGBUS, &act, null);
 }
 
 fn resetSegfaultHandler() void {
@@ -2392,6 +2274,7 @@ fn resetSegfaultHandler() void {
     };
     os.sigaction(os.SIGSEGV, &act, null);
     os.sigaction(os.SIGILL, &act, null);
+    os.sigaction(os.SIGBUS, &act, null);
 }
 
 fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_void) callconv(.C) noreturn {
@@ -2404,6 +2287,7 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_vo
     switch (sig) {
         os.SIGSEGV => std.debug.warn("Segmentation fault at address 0x{x}\n", .{addr}),
         os.SIGILL => std.debug.warn("Illegal instruction at address 0x{x}\n", .{addr}),
+        os.SIGBUS => std.debug.warn("Bus error at address 0x{x}\n", .{addr}),
         else => unreachable,
     }
     switch (builtin.arch) {
@@ -2442,13 +2326,36 @@ fn handleSegfaultLinux(sig: i32, info: *const os.siginfo_t, ctx_ptr: *const c_vo
 }
 
 fn handleSegfaultWindows(info: *windows.EXCEPTION_POINTERS) callconv(.Stdcall) c_long {
-    const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
     switch (info.ExceptionRecord.ExceptionCode) {
-        windows.EXCEPTION_DATATYPE_MISALIGNMENT => panicExtra(null, exception_address, "Unaligned Memory Access", .{}),
-        windows.EXCEPTION_ACCESS_VIOLATION => panicExtra(null, exception_address, "Segmentation fault at address 0x{x}", .{info.ExceptionRecord.ExceptionInformation[1]}),
-        windows.EXCEPTION_ILLEGAL_INSTRUCTION => panicExtra(null, exception_address, "Illegal Instruction", .{}),
-        windows.EXCEPTION_STACK_OVERFLOW => panicExtra(null, exception_address, "Stack Overflow", .{}),
+        windows.EXCEPTION_DATATYPE_MISALIGNMENT => handleSegfaultWindowsExtra(info, 0, "Unaligned Memory Access"),
+        windows.EXCEPTION_ACCESS_VIOLATION => handleSegfaultWindowsExtra(info, 1, null),
+        windows.EXCEPTION_ILLEGAL_INSTRUCTION => handleSegfaultWindowsExtra(info, 2, null),
+        windows.EXCEPTION_STACK_OVERFLOW => handleSegfaultWindowsExtra(info, 0, "Stack Overflow"),
         else => return windows.EXCEPTION_CONTINUE_SEARCH,
+    }
+}
+
+// zig won't let me use an anon enum here https://github.com/ziglang/zig/issues/3707
+fn handleSegfaultWindowsExtra(info: *windows.EXCEPTION_POINTERS, comptime msg: u8, comptime format: ?[]const u8) noreturn {
+    const exception_address = @ptrToInt(info.ExceptionRecord.ExceptionAddress);
+    if (@hasDecl(windows, "CONTEXT")) {
+        const regs = info.ContextRecord.getRegs();
+        switch (msg) {
+            0 => std.debug.warn("{}\n", .{format.?}),
+            1 => std.debug.warn("Segmentation fault at address 0x{x}\n", .{info.ExceptionRecord.ExceptionInformation[1]}),
+            2 => std.debug.warn("Illegal instruction at address 0x{x}\n", .{regs.ip}),
+            else => unreachable,
+        }
+
+        dumpStackTraceFromBase(regs.bp, regs.ip);
+        os.abort();
+    } else {
+        switch (msg) {
+            0 => panicExtra(null, exception_address, format.?, .{}),
+            1 => panicExtra(null, exception_address, "Segmentation fault at address 0x{x}", .{info.ExceptionRecord.ExceptionInformation[1]}),
+            2 => panicExtra(null, exception_address, "Illegal Instruction", .{}),
+            else => unreachable,
+        }
     }
 }
 

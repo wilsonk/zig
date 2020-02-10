@@ -317,6 +317,7 @@ struct ConstErrValue {
 struct ConstBoundFnValue {
     ZigFn *fn;
     IrInstGen *first_arg;
+    IrInst *first_arg_src;
 };
 
 struct ConstArgTuple {
@@ -502,6 +503,9 @@ struct ZigValue {
     // uncomment these to find bugs. can't leave them uncommented because of a gcc-9 warning
     //ZigValue(const ZigValue &other) = delete; // plz zero initialize with {}
     //ZigValue& operator= (const ZigValue &other) = delete; // use copy_const_val
+
+    // for use in debuggers
+    void dump();
 };
 
 enum ReturnKnowledge {
@@ -1256,6 +1260,7 @@ static const uint32_t VECTOR_INDEX_RUNTIME = UINT32_MAX - 1;
 struct InferredStructField {
     ZigType *inferred_struct_type;
     Buf *field_name;
+    bool already_resolved;
 };
 
 struct ZigTypePointer {
@@ -1942,6 +1947,15 @@ enum BuildMode {
     BuildModeSmallRelease,
 };
 
+enum CodeModel {
+    CodeModelDefault,
+    CodeModelTiny,
+    CodeModelSmall,
+    CodeModelKernel,
+    CodeModelMedium,
+    CodeModelLarge,
+};
+
 enum EmitFileType {
     EmitFileTypeBinary,
     EmitFileTypeAssembly,
@@ -2161,7 +2175,9 @@ struct CodeGen {
     bool is_big_endian;
     bool have_c_main;
     bool have_winmain;
+    bool have_wwinmain;
     bool have_winmain_crt_startup;
+    bool have_wwinmain_crt_startup;
     bool have_dllmain_crt_startup;
     bool have_err_ret_tracing;
     bool link_eh_frame_hdr;
@@ -2230,6 +2246,8 @@ struct CodeGen {
     bool enable_dump_analysis;
     bool enable_doc_generation;
     bool disable_bin_generation;
+    bool test_is_evented;
+    CodeModel code_model;
 
     Buf *mmacosx_version_min;
     Buf *mios_version_min;
@@ -2262,7 +2280,6 @@ struct ZigVar {
     Scope *parent_scope;
     Scope *child_scope;
     LLVMValueRef param_value_ref;
-    size_t mem_slot_index;
     IrExecutableSrc *owner_exec;
 
     Buf *section_name;
@@ -2283,6 +2300,7 @@ struct ZigVar {
     bool is_thread_local;
     bool is_comptime_memoized;
     bool is_comptime_memoized_value;
+    bool did_the_decl_codegen;
 };
 
 struct ErrorTableEntry {
@@ -2474,6 +2492,9 @@ struct ScopeExpr {
     size_t children_len;
 
     MemoizedBool need_spill;
+    // This is a hack. I apologize for this, I need this to work so that I
+    // can make progress on other fronts. I'll pay off this tech debt eventually.
+    bool spill_harder;
 };
 
 // synchronized with code in define_builtin_compile_vars

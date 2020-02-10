@@ -3,12 +3,42 @@ const builtin = @import("builtin");
 const Target = @import("std").Target;
 
 pub fn addCases(cases: *tests.TranslateCContext) void {
+    cases.add("function prototype translated as optional",
+        \\typedef void (*fnptr_ty)(void);
+        \\typedef __attribute__((cdecl)) void (*fnptr_attr_ty)(void);
+        \\struct foo {
+        \\    __attribute__((cdecl)) void (*foo)(void);
+        \\    void (*bar)(void);
+        \\    fnptr_ty baz;
+        \\    fnptr_attr_ty qux;
+        \\};
+    , &[_][]const u8{
+        \\pub const fnptr_ty = ?fn () callconv(.C) void;
+        \\pub const fnptr_attr_ty = ?fn () callconv(.C) void;
+        \\pub const struct_foo = extern struct {
+        \\    foo: ?fn () callconv(.C) void,
+        \\    bar: ?fn () callconv(.C) void,
+        \\    baz: fnptr_ty,
+        \\    qux: fnptr_attr_ty,
+        \\};
+    });
+
+    cases.add("function prototype with parenthesis",
+        \\void (f0) (void *L);
+        \\void ((f1)) (void *L);
+        \\void (((f2))) (void *L);
+    , &[_][]const u8{
+        \\pub extern fn f0(L: ?*c_void) void;
+        \\pub extern fn f1(L: ?*c_void) void;
+        \\pub extern fn f2(L: ?*c_void) void;
+    });
+
     cases.add("array initializer w/ typedef",
         \\typedef unsigned char uuid_t[16];
         \\static const uuid_t UUID_NULL __attribute__ ((unused)) = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     , &[_][]const u8{
         \\pub const uuid_t = [16]u8;
-        \\pub const UUID_NULL: uuid_t = .{
+        \\pub const UUID_NULL: uuid_t = [16]u8{
         \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
         \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
         \\    @bitCast(u8, @truncate(i8, @as(c_int, 0))),
@@ -77,7 +107,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    .x = @as(c_int, 1),
         \\};
         \\pub export var ub: union_unnamed_1 = union_unnamed_1{
-        \\    .c = .{
+        \\    .c = [4]u8{
         \\        @bitCast(u8, @truncate(i8, @as(c_int, 'a'))),
         \\        @bitCast(u8, @truncate(i8, @as(c_int, 'b'))),
         \\        @bitCast(u8, @truncate(i8, @as(c_int, 'b'))),
@@ -587,6 +617,28 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
             "pub const NOT_ZERO = ~@as(c_uint, 0);",
         },
     );
+
+    cases.add("float suffixes",
+        \\#define foo 3.14f
+        \\#define bar 16.e-2l
+    , &[_][]const u8{
+        "pub const foo = @as(f32, 3.14);",
+        "pub const bar = @as(c_longdouble, 16.e-2);",
+    });
+
+    cases.add("comments",
+        \\#define foo 1 //foo
+        \\#define bar /* bar */ 2
+    , &[_][]const u8{
+        "pub const foo = 1;",
+        "pub const bar = 2;",
+    });
+
+    cases.add("string prefix",
+        \\#define foo L"hello"
+    , &[_][]const u8{
+        "pub const foo = \"hello\";",
+    });
 
     cases.add("null statements",
         \\void foo(void) {
@@ -1108,12 +1160,12 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub fn foo() callconv(.C) void {
-        \\    var arr: [10]u8 = .{
+        \\    var arr: [10]u8 = [1]u8{
         \\        @bitCast(u8, @truncate(i8, @as(c_int, 1))),
-        \\    } ++ .{0} ** 9;
-        \\    var arr1: [10][*c]u8 = .{
+        \\    } ++ [1]u8{0} ** 9;
+        \\    var arr1: [10][*c]u8 = [1][*c]u8{
         \\        null,
-        \\    } ++ .{null} ** 9;
+        \\    } ++ [1][*c]u8{null} ** 9;
         \\}
     });
 
@@ -1560,7 +1612,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     cases.add("undefined array global",
         \\int array[100] = {};
     , &[_][]const u8{
-        \\pub export var array: [100]c_int = .{0} ** 100;
+        \\pub export var array: [100]c_int = [1]c_int{0} ** 100;
     });
 
     cases.add("restrict -> noalias",
@@ -1894,7 +1946,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    return array[index];
         \\}
     , &[_][]const u8{
-        \\pub export var array: [100]c_int = .{0} ** 100;
+        \\pub export var array: [100]c_int = [1]c_int{0} ** 100;
         \\pub export fn foo(arg_index: c_int) c_int {
         \\    var index = arg_index;
         \\    return array[@intCast(c_uint, index)];
@@ -2478,8 +2530,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     cases.add("macro cast",
         \\#define FOO(bar) baz((void *)(baz))
     , &[_][]const u8{
-        \\pub inline fn FOO(bar: var) @TypeOf(baz(if (@typeId(@TypeOf(baz)) == .Pointer) @ptrCast([*c]void, baz) else if (@typeId(@TypeOf(baz)) == .Int) @intToPtr([*c]void, baz) else @as([*c]void, baz))) {
-        \\    return baz(if (@typeId(@TypeOf(baz)) == .Pointer) @ptrCast([*c]void, baz) else if (@typeId(@TypeOf(baz)) == .Int) @intToPtr([*c]void, baz) else @as([*c]void, baz));
+        \\pub inline fn FOO(bar: var) @TypeOf(baz(if (@typeId(@TypeOf(baz)) == .Pointer) @ptrCast(*c_void, baz) else if (@typeId(@TypeOf(baz)) == .Int) @intToPtr(*c_void, baz) else @as(*c_void, baz))) {
+        \\    return baz(if (@typeId(@TypeOf(baz)) == .Pointer) @ptrCast(*c_void, baz) else if (@typeId(@TypeOf(baz)) == .Int) @intToPtr(*c_void, baz) else @as(*c_void, baz));
         \\}
     });
 
@@ -2642,5 +2694,4 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    return if (x > y) x else y;
         \\}
     });
-            
 }

@@ -9,7 +9,7 @@ const elf = std.elf;
 const File = std.fs.File;
 const Thread = std.Thread;
 
-const a = std.debug.global_allocator;
+const a = std.testing.allocator;
 
 const builtin = @import("builtin");
 const AtomicRmwOp = builtin.AtomicRmwOp;
@@ -186,8 +186,9 @@ fn iter_fn(info: *dl_phdr_info, size: usize, data: ?*usize) callconv(.C) i32 {
 
         if (phdr.p_type != elf.PT_LOAD) continue;
 
+        const reloc_addr = info.dlpi_addr + phdr.p_vaddr;
         // Find the ELF header
-        const elf_header = @intToPtr(*elf.Ehdr, phdr.p_vaddr - phdr.p_offset);
+        const elf_header = @intToPtr(*elf.Ehdr, reloc_addr - phdr.p_offset);
         // Validate the magic
         if (!mem.eql(u8, elf_header.e_ident[0..4], "\x7fELF")) return -1;
         // Consistency check
@@ -234,8 +235,8 @@ test "pipe" {
 }
 
 test "argsAlloc" {
-    var args = try std.process.argsAlloc(std.heap.page_allocator);
-    std.process.argsFree(std.heap.page_allocator, args);
+    var args = try std.process.argsAlloc(std.testing.allocator);
+    std.process.argsFree(std.testing.allocator, args);
 }
 
 test "memfd_create" {
@@ -254,4 +255,102 @@ test "memfd_create" {
     const bytes_read = try std.os.read(fd, &buf);
     expect(bytes_read == 4);
     expect(mem.eql(u8, buf[0..4], "test"));
+}
+
+test "mmap" {
+    if (builtin.os == .windows)
+        return error.SkipZigTest;
+
+    // Simple mmap() call with non page-aligned size
+    {
+        const data = try os.mmap(
+            null,
+            1234,
+            os.PROT_READ | os.PROT_WRITE,
+            os.MAP_ANONYMOUS | os.MAP_PRIVATE,
+            -1,
+            0,
+        );
+        defer os.munmap(data);
+
+        testing.expectEqual(@as(usize, 1234), data.len);
+
+        // By definition the data returned by mmap is zero-filled
+        std.mem.set(u8, data[0 .. data.len - 1], 0x55);
+        testing.expect(mem.indexOfScalar(u8, data, 0).? == 1234 - 1);
+    }
+
+    const test_out_file = "os_tmp_test";
+    // Must be a multiple of 4096 so that the test works with mmap2
+    const alloc_size = 8 * 4096;
+
+    // Create a file used for testing mmap() calls with a file descriptor
+    {
+        const file = try fs.cwd().createFile(test_out_file, .{});
+        defer file.close();
+
+        var out_stream = file.outStream();
+        const stream = &out_stream.stream;
+
+        var i: u32 = 0;
+        while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
+            try stream.writeIntNative(u32, i);
+        }
+    }
+
+    // Map the whole file
+    {
+        const file = try fs.cwd().createFile(test_out_file, .{
+            .read = true,
+            .truncate = false,
+        });
+        defer file.close();
+
+        const data = try os.mmap(
+            null,
+            alloc_size,
+            os.PROT_READ,
+            os.MAP_PRIVATE,
+            file.handle,
+            0,
+        );
+        defer os.munmap(data);
+
+        var mem_stream = io.SliceInStream.init(data);
+        const stream = &mem_stream.stream;
+
+        var i: u32 = 0;
+        while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
+            testing.expectEqual(i, try stream.readIntNative(u32));
+        }
+    }
+
+    // Map the upper half of the file
+    {
+        const file = try fs.cwd().createFile(test_out_file, .{
+            .read = true,
+            .truncate = false,
+        });
+        defer file.close();
+
+        const data = try os.mmap(
+            null,
+            alloc_size,
+            os.PROT_READ,
+            os.MAP_PRIVATE,
+            file.handle,
+            alloc_size / 2,
+        );
+        defer os.munmap(data);
+
+        var mem_stream = io.SliceInStream.init(data);
+        const stream = &mem_stream.stream;
+
+        var i: u32 = alloc_size / 2 / @sizeOf(u32);
+        while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
+            testing.expectEqual(i, try stream.readIntNative(u32));
+        }
+    }
+
+    try fs.cwd().deleteFile(test_out_file);
 }
