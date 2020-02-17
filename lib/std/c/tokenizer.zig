@@ -616,6 +616,7 @@ pub const Tokenizer = struct {
                 },
                 .BackSlash => switch (c) {
                     '\n' => {
+                        result.start = self.index + 1;
                         state = .Start;
                     },
                     '\r' => {
@@ -631,6 +632,7 @@ pub const Tokenizer = struct {
                 },
                 .BackSlashCr => switch (c) {
                     '\n' => {
+                        result.start = self.index + 1;
                         state = .Start;
                     },
                     else => {
@@ -651,6 +653,7 @@ pub const Tokenizer = struct {
                         state = .StringLiteral;
                     },
                     else => {
+                        self.index -= 1;
                         state = .Identifier;
                     },
                 },
@@ -660,6 +663,7 @@ pub const Tokenizer = struct {
                         state = .StringLiteral;
                     },
                     else => {
+                        self.index -= 1;
                         state = .Identifier;
                     },
                 },
@@ -673,6 +677,7 @@ pub const Tokenizer = struct {
                         state = .StringLiteral;
                     },
                     else => {
+                        self.index -= 1;
                         state = .Identifier;
                     },
                 },
@@ -686,6 +691,7 @@ pub const Tokenizer = struct {
                         state = .StringLiteral;
                     },
                     else => {
+                        self.index -= 1;
                         state = .Identifier;
                     },
                 },
