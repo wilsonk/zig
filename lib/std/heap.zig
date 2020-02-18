@@ -533,7 +533,7 @@ pub const ArenaAllocator = struct {
         };
     }
 
-    pub fn deinit(self: *ArenaAllocator) void {
+    pub fn deinit(self: ArenaAllocator) void {
         var it = self.buffer_list.first;
         while (it) |node| {
             // this has to occur before the free because the free frees node
@@ -710,6 +710,10 @@ pub const ThreadSafeFixedBufferAllocator = blk: {
 
             fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
                 return old_mem[0..new_size];
+            }
+
+            pub fn reset(self: *ThreadSafeFixedBufferAllocator) void {
+                self.end_index = 0;
             }
         };
     }

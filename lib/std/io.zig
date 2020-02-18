@@ -47,7 +47,10 @@ fn getStdOutHandle() os.fd_t {
 }
 
 pub fn getStdOut() File {
-    return File.openHandle(getStdOutHandle());
+    return File{
+        .handle = getStdOutHandle(),
+        .io_mode = .blocking,
+    };
 }
 
 fn getStdErrHandle() os.fd_t {
@@ -63,7 +66,11 @@ fn getStdErrHandle() os.fd_t {
 }
 
 pub fn getStdErr() File {
-    return File.openHandle(getStdErrHandle());
+    return File{
+        .handle = getStdErrHandle(),
+        .io_mode = .blocking,
+        .async_block_allowed = File.async_block_allowed_yes,
+    };
 }
 
 fn getStdInHandle() os.fd_t {
@@ -79,7 +86,10 @@ fn getStdInHandle() os.fd_t {
 }
 
 pub fn getStdIn() File {
-    return File.openHandle(getStdInHandle());
+    return File{
+        .handle = getStdInHandle(),
+        .io_mode = .blocking,
+    };
 }
 
 pub const SeekableStream = @import("io/seekable_stream.zig").SeekableStream;
@@ -213,15 +223,13 @@ test "io.BufferedInStream" {
         }
     };
 
-    var buf: [100]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
-
     const str = "This is a test";
     var one_byte_stream = OneByteReadInStream.init(str);
     var buf_in_stream = BufferedInStream(OneByteReadInStream.Error).init(&one_byte_stream.stream);
     const stream = &buf_in_stream.stream;
 
-    const res = try stream.readAllAlloc(allocator, str.len + 1);
+    const res = try stream.readAllAlloc(testing.allocator, str.len + 1);
+    defer testing.allocator.free(res);
     testing.expectEqualSlices(u8, str, res);
 }
 
@@ -864,10 +872,8 @@ pub fn readLineFrom(stream: var, buf: *std.Buffer) ![]u8 {
 }
 
 test "io.readLineFrom" {
-    var bytes: [128]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-
-    var buf = try std.Buffer.initSize(allocator, 0);
+    var buf = try std.Buffer.initSize(testing.allocator, 0);
+    defer buf.deinit();
     var mem_stream = SliceInStream.init(
         \\Line 1
         \\Line 22
@@ -891,7 +897,7 @@ pub fn readLineSlice(slice: []u8) ![]u8 {
 pub fn readLineSliceFrom(stream: var, slice: []u8) ![]u8 {
     // We cannot use Buffer.fromOwnedSlice, as it wants to append a null byte
     // after taking ownership, which would always require an allocation.
-    var buf = std.Buffer{ .list = std.ArrayList(u8).fromOwnedSlice(debug.failing_allocator, slice) };
+    var buf = std.Buffer{ .list = std.ArrayList(u8).fromOwnedSlice(testing.failing_allocator, slice) };
     try buf.resize(0);
     return try readLineFrom(stream, &buf);
 }

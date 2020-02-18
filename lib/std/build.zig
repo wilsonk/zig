@@ -21,6 +21,7 @@ pub const TranslateCStep = @import("build/translate_c.zig").TranslateCStep;
 pub const WriteFileStep = @import("build/write_file.zig").WriteFileStep;
 pub const RunStep = @import("build/run.zig").RunStep;
 pub const CheckFileStep = @import("build/check_file.zig").CheckFileStep;
+pub const InstallRawStep = @import("build/emit_raw.zig").InstallRawStep;
 
 pub const Builder = struct {
     install_tls: TopLevelStep,
@@ -484,6 +485,7 @@ pub const Builder = struct {
                         .arch = builtin.arch,
                         .os = builtin.os,
                         .abi = builtin.abi,
+                        .cpu_features = builtin.cpu_features,
                     },
                 }).linuxTriple(self.allocator);
 
@@ -493,12 +495,16 @@ pub const Builder = struct {
 
                 self.addNativeSystemIncludeDir("/usr/local/include");
                 self.addNativeSystemLibPath("/usr/local/lib");
+                self.addNativeSystemLibPath("/usr/local/lib64");
 
                 self.addNativeSystemIncludeDir(self.fmt("/usr/include/{}", .{triple}));
                 self.addNativeSystemLibPath(self.fmt("/usr/lib/{}", .{triple}));
 
                 self.addNativeSystemIncludeDir("/usr/include");
+                self.addNativeSystemLibPath("/lib");
+                self.addNativeSystemLibPath("/lib64");
                 self.addNativeSystemLibPath("/usr/lib");
+                self.addNativeSystemLibPath("/usr/lib64");
 
                 // example: on a 64-bit debian-based linux distro, with zlib installed from apt:
                 // zlib.h is in /usr/include (added above)
@@ -823,6 +829,10 @@ pub const Builder = struct {
         self.getInstallStep().dependOn(&self.addInstallFileWithDir(src_path, .Lib, dest_rel_path).step);
     }
 
+    pub fn installRaw(self: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8) void {
+        self.getInstallStep().dependOn(&self.addInstallRaw(artifact, dest_filename).step);
+    }
+
     ///`dest_rel_path` is relative to install prefix path
     pub fn addInstallFile(self: *Builder, src_path: []const u8, dest_rel_path: []const u8) *InstallFileStep {
         return self.addInstallFileWithDir(src_path, .Prefix, dest_rel_path);
@@ -836,6 +846,10 @@ pub const Builder = struct {
     ///`dest_rel_path` is relative to lib path
     pub fn addInstallLibFile(self: *Builder, src_path: []const u8, dest_rel_path: []const u8) *InstallFileStep {
         return self.addInstallFileWithDir(src_path, .Lib, dest_rel_path);
+    }
+
+    pub fn addInstallRaw(self: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8) *InstallRawStep {
+        return InstallRawStep.create(self, artifact, dest_filename);
     }
 
     pub fn addInstallFileWithDir(
@@ -1058,7 +1072,10 @@ pub const Builder = struct {
 };
 
 test "builder.findProgram compiles" {
+    // TODO: uncomment and fix the leak
+    // const builder = try Builder.create(std.testing.allocator, "zig", "zig-cache", "zig-cache");
     const builder = try Builder.create(std.heap.page_allocator, "zig", "zig-cache", "zig-cache");
+    defer builder.destroy();
     _ = builder.findProgram(&[_][]const u8{}, &[_][]const u8{}) catch null;
 }
 
@@ -1071,9 +1088,10 @@ pub const CrossTarget = std.Target.Cross;
 /// Deprecated. Use `std.Target`.
 pub const Target = std.Target;
 
-const Pkg = struct {
+pub const Pkg = struct {
     name: []const u8,
     path: []const u8,
+    dependencies: ?[]Pkg = null,
 };
 
 const CSourceFile = struct {
@@ -1148,6 +1166,7 @@ pub const LibExeObjStep = struct {
     name_prefix: []const u8,
     filter: ?[]const u8,
     single_threaded: bool,
+    code_model: builtin.CodeModel = .default,
 
     root_src: ?FileSource,
     out_h_filename: []const u8,
@@ -1375,6 +1394,7 @@ pub const LibExeObjStep = struct {
                 .arch = target_arch,
                 .os = target_os,
                 .abi = target_abi,
+                .cpu_features = target_arch.getBaselineCpuFeatures(),
             },
         });
     }
@@ -1398,6 +1418,10 @@ pub const LibExeObjStep = struct {
 
     pub fn install(self: *LibExeObjStep) void {
         self.builder.installArtifact(self);
+    }
+
+    pub fn installRaw(self: *LibExeObjStep, dest_filename: []const u8) void {
+        self.builder.installRaw(self, dest_filename);
     }
 
     /// Creates a `RunStep` with an executable built with `addExecutable`.
@@ -1687,7 +1711,9 @@ pub const LibExeObjStep = struct {
     }
 
     pub fn addAssemblyFile(self: *LibExeObjStep, path: []const u8) void {
-        self.link_objects.append(LinkObject{ .AssemblyFile = self.builder.dupe(path) }) catch unreachable;
+        self.link_objects.append(LinkObject{
+            .AssemblyFile = .{ .path = self.builder.dupe(path) },
+        }) catch unreachable;
     }
 
     pub fn addAssemblyFileFromWriteFileStep(self: *LibExeObjStep, wfs: *WriteFileStep, basename: []const u8) void {
@@ -1727,17 +1753,21 @@ pub const LibExeObjStep = struct {
     }
 
     pub fn addLibPath(self: *LibExeObjStep, path: []const u8) void {
-        self.lib_paths.append(path) catch unreachable;
+        self.lib_paths.append(self.builder.dupe(path)) catch unreachable;
     }
 
     pub fn addFrameworkDir(self: *LibExeObjStep, dir_path: []const u8) void {
-        self.framework_dirs.append(dir_path) catch unreachable;
+        self.framework_dirs.append(self.builder.dupe(dir_path)) catch unreachable;
+    }
+
+    pub fn addPackage(self: *LibExeObjStep, package: Pkg) void {
+        self.packages.append(package) catch unreachable;
     }
 
     pub fn addPackagePath(self: *LibExeObjStep, name: []const u8, pkg_index_path: []const u8) void {
         self.packages.append(Pkg{
-            .name = name,
-            .path = pkg_index_path,
+            .name = self.builder.dupe(name),
+            .path = self.builder.dupe(pkg_index_path),
         }) catch unreachable;
     }
 
@@ -1966,11 +1996,56 @@ pub const LibExeObjStep = struct {
             try zig_args.append("-fno-sanitize-c");
         }
 
+        if (self.code_model != .default) {
+            try zig_args.append("-code-model");
+            try zig_args.append(@tagName(self.code_model));
+        }
+
         switch (self.target) {
             .Native => {},
-            .Cross => {
+            .Cross => |cross| {
                 try zig_args.append("-target");
                 try zig_args.append(self.target.zigTriple(builder.allocator) catch unreachable);
+
+                const all_features = self.target.getArch().allFeaturesList();
+                var populated_cpu_features = cross.cpu_features.cpu.features;
+                if (self.target.getArch().subArchFeature()) |sub_arch_index| {
+                    populated_cpu_features.addFeature(sub_arch_index);
+                }
+                populated_cpu_features.populateDependencies(all_features);
+
+                if (populated_cpu_features.eql(cross.cpu_features.features)) {
+                    // The CPU name alone is sufficient.
+                    // If it is the baseline CPU, no command line args are required.
+                    if (cross.cpu_features.cpu != self.target.getArch().getBaselineCpuFeatures().cpu) {
+                        try zig_args.append("-target-cpu");
+                        try zig_args.append(cross.cpu_features.cpu.name);
+                    }
+                } else {
+                    try zig_args.append("-target-cpu");
+                    try zig_args.append(cross.cpu_features.cpu.name);
+
+                    try zig_args.append("-target-feature");
+                    var feature_str_buffer = try std.Buffer.initSize(builder.allocator, 0);
+                    for (all_features) |feature, i_usize| {
+                        const i = @intCast(Target.Cpu.Feature.Set.Index, i_usize);
+                        const in_cpu_set = populated_cpu_features.isEnabled(i);
+                        const in_actual_set = cross.cpu_features.features.isEnabled(i);
+                        if (in_cpu_set and !in_actual_set) {
+                            try feature_str_buffer.appendByte('-');
+                            try feature_str_buffer.append(feature.name);
+                            try feature_str_buffer.appendByte(',');
+                        } else if (!in_cpu_set and in_actual_set) {
+                            try feature_str_buffer.appendByte('+');
+                            try feature_str_buffer.append(feature.name);
+                            try feature_str_buffer.appendByte(',');
+                        }
+                    }
+                    if (mem.endsWith(u8, feature_str_buffer.toSliceConst(), ",")) {
+                        feature_str_buffer.shrink(feature_str_buffer.len() - 1);
+                    }
+                    try zig_args.append(feature_str_buffer.toSliceConst());
+                }
             },
         }
 
@@ -2038,10 +2113,20 @@ pub const LibExeObjStep = struct {
             },
         }
         for (self.packages.toSliceConst()) |pkg| {
-            zig_args.append("--pkg-begin") catch unreachable;
-            zig_args.append(pkg.name) catch unreachable;
-            zig_args.append(builder.pathFromRoot(pkg.path)) catch unreachable;
-            zig_args.append("--pkg-end") catch unreachable;
+            try zig_args.append("--pkg-begin");
+            try zig_args.append(pkg.name);
+            try zig_args.append(builder.pathFromRoot(pkg.path));
+
+            if (pkg.dependencies) |dependencies| {
+                for (dependencies) |sub_pkg| {
+                    try zig_args.append("--pkg-begin");
+                    try zig_args.append(sub_pkg.name);
+                    try zig_args.append(builder.pathFromRoot(sub_pkg.path));
+                    try zig_args.append("--pkg-end");
+                }
+            }
+
+            try zig_args.append("--pkg-end");
         }
 
         for (self.include_dirs.toSliceConst()) |include_dir| {
@@ -2054,7 +2139,7 @@ pub const LibExeObjStep = struct {
                     try zig_args.append("-isystem");
                     try zig_args.append(self.builder.pathFromRoot(include_path));
                 },
-                .OtherStep => |other| {
+                .OtherStep => |other| if (!other.disable_gen_h) {
                     const h_path = other.getOutputHPath();
                     try zig_args.append("-isystem");
                     try zig_args.append(fs.path.dirname(h_path).?);

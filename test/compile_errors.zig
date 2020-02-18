@@ -1,7 +1,65 @@
 const tests = @import("tests.zig");
 const builtin = @import("builtin");
+const Target = @import("std").Target;
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.addTest("duplicate field in anonymous struct literal",
+        \\export fn entry() void {
+        \\    const anon = .{
+        \\        .inner = .{
+        \\            .a = .{
+        \\                .something = "text",
+        \\            },
+        \\            .a = .{},
+        \\        },
+        \\    };
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:7:13: error: duplicate field",
+        "tmp.zig:4:13: note: other field here",
+    });
+
+    cases.addTest("type mismatch in C prototype with varargs",
+        \\const fn_ty = ?fn ([*c]u8, ...) callconv(.C) void;
+        \\extern fn fn_decl(fmt: [*:0]u8, ...) void;
+        \\
+        \\export fn main() void {
+        \\    const x: fn_ty = fn_decl;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:5:22: error: expected type 'fn([*c]u8, ...) callconv(.C) void', found 'fn([*:0]u8, ...) callconv(.C) void'",
+    });
+
+    cases.addTest("dependency loop in top-level decl with @TypeInfo",
+        \\export const foo = @typeInfo(@This());
+    , &[_][]const u8{
+        "tmp.zig:1:20: error: dependency loop detected",
+    });
+
+    cases.add("function call assigned to incorrect type",
+        \\export fn entry() void {
+        \\    var arr: [4]f32 = undefined;
+        \\    arr = concat();
+        \\}
+        \\fn concat() [16]f32 {
+        \\    return [1]f32{0}**16;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:17: error: expected type '[4]f32', found '[16]f32'",
+    });
+
+    cases.add("generic function call assigned to incorrect type",
+        \\pub export fn entry() void {
+        \\    var res: []i32 = undefined;
+        \\    res = myAlloc(i32);
+        \\}
+        \\fn myAlloc(comptime arg: type) anyerror!arg{
+        \\    unreachable;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:18: error: expected type '[]i32', found 'anyerror!i32",
+    });
+
     cases.addTest("non-exhaustive enums",
         \\const A = enum {
         \\    a,
@@ -272,9 +330,10 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         , &[_][]const u8{
             "tmp.zig:3:5: error: target arch 'wasm32' does not support calling with a new stack",
         });
-        tc.target = tests.Target{
-            .Cross = tests.CrossTarget{
+        tc.target = Target{
+            .Cross = .{
                 .arch = .wasm32,
+                .cpu_features = Target.Arch.wasm32.getBaselineCpuFeatures(),
                 .os = .wasi,
                 .abi = .none,
             },
@@ -673,9 +732,10 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         , &[_][]const u8{
             "tmp.zig:2:14: error: could not find 'foo' in the inputs or outputs",
         });
-        tc.target = tests.Target{
-            .Cross = tests.CrossTarget{
+        tc.target = Target{
+            .Cross = .{
                 .arch = .x86_64,
+                .cpu_features = Target.Arch.x86_64.getBaselineCpuFeatures(),
                 .os = .linux,
                 .abi = .gnu,
             },
@@ -1649,7 +1709,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.addTest("return invalid type from test",
         \\test "example" { return 1; }
     , &[_][]const u8{
-        "tmp.zig:1:25: error: integer value 1 cannot be coerced to type 'void'",
+        "tmp.zig:1:25: error: expected type 'void', found 'comptime_int'",
     });
 
     cases.add("threadlocal qualifier on const",
@@ -2478,7 +2538,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var rule_set = try Foo.init();
         \\}
     , &[_][]const u8{
-        "tmp.zig:2:10: error: expected type 'i32', found 'type'",
+        "tmp.zig:2:19: error: expected type 'i32', found 'type'",
     });
 
     cases.add("slicing single-item pointer",
@@ -3384,7 +3444,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\
         \\fn b() void {}
     , &[_][]const u8{
-        "tmp.zig:3:6: error: unreachable code",
+        "tmp.zig:3:5: error: unreachable code",
     });
 
     cases.add("bad import",
@@ -4002,8 +4062,8 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\
         \\export fn entry() usize { return @sizeOf(@TypeOf(Foo)); }
     , &[_][]const u8{
-        "tmp.zig:5:25: error: unable to evaluate constant expression",
-        "tmp.zig:2:12: note: referenced here",
+        "tmp.zig:5:25: error: cannot store runtime value in compile time variable",
+        "tmp.zig:2:12: note: called from here",
     });
 
     cases.add("addition with non numbers",
@@ -4643,7 +4703,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\fn something() anyerror!void { }
     , &[_][]const u8{
         "tmp.zig:2:5: error: expected type 'void', found 'anyerror'",
-        "tmp.zig:1:15: note: return type declared here",
     });
 
     cases.add("invalid pointer for var type",
@@ -5260,25 +5319,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:2:30: error: cannot set section of local variable 'foo'",
     });
 
-    cases.add("returning address of local variable - simple",
-        \\export fn foo() *i32 {
-        \\    var a: i32 = undefined;
-        \\    return &a;
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:3:13: error: function returns address of local variable",
-    });
-
-    cases.add("returning address of local variable - phi",
-        \\export fn foo(c: bool) *i32 {
-        \\    var a: i32 = undefined;
-        \\    var b: i32 = undefined;
-        \\    return if (c) &a else &b;
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:4:12: error: function returns address of local variable",
-    });
-
     cases.add("inner struct member shadowing outer struct member",
         \\fn A() type {
         \\    return struct {
@@ -5734,7 +5774,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    @export(entry, .{.name = "entry", .linkage = @as(u32, 1234) });
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:50: error: expected type 'std.builtin.GlobalLinkage', found 'u32'",
+        "tmp.zig:3:59: error: expected type 'std.builtin.GlobalLinkage', found 'comptime_int'",
     });
 
     cases.add("struct with invalid field",
@@ -5757,7 +5797,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\
         \\export fn entry() void {
         \\    const a = MdNode.Header {
-        \\        .text = MdText.init(&std.debug.global_allocator),
+        \\        .text = MdText.init(&std.testing.allocator),
         \\        .weight = HeaderWeight.H1,
         \\    };
         \\}

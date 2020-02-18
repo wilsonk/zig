@@ -34,10 +34,10 @@ pub fn main() !void {
     const out_file_name = try (args_it.next(allocator) orelse @panic("expected output arg"));
     defer allocator.free(out_file_name);
 
-    var in_file = try fs.File.openRead(in_file_name);
+    var in_file = try fs.cwd().openFile(in_file_name, .{ .read = true });
     defer in_file.close();
 
-    var out_file = try fs.File.openWrite(out_file_name);
+    var out_file = try fs.cwd().createFile(out_file_name, .{});
     defer out_file.close();
 
     var file_in_stream = in_file.inStream();
@@ -672,7 +672,8 @@ const TermState = enum {
 
 test "term color" {
     const input_bytes = "A\x1b[32;1mgreen\x1b[0mB";
-    const result = try termColor(std.debug.global_allocator, input_bytes);
+    const result = try termColor(std.testing.allocator, input_bytes);
+    defer std.testing.allocator.free(result);
     testing.expectEqualSlices(u8, "A<span class=\"t32\">green</span>B", result);
 }
 

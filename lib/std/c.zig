@@ -2,6 +2,12 @@ const builtin = @import("builtin");
 const std = @import("std");
 const page_size = std.mem.page_size;
 
+pub const tokenizer = @import("c/tokenizer.zig");
+pub const Token = tokenizer.Token;
+pub const Tokenizer = tokenizer.Tokenizer;
+pub const parse = @import("c/parse.zig").parse;
+pub const ast = @import("c/ast.zig");
+
 pub usingnamespace @import("os/bits.zig");
 
 pub usingnamespace switch (builtin.os) {
@@ -90,6 +96,7 @@ pub extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*]u8;
 pub extern "c" fn waitpid(pid: c_int, stat_loc: *c_uint, options: c_uint) c_int;
 pub extern "c" fn fork() c_int;
 pub extern "c" fn access(path: [*:0]const u8, mode: c_uint) c_int;
+pub extern "c" fn faccessat(dirfd: fd_t, path: [*:0]const u8, mode: c_uint, flags: c_uint) c_int;
 pub extern "c" fn pipe(fds: *[2]fd_t) c_int;
 pub extern "c" fn pipe2(fds: *[2]fd_t, flags: u32) c_int;
 pub extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
@@ -113,6 +120,9 @@ pub extern "c" fn getrusage(who: c_int, usage: *rusage) c_int;
 pub extern "c" fn sysctl(name: [*]const c_int, namelen: c_uint, oldp: ?*c_void, oldlenp: ?*usize, newp: ?*c_void, newlen: usize) c_int;
 pub extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*c_void, oldlenp: ?*usize, newp: ?*c_void, newlen: usize) c_int;
 pub extern "c" fn sysctlnametomib(name: [*:0]const u8, mibp: ?*c_int, sizep: ?*usize) c_int;
+pub extern "c" fn tcgetattr(fd: fd_t, termios_p: *termios) c_int;
+pub extern "c" fn tcsetattr(fd: fd_t, optional_action: TCSA, termios_p: *const termios) c_int;
+pub extern "c" fn fcntl(fd: fd_t, cmd: c_int, ...) c_int;
 
 pub extern "c" fn gethostname(name: [*]u8, len: usize) c_int;
 pub extern "c" fn bind(socket: fd_t, address: ?*const sockaddr, address_len: socklen_t) c_int;
@@ -185,7 +195,7 @@ pub extern "c" fn getaddrinfo(
     noalias service: [*:0]const u8,
     noalias hints: *const addrinfo,
     noalias res: **addrinfo,
-) c_int;
+) EAI;
 
 pub extern "c" fn freeaddrinfo(res: *addrinfo) void;
 
@@ -197,9 +207,9 @@ pub extern "c" fn getnameinfo(
     noalias serv: [*]u8,
     servlen: socklen_t,
     flags: u32,
-) c_int;
+) EAI;
 
-pub extern "c" fn gai_strerror(errcode: c_int) [*:0]const u8;
+pub extern "c" fn gai_strerror(errcode: EAI) [*:0]const u8;
 
 pub extern "c" fn poll(fds: [*]pollfd, nfds: nfds_t, timeout: c_int) c_int;
 

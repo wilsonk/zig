@@ -27,10 +27,8 @@ pub fn getCwdAlloc(allocator: *Allocator) ![]u8 {
 }
 
 test "getCwdAlloc" {
-    // at least call it so it gets compiled
-    var buf: [1000]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(&buf).allocator;
-    _ = getCwdAlloc(allocator) catch undefined;
+    const cwd = try getCwdAlloc(testing.allocator);
+    testing.allocator.free(cwd);
 }
 
 /// Caller must free result when done.
@@ -79,7 +77,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
         // https://github.com/WebAssembly/WASI/issues/27
         var environ = try allocator.alloc(?[*:0]u8, environ_count + 1);
         defer allocator.free(environ);
-        var environ_buf = try std.heap.page_allocator.alloc(u8, environ_buf_size);
+        var environ_buf = try allocator.alloc(u8, environ_buf_size);
         defer allocator.free(environ_buf);
 
         const environ_get_ret = os.wasi.environ_get(environ.ptr, environ_buf.ptr);
@@ -114,7 +112,7 @@ pub fn getEnvMap(allocator: *Allocator) !BufMap {
 }
 
 test "os.getEnvMap" {
-    var env = try getEnvMap(std.debug.global_allocator);
+    var env = try getEnvMap(std.testing.allocator);
     defer env.deinit();
 }
 
@@ -165,7 +163,7 @@ pub fn getEnvVarOwned(allocator: *mem.Allocator, key: []const u8) GetEnvVarOwned
 }
 
 test "os.getEnvVarOwned" {
-    var ga = std.debug.global_allocator;
+    var ga = std.testing.allocator;
     testing.expectError(error.EnvironmentVariableNotFound, getEnvVarOwned(ga, "BADENV"));
 }
 
@@ -492,10 +490,11 @@ test "windows arg parsing" {
 fn testWindowsCmdLine(input_cmd_line: [*]const u8, expected_args: []const []const u8) void {
     var it = ArgIteratorWindows.initWithCmdLine(input_cmd_line);
     for (expected_args) |expected_arg| {
-        const arg = it.next(std.debug.global_allocator).? catch unreachable;
+        const arg = it.next(std.testing.allocator).? catch unreachable;
+        defer std.testing.allocator.free(arg);
         testing.expectEqualSlices(u8, expected_arg, arg);
     }
-    testing.expect(it.next(std.debug.global_allocator) == null);
+    testing.expect(it.next(std.testing.allocator) == null);
 }
 
 pub const UserInfo = struct {
@@ -612,5 +611,61 @@ pub fn getBaseAddress() usize {
         },
         .windows => return @ptrToInt(os.windows.kernel32.GetModuleHandleW(null)),
         else => @compileError("Unsupported OS"),
+    }
+}
+
+/// Caller owns the result value and each inner slice.
+pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]u8 {
+    switch (builtin.link_mode) {
+        .Static => return &[_][:0]u8{},
+        .Dynamic => {},
+    }
+    const List = std.ArrayList([:0]u8);
+    switch (builtin.os) {
+        .linux,
+        .freebsd,
+        .netbsd,
+        .dragonfly,
+        => {
+            var paths = List.init(allocator);
+            errdefer {
+                const slice = paths.toOwnedSlice();
+                for (slice) |item| {
+                    allocator.free(item);
+                }
+                allocator.free(slice);
+            }
+            try os.dl_iterate_phdr(&paths, error{OutOfMemory}, struct {
+                fn callback(info: *os.dl_phdr_info, size: usize, list: *List) !void {
+                    const name = info.dlpi_name orelse return;
+                    if (name[0] == '/') {
+                        const item = try mem.dupeZ(list.allocator, u8, mem.toSliceConst(u8, name));
+                        errdefer list.allocator.free(item);
+                        try list.append(item);
+                    }
+                }
+            }.callback);
+            return paths.toOwnedSlice();
+        },
+        .macosx, .ios, .watchos, .tvos => {
+            var paths = List.init(allocator);
+            errdefer {
+                const slice = paths.toOwnedSlice();
+                for (slice) |item| {
+                    allocator.free(item);
+                }
+                allocator.free(slice);
+            }
+            const img_count = std.c._dyld_image_count();
+            var i: u32 = 0;
+            while (i < img_count) : (i += 1) {
+                const name = std.c._dyld_get_image_name(i);
+                const item = try mem.dupeZ(allocator, u8, mem.toSliceConst(u8, name));
+                errdefer allocator.free(item);
+                try paths.append(item);
+            }
+            return paths.toOwnedSlice();
+        },
+        else => @compileError("getSelfExeSharedLibPaths unimplemented for this target"),
     }
 }

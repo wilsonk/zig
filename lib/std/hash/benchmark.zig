@@ -47,11 +47,11 @@ const hashes = [_]Hash{
         .name = "adler32",
     },
     Hash{
-        .ty = hash.crc.Crc32WithPoly(hash.crc.Polynomial.IEEE),
+        .ty = hash.crc.Crc32WithPoly(.IEEE),
         .name = "crc32-slicing-by-8",
     },
     Hash{
-        .ty = hash.crc.Crc32SmallWithPoly(hash.crc.Polynomial.IEEE),
+        .ty = hash.crc.Crc32SmallWithPoly(.IEEE),
         .name = "crc32-half-byte-lookup",
     },
     Hash{
@@ -250,13 +250,13 @@ pub fn main() !void {
                 if (H.has_iterative_api) {
                     prng.seed(seed);
                     const result = try benchmarkHash(H, count);
-                    try stdout.print("   iterative: {:4} MiB/s [{x:0<16}]\n", .{result.throughput / (1 * MiB), result.hash});
+                    try stdout.print("   iterative: {:4} MiB/s [{x:0<16}]\n", .{ result.throughput / (1 * MiB), result.hash });
                 }
 
                 if (!test_iterative_only) {
                     prng.seed(seed);
                     const result_small = try benchmarkHashSmallKeys(H, key_size, count);
-                    try stdout.print("  small keys: {:4} MiB/s [{x:0<16}]\n", .{result_small.throughput / (1 * MiB), result_small.hash});
+                    try stdout.print("  small keys: {:4} MiB/s [{x:0<16}]\n", .{ result_small.throughput / (1 * MiB), result_small.hash });
                 }
             }
         }

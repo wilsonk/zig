@@ -244,10 +244,7 @@ pub fn AlignedArrayList(comptime T: type, comptime alignment: ?u29) type {
 }
 
 test "std.ArrayList.init" {
-    var bytes: [1024]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-
-    var list = ArrayList(i32).init(allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     testing.expect(list.len == 0);
@@ -255,19 +252,14 @@ test "std.ArrayList.init" {
 }
 
 test "std.ArrayList.initCapacity" {
-    var bytes: [1024]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-    var list = try ArrayList(i8).initCapacity(allocator, 200);
+    var list = try ArrayList(i8).initCapacity(testing.allocator, 200);
     defer list.deinit();
     testing.expect(list.len == 0);
     testing.expect(list.capacity() >= 200);
 }
 
 test "std.ArrayList.basic" {
-    var bytes: [1024]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-
-    var list = ArrayList(i32).init(allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     // setting on empty list is out of bounds
@@ -320,7 +312,7 @@ test "std.ArrayList.basic" {
 }
 
 test "std.ArrayList.orderedRemove" {
-    var list = ArrayList(i32).init(debug.global_allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     try list.append(1);
@@ -347,7 +339,7 @@ test "std.ArrayList.orderedRemove" {
 }
 
 test "std.ArrayList.swapRemove" {
-    var list = ArrayList(i32).init(debug.global_allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     try list.append(1);
@@ -374,7 +366,7 @@ test "std.ArrayList.swapRemove" {
 }
 
 test "std.ArrayList.swapRemoveOrError" {
-    var list = ArrayList(i32).init(debug.global_allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     // Test just after initialization
@@ -402,7 +394,7 @@ test "std.ArrayList.swapRemoveOrError" {
 }
 
 test "std.ArrayList.insert" {
-    var list = ArrayList(i32).init(debug.global_allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     try list.append(1);
@@ -416,7 +408,7 @@ test "std.ArrayList.insert" {
 }
 
 test "std.ArrayList.insertSlice" {
-    var list = ArrayList(i32).init(debug.global_allocator);
+    var list = ArrayList(i32).init(testing.allocator);
     defer list.deinit();
 
     try list.append(1);
@@ -443,7 +435,8 @@ const Item = struct {
 };
 
 test "std.ArrayList: ArrayList(T) of struct T" {
-    var root = Item{ .integer = 1, .sub_items = ArrayList(Item).init(debug.global_allocator) };
-    try root.sub_items.append(Item{ .integer = 42, .sub_items = ArrayList(Item).init(debug.global_allocator) });
+    var root = Item{ .integer = 1, .sub_items = ArrayList(Item).init(testing.allocator) };
+    defer root.sub_items.deinit();
+    try root.sub_items.append(Item{ .integer = 42, .sub_items = ArrayList(Item).init(testing.allocator) });
     testing.expect(root.sub_items.items[0].integer == 42);
 }

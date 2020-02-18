@@ -120,7 +120,7 @@ ScopeLoop *create_loop_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeSuspend *create_suspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeFnDef *create_fndef_scope(CodeGen *g, AstNode *node, Scope *parent, ZigFn *fn_entry);
 Scope *create_comptime_scope(CodeGen *g, AstNode *node, Scope *parent);
-Scope *create_runtime_scope(CodeGen *g, AstNode *node, Scope *parent, IrInstruction *is_comptime);
+Scope *create_runtime_scope(CodeGen *g, AstNode *node, Scope *parent, IrInstSrc *is_comptime);
 Scope *create_typeof_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeExpr *create_expr_scope(CodeGen *g, AstNode *node, Scope *parent);
 
@@ -128,22 +128,22 @@ void init_const_str_lit(CodeGen *g, ZigValue *const_val, Buf *str);
 ZigValue *create_const_str_lit(CodeGen *g, Buf *str);
 
 void init_const_bigint(ZigValue *const_val, ZigType *type, const BigInt *bigint);
-ZigValue *create_const_bigint(ZigType *type, const BigInt *bigint);
+ZigValue *create_const_bigint(CodeGen *g, ZigType *type, const BigInt *bigint);
 
 void init_const_unsigned_negative(ZigValue *const_val, ZigType *type, uint64_t x, bool negative);
-ZigValue *create_const_unsigned_negative(ZigType *type, uint64_t x, bool negative);
+ZigValue *create_const_unsigned_negative(CodeGen *g, ZigType *type, uint64_t x, bool negative);
 
 void init_const_signed(ZigValue *const_val, ZigType *type, int64_t x);
-ZigValue *create_const_signed(ZigType *type, int64_t x);
+ZigValue *create_const_signed(CodeGen *g, ZigType *type, int64_t x);
 
 void init_const_usize(CodeGen *g, ZigValue *const_val, uint64_t x);
 ZigValue *create_const_usize(CodeGen *g, uint64_t x);
 
 void init_const_float(ZigValue *const_val, ZigType *type, double value);
-ZigValue *create_const_float(ZigType *type, double value);
+ZigValue *create_const_float(CodeGen *g, ZigType *type, double value);
 
 void init_const_enum(ZigValue *const_val, ZigType *type, const BigInt *tag);
-ZigValue *create_const_enum(ZigType *type, const BigInt *tag);
+ZigValue *create_const_enum(CodeGen *g, ZigType *type, const BigInt *tag);
 
 void init_const_bool(CodeGen *g, ZigValue *const_val, bool value);
 ZigValue *create_const_bool(CodeGen *g, bool value);
@@ -152,7 +152,7 @@ void init_const_type(CodeGen *g, ZigValue *const_val, ZigType *type_value);
 ZigValue *create_const_type(CodeGen *g, ZigType *type_value);
 
 void init_const_runtime(ZigValue *const_val, ZigType *type);
-ZigValue *create_const_runtime(ZigType *type);
+ZigValue *create_const_runtime(CodeGen *g, ZigType *type);
 
 void init_const_ptr_ref(CodeGen *g, ZigValue *const_val, ZigValue *pointee_val, bool is_const);
 ZigValue *create_const_ptr_ref(CodeGen *g, ZigValue *pointee_val, bool is_const);
@@ -172,11 +172,10 @@ void init_const_slice(CodeGen *g, ZigValue *const_val, ZigValue *array_val,
 ZigValue *create_const_slice(CodeGen *g, ZigValue *array_val, size_t start, size_t len, bool is_const);
 
 void init_const_null(ZigValue *const_val, ZigType *type);
-ZigValue *create_const_null(ZigType *type);
+ZigValue *create_const_null(CodeGen *g, ZigType *type);
 
-ZigValue *create_const_vals(size_t count);
-ZigValue **alloc_const_vals_ptrs(size_t count);
-ZigValue **realloc_const_vals_ptrs(ZigValue **ptr, size_t old_count, size_t new_count);
+ZigValue **alloc_const_vals_ptrs(CodeGen *g, size_t count);
+ZigValue **realloc_const_vals_ptrs(CodeGen *g, ZigValue **ptr, size_t old_count, size_t new_count);
 
 TypeStructField **alloc_type_struct_fields(size_t count);
 TypeStructField **realloc_type_struct_fields(TypeStructField **ptr, size_t old_count, size_t new_count);
@@ -271,14 +270,13 @@ ZigType *resolve_struct_field_type(CodeGen *g, TypeStructField *struct_field);
 
 void add_async_error_notes(CodeGen *g, ErrorMsg *msg, ZigFn *fn);
 
-IrInstruction *ir_create_alloca(CodeGen *g, Scope *scope, AstNode *source_node, ZigFn *fn,
-        ZigType *var_type, const char *name_hint);
 Error analyze_import(CodeGen *codegen, ZigType *source_import, Buf *import_target_str,
         ZigType **out_import, Buf **out_import_target_path, Buf *out_full_path);
 ZigValue *get_the_one_possible_value(CodeGen *g, ZigType *type_entry);
 bool is_anon_container(ZigType *ty);
-void copy_const_val(ZigValue *dest, ZigValue *src);
+void copy_const_val(CodeGen *g, ZigValue *dest, ZigValue *src);
 bool type_has_optional_repr(ZigType *ty);
 bool is_opt_err_set(ZigType *ty);
 bool type_is_numeric(ZigType *ty);
+const char *float_op_to_name(BuiltinFnId op);
 #endif
