@@ -4710,8 +4710,7 @@ static void analyze_fn_async(CodeGen *g, ZigFn *fn, bool resolve_frame) {
     }
     for (size_t i = 0; i < fn->await_list.length; i += 1) {
         IrInstGenAwait *await = fn->await_list.at(i);
-        // TODO If this is a noasync await, it doesn't count
-        // https://github.com/ziglang/zig/issues/3157
+        if (await->is_noasync) continue;
         switch (analyze_callee_async(g, fn, await->target_fn, await->base.base.source_node, must_not_be_async,
                     CallModifierNone))
         {
@@ -6315,8 +6314,9 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
     // The funtion call result of foo() must be spilled.
     for (size_t i = 0; i < fn->await_list.length; i += 1) {
         IrInstGenAwait *await = fn->await_list.at(i);
-        // TODO If this is a noasync await, it doesn't suspend
-        // https://github.com/ziglang/zig/issues/3157
+        if (await->is_noasync) {
+            continue;
+        }
         if (await->base.value->special != ConstValSpecialRuntime) {
             // Known at comptime. No spill, no suspend.
             continue;
@@ -6937,9 +6937,9 @@ static void render_const_val_array(CodeGen *g, Buf *buf, Buf *type_name, ZigValu
             return;
         }
         case ConstArraySpecialNone: {
-            ZigValue *base = &array->data.s_none.elements[start];
-            assert(base != nullptr);
             assert(start + len <= const_val->type->data.array.len);
+            ZigValue *base = &array->data.s_none.elements[start];
+            assert(len == 0 || base != nullptr);
 
             buf_appendf(buf, "%s{", buf_ptr(type_name));
             for (uint64_t i = 0; i < len; i += 1) {

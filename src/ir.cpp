@@ -267,6 +267,7 @@ static IrInstGen *ir_analyze_inferred_field_ptr(IrAnalyze *ira, Buf *field_name,
 static ResultLoc *no_result_loc(void);
 static IrInstGen *ir_analyze_test_non_null(IrAnalyze *ira, IrInst *source_inst, IrInstGen *value);
 static IrInstGen *ir_error_dependency_loop(IrAnalyze *ira, IrInst *source_instr);
+static IrInstGen *ir_const_undef(IrAnalyze *ira, IrInst *source_instruction, ZigType *ty);
 
 static void destroy_instruction_src(IrInstSrc *inst) {
     switch (inst->id) {
@@ -4955,11 +4956,12 @@ static IrInstGen *ir_build_suspend_finish_gen(IrAnalyze *ira, IrInst *source_ins
 }
 
 static IrInstSrc *ir_build_await_src(IrBuilderSrc *irb, Scope *scope, AstNode *source_node,
-        IrInstSrc *frame, ResultLoc *result_loc)
+        IrInstSrc *frame, ResultLoc *result_loc, bool is_noasync)
 {
     IrInstSrcAwait *instruction = ir_build_instruction<IrInstSrcAwait>(irb, scope, source_node);
     instruction->frame = frame;
     instruction->result_loc = result_loc;
+    instruction->is_noasync = is_noasync;
 
     ir_ref_instruction(frame, irb->current_basic_block);
 
@@ -4967,13 +4969,14 @@ static IrInstSrc *ir_build_await_src(IrBuilderSrc *irb, Scope *scope, AstNode *s
 }
 
 static IrInstGenAwait *ir_build_await_gen(IrAnalyze *ira, IrInst *source_instruction,
-        IrInstGen *frame, ZigType *result_type, IrInstGen *result_loc)
+        IrInstGen *frame, ZigType *result_type, IrInstGen *result_loc, bool is_noasync)
 {
     IrInstGenAwait *instruction = ir_build_inst_gen<IrInstGenAwait>(&ira->new_irb,
             source_instruction->scope, source_instruction->source_node);
     instruction->base.value->type = result_type;
     instruction->frame = frame;
     instruction->result_loc = result_loc;
+    instruction->is_noasync = is_noasync;
 
     ir_ref_inst_gen(frame, ira->new_irb.current_basic_block);
     if (result_loc != nullptr) ir_ref_inst_gen(result_loc, ira->new_irb.current_basic_block);
@@ -8105,9 +8108,9 @@ static IrInstSrc *ir_gen_while_expr(IrBuilderSrc *irb, Scope *scope, AstNode *no
         if (var_symbol) {
             IrInstSrc *payload_ptr = ir_build_unwrap_err_payload_src(irb, &spill_scope->base, symbol_node,
                     err_val_ptr, false, false);
-            IrInstSrc *var_ptr = node->data.while_expr.var_is_ptr ?
-                ir_build_ref_src(irb, &spill_scope->base, symbol_node, payload_ptr, true, false) : payload_ptr;
-            ir_build_var_decl_src(irb, payload_scope, symbol_node, payload_var, nullptr, var_ptr);
+            IrInstSrc *var_value = node->data.while_expr.var_is_ptr ?
+                payload_ptr : ir_build_load_ptr(irb, &spill_scope->base, symbol_node, payload_ptr);
+            build_decl_var_and_init(irb, payload_scope, symbol_node, payload_var, var_value, buf_ptr(var_symbol), is_comptime);
         }
 
         ZigList<IrInstSrc *> incoming_values = {0};
@@ -8155,7 +8158,8 @@ static IrInstSrc *ir_gen_while_expr(IrBuilderSrc *irb, Scope *scope, AstNode *no
                 true, false, false, is_comptime);
         Scope *err_scope = err_var->child_scope;
         IrInstSrc *err_ptr = ir_build_unwrap_err_code_src(irb, err_scope, err_symbol_node, err_val_ptr);
-        ir_build_var_decl_src(irb, err_scope, symbol_node, err_var, nullptr, err_ptr);
+        IrInstSrc *err_value = ir_build_load_ptr(irb, err_scope, err_symbol_node, err_ptr);
+        build_decl_var_and_init(irb, err_scope, err_symbol_node, err_var, err_value, buf_ptr(err_symbol), is_comptime);
 
         if (peer_parent->peers.length != 0) {
             peer_parent->peers.last()->next_bb = else_block;
@@ -8216,9 +8220,9 @@ static IrInstSrc *ir_gen_while_expr(IrBuilderSrc *irb, Scope *scope, AstNode *no
 
         ir_set_cursor_at_end_and_append_block(irb, body_block);
         IrInstSrc *payload_ptr = ir_build_optional_unwrap_ptr(irb, &spill_scope->base, symbol_node, maybe_val_ptr, false, false);
-        IrInstSrc *var_ptr = node->data.while_expr.var_is_ptr ?
-            ir_build_ref_src(irb, &spill_scope->base, symbol_node, payload_ptr, true, false) : payload_ptr;
-        ir_build_var_decl_src(irb, child_scope, symbol_node, payload_var, nullptr, var_ptr);
+        IrInstSrc *var_value = node->data.while_expr.var_is_ptr ?
+            payload_ptr : ir_build_load_ptr(irb, &spill_scope->base, symbol_node, payload_ptr);
+        build_decl_var_and_init(irb, child_scope, symbol_node, payload_var, var_value, buf_ptr(var_symbol), is_comptime);
 
         ZigList<IrInstSrc *> incoming_values = {0};
         ZigList<IrBasicBlockSrc *> incoming_blocks = {0};
@@ -8457,9 +8461,9 @@ static IrInstSrc *ir_gen_for_expr(IrBuilderSrc *irb, Scope *parent_scope, AstNod
     ZigVar *elem_var = ir_create_var(irb, elem_node, parent_scope, elem_var_name, true, false, false, is_comptime);
     Scope *child_scope = elem_var->child_scope;
 
-    IrInstSrc *var_ptr = node->data.for_expr.elem_is_ptr ?
-        ir_build_ref_src(irb, &spill_scope->base, elem_node, elem_ptr, true, false) : elem_ptr;
-    ir_build_var_decl_src(irb, parent_scope, elem_node, elem_var, nullptr, var_ptr);
+    IrInstSrc *elem_value = node->data.for_expr.elem_is_ptr ?
+        elem_ptr : ir_build_load_ptr(irb, &spill_scope->base, elem_node, elem_ptr);
+    build_decl_var_and_init(irb, parent_scope, elem_node, elem_var, elem_value, buf_ptr(elem_var_name), is_comptime);
 
     ZigList<IrInstSrc *> incoming_values = {0};
     ZigList<IrBasicBlockSrc *> incoming_blocks = {0};
@@ -8879,8 +8883,9 @@ static IrInstSrc *ir_gen_if_optional_expr(IrBuilderSrc *irb, Scope *scope, AstNo
                 var_symbol, is_const, is_const, is_shadowable, is_comptime);
 
         IrInstSrc *payload_ptr = ir_build_optional_unwrap_ptr(irb, subexpr_scope, node, maybe_val_ptr, false, false);
-        IrInstSrc *var_ptr = var_is_ptr ? ir_build_ref_src(irb, subexpr_scope, node, payload_ptr, true, false) : payload_ptr;
-        ir_build_var_decl_src(irb, subexpr_scope, node, var, nullptr, var_ptr);
+        IrInstSrc *var_value = var_is_ptr ?
+            payload_ptr : ir_build_load_ptr(irb, &spill_scope->base, node, payload_ptr);
+        build_decl_var_and_init(irb, subexpr_scope, node, var, var_value, buf_ptr(var_symbol), is_comptime);
         var_scope = var->child_scope;
     } else {
         var_scope = subexpr_scope;
@@ -8961,9 +8966,9 @@ static IrInstSrc *ir_gen_if_err_expr(IrBuilderSrc *irb, Scope *scope, AstNode *n
                 var_symbol, var_is_const, var_is_const, is_shadowable, var_is_comptime);
 
         IrInstSrc *payload_ptr = ir_build_unwrap_err_payload_src(irb, subexpr_scope, node, err_val_ptr, false, false);
-        IrInstSrc *var_ptr = var_is_ptr ?
-            ir_build_ref_src(irb, subexpr_scope, node, payload_ptr, true, false) : payload_ptr;
-        ir_build_var_decl_src(irb, subexpr_scope, node, var, nullptr, var_ptr);
+        IrInstSrc *var_value = var_is_ptr ?
+            payload_ptr : ir_build_load_ptr(irb, subexpr_scope, node, payload_ptr);
+        build_decl_var_and_init(irb, subexpr_scope, node, var, var_value, buf_ptr(var_symbol), var_is_comptime);
         var_scope = var->child_scope;
     } else {
         var_scope = subexpr_scope;
@@ -8988,7 +8993,8 @@ static IrInstSrc *ir_gen_if_err_expr(IrBuilderSrc *irb, Scope *scope, AstNode *n
                     err_symbol, is_const, is_const, is_shadowable, is_comptime);
 
             IrInstSrc *err_ptr = ir_build_unwrap_err_code_src(irb, subexpr_scope, node, err_val_ptr);
-            ir_build_var_decl_src(irb, subexpr_scope, node, var, nullptr, err_ptr);
+            IrInstSrc *err_value = ir_build_load_ptr(irb, subexpr_scope, node, err_ptr);
+            build_decl_var_and_init(irb, subexpr_scope, node, var, err_value, buf_ptr(err_symbol), is_comptime);
             err_var_scope = var->child_scope;
         } else {
             err_var_scope = subexpr_scope;
@@ -9038,22 +9044,24 @@ static bool ir_gen_switch_prong_expr(IrBuilderSrc *irb, Scope *scope, AstNode *s
         ZigVar *var = ir_create_var(irb, var_symbol_node, scope,
                 var_name, is_const, is_const, is_shadowable, var_is_comptime);
         child_scope = var->child_scope;
-        IrInstSrc *var_ptr;
+        IrInstSrc *var_value;
         if (out_switch_else_var != nullptr) {
             IrInstSrcSwitchElseVar *switch_else_var = ir_build_switch_else_var(irb, scope, var_symbol_node,
                     target_value_ptr);
             *out_switch_else_var = switch_else_var;
             IrInstSrc *payload_ptr = &switch_else_var->base;
-            var_ptr = var_is_ptr ? ir_build_ref_src(irb, scope, var_symbol_node, payload_ptr, true, false) : payload_ptr;
+            var_value = var_is_ptr ?
+                payload_ptr : ir_build_load_ptr(irb, scope, var_symbol_node, payload_ptr);
         } else if (prong_values != nullptr) {
             IrInstSrc *payload_ptr = ir_build_switch_var(irb, scope, var_symbol_node, target_value_ptr,
                     prong_values, prong_values_len);
-            var_ptr = var_is_ptr ? ir_build_ref_src(irb, scope, var_symbol_node, payload_ptr, true, false) : payload_ptr;
+            var_value = var_is_ptr ?
+                payload_ptr : ir_build_load_ptr(irb, scope, var_symbol_node, payload_ptr);
         } else {
-            var_ptr = var_is_ptr ?
-                ir_build_ref_src(irb, scope, var_symbol_node, target_value_ptr, true, false) : target_value_ptr;
+            var_value = var_is_ptr ?
+                target_value_ptr : ir_build_load_ptr(irb, scope, var_symbol_node, target_value_ptr);
         }
-        ir_build_var_decl_src(irb, scope, var_symbol_node, var, nullptr, var_ptr);
+        build_decl_var_and_init(irb, scope, var_symbol_node, var, var_value, buf_ptr(var_name), var_is_comptime);
     } else {
         child_scope = scope;
     }
@@ -9626,7 +9634,8 @@ static IrInstSrc *ir_gen_catch(IrBuilderSrc *irb, Scope *parent_scope, AstNode *
             is_const, is_const, is_shadowable, is_comptime);
         err_scope = var->child_scope;
         IrInstSrc *err_ptr = ir_build_unwrap_err_code_src(irb, err_scope, node, err_union_ptr);
-        ir_build_var_decl_src(irb, err_scope, var_node, var, nullptr, err_ptr);
+        IrInstSrc *err_value = ir_build_load_ptr(irb, err_scope, var_node, err_ptr);
+        build_decl_var_and_init(irb, err_scope, var_node, var, err_value, buf_ptr(var_name), is_comptime);
     } else {
         err_scope = subexpr_scope;
     }
@@ -9946,6 +9955,8 @@ static IrInstSrc *ir_gen_await_expr(IrBuilderSrc *irb, Scope *scope, AstNode *no
 {
     assert(node->type == NodeTypeAwaitExpr);
 
+    bool is_noasync = node->data.await_expr.noasync_token != nullptr;
+
     AstNode *expr_node = node->data.await_expr.expr;
     if (expr_node->type == NodeTypeFnCallExpr && expr_node->data.fn_call_expr.modifier == CallModifierBuiltin) {
         AstNode *fn_ref_expr = expr_node->data.fn_call_expr.fn_ref_expr;
@@ -9978,7 +9989,7 @@ static IrInstSrc *ir_gen_await_expr(IrBuilderSrc *irb, Scope *scope, AstNode *no
     if (target_inst == irb->codegen->invalid_inst_src)
         return irb->codegen->invalid_inst_src;
 
-    IrInstSrc *await_inst = ir_build_await_src(irb, scope, node, target_inst, result_loc);
+    IrInstSrc *await_inst = ir_build_await_src(irb, scope, node, target_inst, result_loc, is_noasync);
     return ir_lval_wrap(irb, scope, await_inst, lval, result_loc);
 }
 
@@ -12784,13 +12795,19 @@ static IrInstGen *ir_resolve_ptr_of_array_to_unknown_len_ptr(IrAnalyze *ira, IrI
     wanted_type = adjust_ptr_align(ira->codegen, wanted_type, get_ptr_align(ira->codegen, value->value->type));
 
     if (instr_is_comptime(value)) {
-        ZigValue *pointee = const_ptr_pointee(ira, ira->codegen, value->value, source_instr->source_node);
+        ZigValue *val = ir_resolve_const(ira, value, UndefOk);
+        if (val == nullptr)
+            return ira->codegen->invalid_inst_gen;
+        if (val->special == ConstValSpecialUndef)
+            return ir_const_undef(ira, source_instr, wanted_type);
+
+        ZigValue *pointee = const_ptr_pointee(ira, ira->codegen, val, source_instr->source_node);
         if (pointee == nullptr)
             return ira->codegen->invalid_inst_gen;
         if (pointee->special != ConstValSpecialRuntime) {
             IrInstGen *result = ir_const(ira, source_instr, wanted_type);
             result->value->data.x_ptr.special = ConstPtrSpecialBaseArray;
-            result->value->data.x_ptr.mut = value->value->data.x_ptr.mut;
+            result->value->data.x_ptr.mut = val->data.x_ptr.mut;
             result->value->data.x_ptr.data.base_array.array_val = pointee;
             result->value->data.x_ptr.data.base_array.elem_index = 0;
             return result;
@@ -14840,6 +14857,16 @@ static IrInstGen *ir_analyze_cast(IrAnalyze *ira, IrInst *source_instr,
         }
     }
 
+    // @Vector(N,T1) to @Vector(N,T2)
+    if (actual_type->id == ZigTypeIdVector && wanted_type->id == ZigTypeIdVector) {
+        if (actual_type->data.vector.len == wanted_type->data.vector.len &&
+            types_match_const_cast_only(ira, wanted_type->data.vector.elem_type,
+                actual_type->data.vector.elem_type, source_node, false).id == ConstCastResultIdOk)
+        {
+            return ir_analyze_bit_cast(ira, source_instr, value, wanted_type);
+        }
+    }
+
     // *@Frame(func) to anyframe->T or anyframe
     // *@Frame(func) to ?anyframe->T or ?anyframe
     // *@Frame(func) to E!anyframe->T or E!anyframe
@@ -16409,9 +16436,11 @@ static IrInstGen *ir_analyze_bin_op_cmp(IrAnalyze *ira, IrInstSrcBinOp *bin_op_i
         case ZigTypeIdComptimeInt:
         case ZigTypeIdInt:
         case ZigTypeIdFloat:
-        case ZigTypeIdVector:
             zig_unreachable(); // handled with the type_is_numeric checks above
 
+        case ZigTypeIdVector:
+            // Not every case is handled by the type_is_numeric checks above,
+            // vectors of bool trigger this code path
         case ZigTypeIdBool:
         case ZigTypeIdMetaType:
         case ZigTypeIdVoid:
@@ -29480,7 +29509,7 @@ static IrInstGen *ir_analyze_instruction_await(IrAnalyze *ira, IrInstSrcAwait *i
     ir_assert(fn_entry != nullptr, &instruction->base.base);
 
     // If it's not @Frame(func) then it's definitely a suspend point
-    if (target_fn == nullptr) {
+    if (target_fn == nullptr && !instruction->is_noasync) {
         if (fn_entry->inferred_async_node == nullptr) {
             fn_entry->inferred_async_node = instruction->base.base.source_node;
         }
@@ -29503,7 +29532,8 @@ static IrInstGen *ir_analyze_instruction_await(IrAnalyze *ira, IrInstSrcAwait *i
         result_loc = nullptr;
     }
 
-    IrInstGenAwait *result = ir_build_await_gen(ira, &instruction->base.base, frame, result_type, result_loc);
+    IrInstGenAwait *result = ir_build_await_gen(ira, &instruction->base.base, frame, result_type, result_loc,
+            instruction->is_noasync);
     result->target_fn = target_fn;
     fn_entry->await_list.append(result);
     return ir_finish_anal(ira, &result->base);
