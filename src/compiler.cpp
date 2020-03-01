@@ -4,64 +4,6 @@
 
 #include <stdio.h>
 
-static Buf saved_dynamic_linker_path = BUF_INIT;
-static bool searched_for_dyn_linker = false;
-
-static void detect_dynamic_linker(Buf *lib_path) {
-#if defined(ZIG_OS_LINUX)
-    for (size_t i = 0; possible_ld_names[i] != NULL; i += 1) {
-        if (buf_ends_with_str(lib_path, possible_ld_names[i])) {
-            buf_init_from_buf(&saved_dynamic_linker_path, lib_path);
-            break;
-        }
-    }
-#endif
-}
-
-Buf *get_self_libc_path(void) {
-    static Buf saved_libc_path = BUF_INIT;
-    static bool searched_for_libc = false;
-
-    for (;;) {
-        if (saved_libc_path.list.length != 0) {
-            return &saved_libc_path;
-        }
-        if (searched_for_libc)
-            return nullptr;
-        ZigList<Buf *> lib_paths = {};
-        Error err;
-        if ((err = os_self_exe_shared_libs(lib_paths)))
-            return nullptr;
-        for (size_t i = 0; i < lib_paths.length; i += 1) {
-            Buf *lib_path = lib_paths.at(i);
-            if (buf_ends_with_str(lib_path, "libc.so.6")) {
-                buf_init_from_buf(&saved_libc_path, lib_path);
-                return &saved_libc_path;
-            }
-        }
-        searched_for_libc = true;
-    }
-}
-
-Buf *get_self_dynamic_linker_path(void) {
-    for (;;) {
-        if (saved_dynamic_linker_path.list.length != 0) {
-            return &saved_dynamic_linker_path;
-        }
-        if (searched_for_dyn_linker)
-            return nullptr;
-        ZigList<Buf *> lib_paths = {};
-        Error err;
-        if ((err = os_self_exe_shared_libs(lib_paths)))
-            return nullptr;
-        for (size_t i = 0; i < lib_paths.length; i += 1) {
-            Buf *lib_path = lib_paths.at(i);
-            detect_dynamic_linker(lib_path);
-        }
-        searched_for_dyn_linker = true;
-    }
-}
-
 Error get_compiler_id(Buf **result) {
     static Buf saved_compiler_id = BUF_INIT;
 
@@ -98,7 +40,6 @@ Error get_compiler_id(Buf **result) {
         return err;
     for (size_t i = 0; i < lib_paths.length; i += 1) {
         Buf *lib_path = lib_paths.at(i);
-        detect_dynamic_linker(lib_path);
         if ((err = cache_add_file(ch, lib_path)))
             return err;
     }

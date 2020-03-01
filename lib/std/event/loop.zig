@@ -12,15 +12,18 @@ const maxInt = std.math.maxInt;
 const Thread = std.Thread;
 
 pub const Loop = struct {
-    allocator: *mem.Allocator,
     next_tick_queue: std.atomic.Queue(anyframe),
     os_data: OsData,
     final_resume_node: ResumeNode,
     pending_event_count: usize,
     extra_threads: []*Thread,
 
-    // pre-allocated eventfds. all permanently active.
-    // this is how we send promises to be resumed on other threads.
+    /// For resources that have the same lifetime as the `Loop`.
+    /// This is only used by `Loop` for the thread pool and associated resources.
+    arena: std.heap.ArenaAllocator,
+
+    /// Pre-allocated eventfds. All permanently active.
+    /// This is how `Loop` sends promises to be resumed on other threads.
     available_eventfd_resume_nodes: std.atomic.Stack(ResumeNode.EventFd),
     eventfd_resume_nodes: []std.atomic.Stack(ResumeNode.EventFd).Node,
 
@@ -31,7 +34,7 @@ pub const Loop = struct {
         handle: anyframe,
         overlapped: Overlapped,
 
-        pub const overlapped_init = switch (builtin.os) {
+        pub const overlapped_init = switch (builtin.os.tag) {
             .windows => windows.OVERLAPPED{
                 .Internal = 0,
                 .InternalHigh = 0,
@@ -49,7 +52,7 @@ pub const Loop = struct {
             EventFd,
         };
 
-        pub const EventFd = switch (builtin.os) {
+        pub const EventFd = switch (builtin.os.tag) {
             .macosx, .freebsd, .netbsd, .dragonfly => KEventFd,
             .linux => struct {
                 base: ResumeNode,
@@ -68,7 +71,7 @@ pub const Loop = struct {
             kevent: os.Kevent,
         };
 
-        pub const Basic = switch (builtin.os) {
+        pub const Basic = switch (builtin.os.tag) {
             .macosx, .freebsd, .netbsd, .dragonfly => KEventBasic,
             .linux => struct {
                 base: ResumeNode,
@@ -127,11 +130,9 @@ pub const Loop = struct {
     /// Thread count is the total thread count. The thread pool size will be
     /// max(thread_count - 1, 0)
     pub fn initThreadPool(self: *Loop, thread_count: usize) !void {
-        // TODO: https://github.com/ziglang/zig/issues/3539
-        const allocator = std.heap.page_allocator;
         self.* = Loop{
+            .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
             .pending_event_count = 1,
-            .allocator = allocator,
             .os_data = undefined,
             .next_tick_queue = std.atomic.Queue(anyframe).init(),
             .extra_threads = undefined,
@@ -143,17 +144,17 @@ pub const Loop = struct {
                 .overlapped = ResumeNode.overlapped_init,
             },
         };
+        errdefer self.arena.deinit();
+
         // We need at least one of these in case the fs thread wants to use onNextTick
         const extra_thread_count = thread_count - 1;
         const resume_node_count = std.math.max(extra_thread_count, 1);
-        self.eventfd_resume_nodes = try self.allocator.alloc(
+        self.eventfd_resume_nodes = try self.arena.allocator.alloc(
             std.atomic.Stack(ResumeNode.EventFd).Node,
             resume_node_count,
         );
-        errdefer self.allocator.free(self.eventfd_resume_nodes);
 
-        self.extra_threads = try self.allocator.alloc(*Thread, extra_thread_count);
-        errdefer self.allocator.free(self.extra_threads);
+        self.extra_threads = try self.arena.allocator.alloc(*Thread, extra_thread_count);
 
         try self.initOsData(extra_thread_count);
         errdefer self.deinitOsData();
@@ -161,7 +162,8 @@ pub const Loop = struct {
 
     pub fn deinit(self: *Loop) void {
         self.deinitOsData();
-        self.allocator.free(self.extra_threads);
+        self.arena.deinit();
+        self.* = undefined;
     }
 
     const InitOsDataError = os.EpollCreateError || mem.Allocator.Error || os.EventFdError ||
@@ -171,7 +173,7 @@ pub const Loop = struct {
     const wakeup_bytes = [_]u8{0x1} ** 8;
 
     fn initOsData(self: *Loop, extra_thread_count: usize) InitOsDataError!void {
-        switch (builtin.os) {
+        switch (builtin.os.tag) {
             .linux => {
                 self.os_data.fs_queue = std.atomic.Queue(Request).init();
                 self.os_data.fs_queue_item = 0;
@@ -402,12 +404,11 @@ pub const Loop = struct {
     }
 
     fn deinitOsData(self: *Loop) void {
-        switch (builtin.os) {
+        switch (builtin.os.tag) {
             .linux => {
                 noasync os.close(self.os_data.final_eventfd);
                 while (self.available_eventfd_resume_nodes.pop()) |node| noasync os.close(node.data.eventfd);
                 noasync os.close(self.os_data.epollfd);
-                self.allocator.free(self.eventfd_resume_nodes);
             },
             .macosx, .freebsd, .netbsd, .dragonfly => {
                 noasync os.close(self.os_data.kqfd);
@@ -567,7 +568,7 @@ pub const Loop = struct {
             };
             const eventfd_node = &resume_stack_node.data;
             eventfd_node.base.handle = next_tick_node.data;
-            switch (builtin.os) {
+            switch (builtin.os.tag) {
                 .macosx, .freebsd, .netbsd, .dragonfly => {
                     const kevent_array = @as(*const [1]os.Kevent, &eventfd_node.kevent);
                     const empty_kevs = &[0]os.Kevent{};
@@ -627,7 +628,7 @@ pub const Loop = struct {
 
         self.workerRun();
 
-        switch (builtin.os) {
+        switch (builtin.os.tag) {
             .linux,
             .macosx,
             .freebsd,
@@ -677,7 +678,7 @@ pub const Loop = struct {
         const prev = @atomicRmw(usize, &self.pending_event_count, AtomicRmwOp.Sub, 1, AtomicOrder.SeqCst);
         if (prev == 1) {
             // cause all the threads to stop
-            switch (builtin.os) {
+            switch (builtin.os.tag) {
                 .linux => {
                     self.posixFsRequest(&self.os_data.fs_end_request);
                     // writing 8 bytes to an eventfd cannot fail
@@ -901,7 +902,7 @@ pub const Loop = struct {
                 self.finishOneEvent();
             }
 
-            switch (builtin.os) {
+            switch (builtin.os.tag) {
                 .linux => {
                     // only process 1 event so we don't steal from other threads
                     var events: [1]os.linux.epoll_event = undefined;
@@ -988,7 +989,7 @@ pub const Loop = struct {
     fn posixFsRequest(self: *Loop, request_node: *Request.Node) void {
         self.beginOneEvent(); // finished in posixFsRun after processing the msg
         self.os_data.fs_queue.put(request_node);
-        switch (builtin.os) {
+        switch (builtin.os.tag) {
             .macosx, .freebsd, .netbsd, .dragonfly => {
                 const fs_kevs = @as(*const [1]os.Kevent, &self.os_data.fs_kevent_wake);
                 const empty_kevs = &[0]os.Kevent{};
@@ -1017,7 +1018,7 @@ pub const Loop = struct {
     // https://github.com/ziglang/zig/issues/3157
     fn posixFsRun(self: *Loop) void {
         while (true) {
-            if (builtin.os == .linux) {
+            if (builtin.os.tag == .linux) {
                 @atomicStore(i32, &self.os_data.fs_queue_item, 0, .SeqCst);
             }
             while (self.os_data.fs_queue.get()) |node| {
@@ -1052,7 +1053,7 @@ pub const Loop = struct {
                 }
                 self.finishOneEvent();
             }
-            switch (builtin.os) {
+            switch (builtin.os.tag) {
                 .linux => {
                     const rc = os.linux.futex_wait(&self.os_data.fs_queue_item, os.linux.FUTEX_WAIT, 0, null);
                     switch (os.linux.getErrno(rc)) {
@@ -1070,7 +1071,7 @@ pub const Loop = struct {
         }
     }
 
-    const OsData = switch (builtin.os) {
+    const OsData = switch (builtin.os.tag) {
         .linux => LinuxOsData,
         .macosx, .freebsd, .netbsd, .dragonfly => KEventData,
         .windows => struct {

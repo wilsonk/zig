@@ -6,8 +6,8 @@ pub const Target = std.Target;
 /// Deprecated: use `std.Target.Os`.
 pub const Os = std.Target.Os;
 
-/// Deprecated: use `std.Target.Arch`.
-pub const Arch = std.Target.Arch;
+/// Deprecated: use `std.Target.Cpu.Arch`.
+pub const Arch = std.Target.Cpu.Arch;
 
 /// Deprecated: use `std.Target.Abi`.
 pub const Abi = std.Target.Abi;
@@ -17,9 +17,6 @@ pub const ObjectFormat = std.Target.ObjectFormat;
 
 /// Deprecated: use `std.Target.SubSystem`.
 pub const SubSystem = std.Target.SubSystem;
-
-/// Deprecated: use `std.Target.CpuFeatures`.
-pub const CpuFeatures = std.Target.CpuFeatures;
 
 /// Deprecated: use `std.Target.Cpu`.
 pub const Cpu = std.Target.Cpu;
@@ -401,7 +398,60 @@ pub const LinkMode = enum {
 pub const Version = struct {
     major: u32,
     minor: u32,
-    patch: u32,
+    patch: u32 = 0,
+
+    pub const Range = struct {
+        min: Version,
+        max: Version,
+
+        pub fn includesVersion(self: LinuxVersionRange, ver: Version) bool {
+            if (self.min.compare(ver) == .gt) return false;
+            if (self.max.compare(ver) == .lt) return false;
+            return true;
+        }
+    };
+
+    pub fn order(lhs: Version, rhs: Version) std.math.Order {
+        if (lhs.major < rhs.major) return .lt;
+        if (lhs.major > rhs.major) return .gt;
+        if (lhs.minor < rhs.minor) return .lt;
+        if (lhs.minor > rhs.minor) return .gt;
+        if (lhs.patch < rhs.patch) return .lt;
+        if (lhs.patch > rhs.patch) return .gt;
+        return .eq;
+    }
+
+    pub fn parse(text: []const u8) !Version {
+        var it = std.mem.separate(text, ".");
+        return Version{
+            .major = try std.fmt.parseInt(u32, it.next() orelse return error.InvalidVersion, 10),
+            .minor = try std.fmt.parseInt(u32, it.next() orelse "0", 10),
+            .patch = try std.fmt.parseInt(u32, it.next() orelse "0", 10),
+        };
+    }
+
+    pub fn format(
+        self: Version,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        context: var,
+        comptime Error: type,
+        comptime output: fn (@TypeOf(context), []const u8) Error!void,
+    ) Error!void {
+        if (fmt.len == 0) {
+            if (self.patch == 0) {
+                if (self.minor == 0) {
+                    return std.fmt.format(context, Error, output, "{}", .{self.major});
+                } else {
+                    return std.fmt.format(context, Error, output, "{}.{}", .{ self.major, self.minor });
+                }
+            } else {
+                return std.fmt.format(context, Error, output, "{}.{}.{}", .{ self.major, self.minor, self.patch });
+            }
+        } else {
+            @compileError("Unknown format string: '" ++ fmt ++ "'");
+        }
+    }
 };
 
 /// This data structure is used by the Zig language code generation and
@@ -477,7 +527,7 @@ pub fn default_panic(msg: []const u8, error_return_trace: ?*StackTrace) noreturn
         root.os.panic(msg, error_return_trace);
         unreachable;
     }
-    switch (os) {
+    switch (os.tag) {
         .freestanding => {
             while (true) {
                 @breakpoint();

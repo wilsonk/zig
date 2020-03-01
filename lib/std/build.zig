@@ -1,5 +1,5 @@
 const std = @import("std.zig");
-const builtin = @import("builtin");
+const builtin = std.builtin;
 const io = std.io;
 const fs = std.fs;
 const mem = std.mem;
@@ -15,6 +15,7 @@ const BufSet = std.BufSet;
 const BufMap = std.BufMap;
 const fmt_lib = std.fmt;
 const File = std.fs.File;
+const CrossTarget = std.zig.CrossTarget;
 
 pub const FmtStep = @import("build/fmt.zig").FmtStep;
 pub const TranslateCStep = @import("build/translate_c.zig").TranslateCStep;
@@ -27,9 +28,6 @@ pub const Builder = struct {
     install_tls: TopLevelStep,
     uninstall_tls: TopLevelStep,
     allocator: *Allocator,
-    native_system_lib_paths: ArrayList([]const u8),
-    native_system_include_dirs: ArrayList([]const u8),
-    native_system_rpaths: ArrayList([]const u8),
     user_input_options: UserInputOptionsMap,
     available_options_map: AvailableOptionsMap,
     available_options_list: ArrayList(AvailableOption),
@@ -41,6 +39,7 @@ pub const Builder = struct {
     verbose_ir: bool,
     verbose_llvm_ir: bool,
     verbose_cimport: bool,
+    verbose_llvm_cpu_features: bool,
     invalid_user_input: bool,
     zig_exe: []const u8,
     default_step: *Step,
@@ -137,11 +136,9 @@ pub const Builder = struct {
             .verbose_ir = false,
             .verbose_llvm_ir = false,
             .verbose_cimport = false,
+            .verbose_llvm_cpu_features = false,
             .invalid_user_input = false,
             .allocator = allocator,
-            .native_system_lib_paths = ArrayList([]const u8).init(allocator),
-            .native_system_include_dirs = ArrayList([]const u8).init(allocator),
-            .native_system_rpaths = ArrayList([]const u8).init(allocator),
             .user_input_options = UserInputOptionsMap.init(allocator),
             .available_options_map = AvailableOptionsMap.init(allocator),
             .available_options_list = ArrayList(AvailableOption).init(allocator),
@@ -172,15 +169,11 @@ pub const Builder = struct {
         };
         try self.top_level_steps.append(&self.install_tls);
         try self.top_level_steps.append(&self.uninstall_tls);
-        self.detectNativeSystemPaths();
         self.default_step = &self.install_tls.step;
         return self;
     }
 
     pub fn destroy(self: *Builder) void {
-        self.native_system_lib_paths.deinit();
-        self.native_system_include_dirs.deinit();
-        self.native_system_rpaths.deinit();
         self.env_map.deinit();
         self.top_level_steps.deinit();
         self.allocator.destroy(self);
@@ -347,18 +340,6 @@ pub const Builder = struct {
         };
     }
 
-    pub fn addNativeSystemIncludeDir(self: *Builder, path: []const u8) void {
-        self.native_system_include_dirs.append(path) catch unreachable;
-    }
-
-    pub fn addNativeSystemRPath(self: *Builder, path: []const u8) void {
-        self.native_system_rpaths.append(path) catch unreachable;
-    }
-
-    pub fn addNativeSystemLibPath(self: *Builder, path: []const u8) void {
-        self.native_system_lib_paths.append(path) catch unreachable;
-    }
-
     pub fn make(self: *Builder, step_names: []const []const u8) !void {
         try self.makePath(self.cache_root);
 
@@ -431,87 +412,6 @@ pub const Builder = struct {
         }
         warn("Cannot run step '{}' because it does not exist\n", .{name});
         return error.InvalidStepName;
-    }
-
-    fn detectNativeSystemPaths(self: *Builder) void {
-        var is_nixos = false;
-        if (process.getEnvVarOwned(self.allocator, "NIX_CFLAGS_COMPILE")) |nix_cflags_compile| {
-            is_nixos = true;
-            var it = mem.tokenize(nix_cflags_compile, " ");
-            while (true) {
-                const word = it.next() orelse break;
-                if (mem.eql(u8, word, "-isystem")) {
-                    const include_path = it.next() orelse {
-                        warn("Expected argument after -isystem in NIX_CFLAGS_COMPILE\n", .{});
-                        break;
-                    };
-                    self.addNativeSystemIncludeDir(include_path);
-                } else {
-                    warn("Unrecognized C flag from NIX_CFLAGS_COMPILE: {}\n", .{word});
-                    break;
-                }
-            }
-        } else |err| {
-            assert(err == error.EnvironmentVariableNotFound);
-        }
-        if (process.getEnvVarOwned(self.allocator, "NIX_LDFLAGS")) |nix_ldflags| {
-            is_nixos = true;
-            var it = mem.tokenize(nix_ldflags, " ");
-            while (true) {
-                const word = it.next() orelse break;
-                if (mem.eql(u8, word, "-rpath")) {
-                    const rpath = it.next() orelse {
-                        warn("Expected argument after -rpath in NIX_LDFLAGS\n", .{});
-                        break;
-                    };
-                    self.addNativeSystemRPath(rpath);
-                } else if (word.len > 2 and word[0] == '-' and word[1] == 'L') {
-                    const lib_path = word[2..];
-                    self.addNativeSystemLibPath(lib_path);
-                } else {
-                    warn("Unrecognized C flag from NIX_LDFLAGS: {}\n", .{word});
-                    break;
-                }
-            }
-        } else |err| {
-            assert(err == error.EnvironmentVariableNotFound);
-        }
-        if (is_nixos) return;
-        switch (builtin.os) {
-            .windows => {},
-            else => {
-                const triple = (Target{
-                    .Cross = CrossTarget{
-                        .arch = builtin.arch,
-                        .os = builtin.os,
-                        .abi = builtin.abi,
-                        .cpu_features = builtin.cpu_features,
-                    },
-                }).linuxTriple(self.allocator);
-
-                // TODO: $ ld --verbose | grep SEARCH_DIR
-                // the output contains some paths that end with lib64, maybe include them too?
-                // also, what is the best possible order of things?
-
-                self.addNativeSystemIncludeDir("/usr/local/include");
-                self.addNativeSystemLibPath("/usr/local/lib");
-                self.addNativeSystemLibPath("/usr/local/lib64");
-
-                self.addNativeSystemIncludeDir(self.fmt("/usr/include/{}", .{triple}));
-                self.addNativeSystemLibPath(self.fmt("/usr/lib/{}", .{triple}));
-
-                self.addNativeSystemIncludeDir("/usr/include");
-                self.addNativeSystemLibPath("/lib");
-                self.addNativeSystemLibPath("/lib64");
-                self.addNativeSystemLibPath("/usr/lib");
-                self.addNativeSystemLibPath("/usr/lib64");
-
-                // example: on a 64-bit debian-based linux distro, with zlib installed from apt:
-                // zlib.h is in /usr/include (added above)
-                // libz.so.1 is in /lib/x86_64-linux-gnu (added here)
-                self.addNativeSystemLibPath(self.fmt("/lib/{}", .{triple}));
-            },
-        }
     }
 
     pub fn option(self: *Builder, comptime T: type, name: []const u8, description: []const u8) ?T {
@@ -622,24 +522,91 @@ pub const Builder = struct {
         return mode;
     }
 
-    /// Exposes standard `zig build` options for choosing a target. Pass `null` to support all targets.
-    pub fn standardTargetOptions(self: *Builder, supported_targets: ?[]const Target) Target {
-        if (supported_targets) |target_list| {
-            // TODO detect multiple args and emit an error message
-            // there's probably a better way to collect the target
-            for (target_list) |targ| {
-                const targ_str = targ.zigTriple(self.allocator) catch unreachable;
-                const targ_desc = targ.allocDescription(self.allocator) catch unreachable;
-                const this_targ_opt = self.option(bool, targ_str, targ_desc) orelse false;
-                if (this_targ_opt) {
-                    return targ;
+    pub const StandardTargetOptionsArgs = struct {
+        whitelist: ?[]const CrossTarget = null,
+
+        default_target: CrossTarget = CrossTarget{},
+    };
+
+    /// Exposes standard `zig build` options for choosing a target.
+    pub fn standardTargetOptions(self: *Builder, args: StandardTargetOptionsArgs) CrossTarget {
+        const triple = self.option(
+            []const u8,
+            "target",
+            "The CPU architecture, OS, and ABI to build for.",
+        ) orelse return args.default_target;
+
+        // TODO add cpu and features as part of the target triple
+
+        var diags: CrossTarget.ParseOptions.Diagnostics = .{};
+        const selected_target = CrossTarget.parse(.{
+            .arch_os_abi = triple,
+            .diagnostics = &diags,
+        }) catch |err| switch (err) {
+            error.UnknownCpuModel => {
+                std.debug.warn("Unknown CPU: '{}'\nAvailable CPUs for architecture '{}':\n", .{
+                    diags.cpu_name.?,
+                    @tagName(diags.arch.?),
+                });
+                for (diags.arch.?.allCpuModels()) |cpu| {
+                    std.debug.warn(" {}\n", .{cpu.name});
+                }
+                process.exit(1);
+            },
+            error.UnknownCpuFeature => {
+                std.debug.warn(
+                    \\Unknown CPU feature: '{}'
+                    \\Available CPU features for architecture '{}':
+                    \\
+                , .{
+                    diags.unknown_feature_name,
+                    @tagName(diags.arch.?),
+                });
+                for (diags.arch.?.allFeaturesList()) |feature| {
+                    std.debug.warn(" {}: {}\n", .{ feature.name, feature.description });
+                }
+                process.exit(1);
+            },
+            error.UnknownOperatingSystem => {
+                std.debug.warn(
+                    \\Unknown OS: '{}'
+                    \\Available operating systems:
+                    \\
+                , .{diags.os_name});
+                inline for (std.meta.fields(std.Target.Os.Tag)) |field| {
+                    std.debug.warn(" {}\n", .{field.name});
+                }
+                process.exit(1);
+            },
+            else => |e| {
+                std.debug.warn("Unable to parse target '{}': {}\n", .{ triple, @errorName(e) });
+                process.exit(1);
+            },
+        };
+
+        const selected_canonicalized_triple = selected_target.zigTriple(self.allocator) catch unreachable;
+
+        if (args.whitelist) |list| whitelist_check: {
+            // Make sure it's a match of one of the list.
+            for (list) |t| {
+                const t_triple = t.zigTriple(self.allocator) catch unreachable;
+                if (mem.eql(u8, t_triple, selected_canonicalized_triple)) {
+                    break :whitelist_check;
                 }
             }
-            return Target.Native;
-        } else {
-            const target_str = self.option([]const u8, "target", "the target to build for") orelse return Target.Native;
-            return Target.parse(target_str) catch unreachable; // TODO better error message for bad target
+            std.debug.warn("Chosen target '{}' does not match one of the supported targets:\n", .{
+                selected_canonicalized_triple,
+            });
+            for (list) |t| {
+                const t_triple = t.zigTriple(self.allocator) catch unreachable;
+                std.debug.warn(" {}\n", .{t_triple});
+            }
+            // TODO instead of process exit, return error and have a zig build flag implemented by
+            // the build runner that turns process exits into error return traces
+            process.exit(1);
         }
+
+        return selected_target;
     }
 
     pub fn addUserInputOption(self: *Builder, name: []const u8, value: []const u8) !bool {
@@ -710,13 +677,13 @@ pub const Builder = struct {
     }
 
     fn typeToEnum(comptime T: type) TypeId {
-        return switch (@typeId(T)) {
-            builtin.TypeId.Int => TypeId.Int,
-            builtin.TypeId.Float => TypeId.Float,
-            builtin.TypeId.Bool => TypeId.Bool,
+        return switch (@typeInfo(T)) {
+            .Int => .Int,
+            .Float => .Float,
+            .Bool => .Bool,
             else => switch (T) {
-                []const u8 => TypeId.String,
-                []const []const u8 => TypeId.List,
+                []const u8 => .String,
+                []const []const u8 => .List,
                 else => @compileError("Unsupported type: " ++ @typeName(T)),
             },
         };
@@ -728,11 +695,11 @@ pub const Builder = struct {
 
     pub fn typeIdName(id: TypeId) []const u8 {
         return switch (id) {
-            TypeId.Bool => "bool",
-            TypeId.Int => "int",
-            TypeId.Float => "float",
-            TypeId.String => "string",
-            TypeId.List => "list",
+            .Bool => "bool",
+            .Int => "int",
+            .Float => "float",
+            .String => "string",
+            .List => "list",
         };
     }
 
@@ -897,7 +864,7 @@ pub const Builder = struct {
 
     pub fn findProgram(self: *Builder, names: []const []const u8, paths: []const []const u8) ![]const u8 {
         // TODO report error for ambiguous situations
-        const exe_extension = (Target{ .Native = {} }).exeFileExt();
+        const exe_extension = @as(CrossTarget, .{}).exeFileExt();
         for (self.search_prefixes.toSliceConst()) |search_prefix| {
             for (names) |name| {
                 if (fs.path.isAbsolute(name)) {
@@ -1072,21 +1039,19 @@ pub const Builder = struct {
 };
 
 test "builder.findProgram compiles" {
-    // TODO: uncomment and fix the leak
-    // const builder = try Builder.create(std.testing.allocator, "zig", "zig-cache", "zig-cache");
-    const builder = try Builder.create(std.heap.page_allocator, "zig", "zig-cache", "zig-cache");
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const builder = try Builder.create(&arena.allocator, "zig", "zig-cache", "zig-cache");
     defer builder.destroy();
     _ = builder.findProgram(&[_][]const u8{}, &[_][]const u8{}) catch null;
 }
 
-/// Deprecated. Use `builtin.Version`.
+/// Deprecated. Use `std.builtin.Version`.
 pub const Version = builtin.Version;
 
-/// Deprecated. Use `std.Target.Cross`.
-pub const CrossTarget = std.Target.Cross;
-
-/// Deprecated. Use `std.Target`.
-pub const Target = std.Target;
+/// Deprecated. Use `std.zig.CrossTarget`.
+pub const Target = std.zig.CrossTarget;
 
 pub const Pkg = struct {
     name: []const u8,
@@ -1139,7 +1104,7 @@ pub const LibExeObjStep = struct {
     step: Step,
     builder: *Builder,
     name: []const u8,
-    target: Target,
+    target: CrossTarget = CrossTarget{},
     linker_script: ?[]const u8 = null,
     version_script: ?[]const u8 = null,
     out_filename: []const u8,
@@ -1155,6 +1120,9 @@ pub const LibExeObjStep = struct {
     frameworks: BufSet,
     verbose_link: bool,
     verbose_cc: bool,
+    emit_llvm_ir: bool = false,
+    emit_asm: bool = false,
+    emit_bin: bool = true,
     disable_gen_h: bool,
     bundle_compiler_rt: bool,
     disable_stack_probing: bool,
@@ -1174,7 +1142,7 @@ pub const LibExeObjStep = struct {
     out_pdb_filename: []const u8,
     packages: ArrayList(Pkg),
     build_options_contents: std.Buffer,
-    system_linker_hack: bool,
+    system_linker_hack: bool = false,
 
     object_src: []const u8,
 
@@ -1182,7 +1150,6 @@ pub const LibExeObjStep = struct {
     include_dirs: ArrayList(IncludeDir),
     c_macros: ArrayList([]const u8),
     output_dir: ?[]const u8,
-    need_system_paths: bool,
     is_linking_libc: bool = false,
     vcpkg_bin_path: ?[]const u8 = null,
 
@@ -1190,7 +1157,6 @@ pub const LibExeObjStep = struct {
     install_step: ?*InstallArtifactStep,
 
     libc_file: ?[]const u8 = null,
-    target_glibc: ?Version = null,
 
     valgrind_support: ?bool = null,
 
@@ -1210,8 +1176,6 @@ pub const LibExeObjStep = struct {
     /// Given the example of the aarch64 target, this is the directory
     /// that contains the path `aarch64-linux-gnu/lib/ld-linux-aarch64.so.1`.
     glibc_multi_install_dir: ?[]const u8 = null,
-
-    dynamic_linker: ?[]const u8 = null,
 
     /// Position Independent Code
     force_pic: ?bool = null,
@@ -1290,7 +1254,6 @@ pub const LibExeObjStep = struct {
             .kind = kind,
             .root_src = root_src,
             .name = name,
-            .target = Target.Native,
             .frameworks = BufSet.init(builder.allocator),
             .step = Step.init(name, builder.allocator, make),
             .version = ver,
@@ -1309,7 +1272,6 @@ pub const LibExeObjStep = struct {
             .object_src = undefined,
             .build_options_contents = std.Buffer.initSize(builder.allocator, 0) catch unreachable,
             .c_std = Builder.CStd.C99,
-            .system_linker_hack = false,
             .override_lib_dir = null,
             .main_pkg_path = null,
             .exec_cmd_args = null,
@@ -1320,7 +1282,6 @@ pub const LibExeObjStep = struct {
             .disable_stack_probing = false,
             .disable_sanitize_c = false,
             .output_dir = null,
-            .need_system_paths = false,
             .single_threaded = false,
             .installed_path = null,
             .install_step = null,
@@ -1382,34 +1343,9 @@ pub const LibExeObjStep = struct {
         }
     }
 
-    /// Deprecated. Use `setTheTarget`.
-    pub fn setTarget(
-        self: *LibExeObjStep,
-        target_arch: builtin.Arch,
-        target_os: builtin.Os,
-        target_abi: builtin.Abi,
-    ) void {
-        return self.setTheTarget(Target{
-            .Cross = CrossTarget{
-                .arch = target_arch,
-                .os = target_os,
-                .abi = target_abi,
-                .cpu_features = target_arch.getBaselineCpuFeatures(),
-            },
-        });
-    }
-
-    pub fn setTheTarget(self: *LibExeObjStep, target: Target) void {
+    pub fn setTarget(self: *LibExeObjStep, target: CrossTarget) void {
         self.target = target;
         self.computeOutFileNames();
-    }
-
-    pub fn setTargetGLibC(self: *LibExeObjStep, major: u32, minor: u32, patch: u32) void {
-        self.target_glibc = Version{
-            .major = major,
-            .minor = minor,
-            .patch = patch,
-        };
     }
 
     pub fn setOutputDir(self: *LibExeObjStep, dir: []const u8) void {
@@ -1496,7 +1432,6 @@ pub const LibExeObjStep = struct {
     /// Prefer to use `linkSystemLibrary` instead.
     pub fn linkSystemLibraryName(self: *LibExeObjStep, name: []const u8) void {
         self.link_objects.append(LinkObject{ .SystemLib = self.builder.dupe(name) }) catch unreachable;
-        self.need_system_paths = true;
     }
 
     /// This links against a system library, exclusively using pkg-config to find the library.
@@ -1793,7 +1728,7 @@ pub const LibExeObjStep = struct {
             .NotFound => return error.VcpkgNotFound,
             .Found => |root| {
                 const allocator = self.builder.allocator;
-                const triplet = try Target.vcpkgTriplet(allocator, self.target, linkage);
+                const triplet = try self.target.vcpkgTriplet(allocator, linkage);
                 defer self.builder.allocator.free(triplet);
 
                 const include_path = try fs.path.join(allocator, &[_][]const u8{ root, "installed", triplet, "include" });
@@ -1940,6 +1875,11 @@ pub const LibExeObjStep = struct {
         if (builder.verbose_llvm_ir) zig_args.append("--verbose-llvm-ir") catch unreachable;
         if (builder.verbose_link or self.verbose_link) zig_args.append("--verbose-link") catch unreachable;
         if (builder.verbose_cc or self.verbose_cc) zig_args.append("--verbose-cc") catch unreachable;
+        if (builder.verbose_llvm_cpu_features) zig_args.append("--verbose-llvm-cpu-features") catch unreachable;
+
+        if (self.emit_llvm_ir) try zig_args.append("-femit-llvm-ir");
+        if (self.emit_asm) try zig_args.append("-femit-asm");
+        if (!self.emit_bin) try zig_args.append("-fno-emit-bin");
 
         if (self.strip) {
             try zig_args.append("--strip");
@@ -2001,67 +1941,51 @@ pub const LibExeObjStep = struct {
             try zig_args.append(@tagName(self.code_model));
         }
 
-        switch (self.target) {
-            .Native => {},
-            .Cross => |cross| {
-                try zig_args.append("-target");
-                try zig_args.append(self.target.zigTriple(builder.allocator) catch unreachable);
+        if (!self.target.isNative()) {
+            try zig_args.append("-target");
+            try zig_args.append(try self.target.zigTriple(builder.allocator));
 
-                const all_features = self.target.getArch().allFeaturesList();
-                var populated_cpu_features = cross.cpu_features.cpu.features;
-                if (self.target.getArch().subArchFeature()) |sub_arch_index| {
-                    populated_cpu_features.addFeature(sub_arch_index);
+            // TODO this logic can disappear if cpu model + features becomes part of the target triple
+            const cross = self.target.toTarget();
+            const all_features = cross.cpu.arch.allFeaturesList();
+            var populated_cpu_features = cross.cpu.model.features;
+            populated_cpu_features.populateDependencies(all_features);
+
+            if (populated_cpu_features.eql(cross.cpu.features)) {
+                // The CPU name alone is sufficient.
+                // If it is the baseline CPU, no command line args are required.
+                if (cross.cpu.model != std.Target.Cpu.baseline(cross.cpu.arch).model) {
+                    try zig_args.append("-mcpu");
+                    try zig_args.append(cross.cpu.model.name);
                 }
-                populated_cpu_features.populateDependencies(all_features);
+            } else {
+                var mcpu_buffer = try std.Buffer.init(builder.allocator, "-mcpu=");
+                try mcpu_buffer.append(cross.cpu.model.name);
 
-                if (populated_cpu_features.eql(cross.cpu_features.features)) {
-                    // The CPU name alone is sufficient.
-                    // If it is the baseline CPU, no command line args are required.
-                    if (cross.cpu_features.cpu != self.target.getArch().getBaselineCpuFeatures().cpu) {
-                        try zig_args.append("-target-cpu");
-                        try zig_args.append(cross.cpu_features.cpu.name);
+                for (all_features) |feature, i_usize| {
+                    const i = @intCast(std.Target.Cpu.Feature.Set.Index, i_usize);
+                    const in_cpu_set = populated_cpu_features.isEnabled(i);
+                    const in_actual_set = cross.cpu.features.isEnabled(i);
+                    if (in_cpu_set and !in_actual_set) {
+                        try mcpu_buffer.appendByte('-');
+                        try mcpu_buffer.append(feature.name);
+                    } else if (!in_cpu_set and in_actual_set) {
+                        try mcpu_buffer.appendByte('+');
+                        try mcpu_buffer.append(feature.name);
                     }
-                } else {
-                    try zig_args.append("-target-cpu");
-                    try zig_args.append(cross.cpu_features.cpu.name);
-
-                    try zig_args.append("-target-feature");
-                    var feature_str_buffer = try std.Buffer.initSize(builder.allocator, 0);
-                    for (all_features) |feature, i_usize| {
-                        const i = @intCast(Target.Cpu.Feature.Set.Index, i_usize);
-                        const in_cpu_set = populated_cpu_features.isEnabled(i);
-                        const in_actual_set = cross.cpu_features.features.isEnabled(i);
-                        if (in_cpu_set and !in_actual_set) {
-                            try feature_str_buffer.appendByte('-');
-                            try feature_str_buffer.append(feature.name);
-                            try feature_str_buffer.appendByte(',');
-                        } else if (!in_cpu_set and in_actual_set) {
-                            try feature_str_buffer.appendByte('+');
-                            try feature_str_buffer.append(feature.name);
-                            try feature_str_buffer.appendByte(',');
-                        }
-                    }
-                    if (mem.endsWith(u8, feature_str_buffer.toSliceConst(), ",")) {
-                        feature_str_buffer.shrink(feature_str_buffer.len() - 1);
-                    }
-                    try zig_args.append(feature_str_buffer.toSliceConst());
                 }
-            },
-        }
+                try zig_args.append(mcpu_buffer.toSliceConst());
+            }
 
-        if (self.target_glibc) |ver| {
-            try zig_args.append("-target-glibc");
-            try zig_args.append(builder.fmt("{}.{}.{}", .{ ver.major, ver.minor, ver.patch }));
+            if (self.target.dynamic_linker.get()) |dynamic_linker| {
+                try zig_args.append("--dynamic-linker");
+                try zig_args.append(dynamic_linker);
+            }
         }
 
         if (self.linker_script) |linker_script| {
             zig_args.append("--linker-script") catch unreachable;
             zig_args.append(builder.pathFromRoot(linker_script)) catch unreachable;
-        }
-
-        if (self.dynamic_linker) |dynamic_linker| {
-            try zig_args.append("--dynamic-linker");
-            try zig_args.append(dynamic_linker);
         }
 
         if (self.version_script) |version_script| {
@@ -2081,7 +2005,7 @@ pub const LibExeObjStep = struct {
         } else switch (self.target.getExternalExecutor()) {
             .native, .unavailable => {},
             .qemu => |bin_name| if (self.enable_qemu) qemu: {
-                const need_cross_glibc = self.target.isGnu() and self.target.isLinux() and self.is_linking_libc;
+                const need_cross_glibc = self.target.isGnuLibC() and self.is_linking_libc;
                 const glibc_dir_arg = if (need_cross_glibc)
                     self.glibc_multi_install_dir orelse break :qemu
                 else
@@ -2150,23 +2074,6 @@ pub const LibExeObjStep = struct {
         for (self.lib_paths.toSliceConst()) |lib_path| {
             try zig_args.append("-L");
             try zig_args.append(lib_path);
-        }
-
-        if (self.need_system_paths and self.target == Target.Native) {
-            for (builder.native_system_include_dirs.toSliceConst()) |include_path| {
-                zig_args.append("-isystem") catch unreachable;
-                zig_args.append(builder.pathFromRoot(include_path)) catch unreachable;
-            }
-
-            for (builder.native_system_rpaths.toSliceConst()) |rpath| {
-                zig_args.append("-rpath") catch unreachable;
-                zig_args.append(rpath) catch unreachable;
-            }
-
-            for (builder.native_system_lib_paths.toSliceConst()) |lib_path| {
-                zig_args.append("--library-path") catch unreachable;
-                zig_args.append(lib_path) catch unreachable;
-            }
         }
 
         for (self.c_macros.toSliceConst()) |c_macro| {
@@ -2543,10 +2450,7 @@ const VcpkgRootStatus = enum {
     Found,
 };
 
-pub const VcpkgLinkage = enum {
-    Static,
-    Dynamic,
-};
+pub const VcpkgLinkage = std.builtin.LinkMode;
 
 pub const InstallDir = enum {
     Prefix,

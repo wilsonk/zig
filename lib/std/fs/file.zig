@@ -20,7 +20,7 @@ pub const File = struct {
     /// or, more specifically, whether the I/O is blocking.
     io_mode: io.Mode,
 
-    /// Even when std.io.mode is async, it is still sometimes desirable to perform blocking I/O, although
+    /// Even when 'std.io.mode' is async, it is still sometimes desirable to perform blocking I/O, although
     /// not by default. For example, when printing a stack trace to stderr.
     async_block_allowed: @TypeOf(async_block_allowed_no) = async_block_allowed_no,
 
@@ -29,7 +29,7 @@ pub const File = struct {
 
     pub const Mode = os.mode_t;
 
-    pub const default_mode = switch (builtin.os) {
+    pub const default_mode = switch (builtin.os.tag) {
         .windows => 0,
         else => 0o666,
     };
@@ -40,6 +40,11 @@ pub const File = struct {
     pub const OpenFlags = struct {
         read: bool = true,
         write: bool = false,
+
+        /// This prevents `O_NONBLOCK` from being passed even if `std.io.is_async`.
+        /// It allows the use of `noasync` when calling functions related to opening
+        /// the file, reading, and writing.
+        always_blocking: bool = false,
     };
 
     /// TODO https://github.com/ziglang/zig/issues/3802
@@ -60,31 +65,6 @@ pub const File = struct {
         mode: Mode = default_mode,
     };
 
-    /// Test for the existence of `path`.
-    /// `path` is UTF8-encoded.
-    /// In general it is recommended to avoid this function. For example,
-    /// instead of testing if a file exists and then opening it, just
-    /// open it and handle the error for file not found.
-    /// TODO: deprecate this and move it to `std.fs.Dir`.
-    /// TODO: integrate with async I/O
-    pub fn access(path: []const u8) !void {
-        return os.access(path, os.F_OK);
-    }
-
-    /// Same as `access` except the parameter is null-terminated.
-    /// TODO: deprecate this and move it to `std.fs.Dir`.
-    /// TODO: integrate with async I/O
-    pub fn accessC(path: [*:0]const u8) !void {
-        return os.accessC(path, os.F_OK);
-    }
-
-    /// Same as `access` except the parameter is null-terminated UTF16LE-encoded.
-    /// TODO: deprecate this and move it to `std.fs.Dir`.
-    /// TODO: integrate with async I/O
-    pub fn accessW(path: [*:0]const u16) !void {
-        return os.accessW(path, os.F_OK);
-    }
-
     /// Upon success, the stream is in an uninitialized state. To continue using it,
     /// you must use the open() function.
     pub fn close(self: File) void {
@@ -103,7 +83,7 @@ pub const File = struct {
 
     /// Test whether ANSI escape codes will be treated as such.
     pub fn supportsAnsiEscapeCodes(self: File) bool {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             return os.isCygwinPty(self.handle);
         }
         if (self.isTty()) {
@@ -148,7 +128,7 @@ pub const File = struct {
 
     /// TODO: integrate with async I/O
     pub fn getEndPos(self: File) GetPosError!u64 {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             return windows.GetFileSizeEx(self.handle);
         }
         return (try self.stat()).size;
@@ -158,7 +138,7 @@ pub const File = struct {
 
     /// TODO: integrate with async I/O
     pub fn mode(self: File) ModeError!Mode {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             return {};
         }
         return (try self.stat()).mode;
@@ -182,7 +162,7 @@ pub const File = struct {
 
     /// TODO: integrate with async I/O
     pub fn stat(self: File) StatError!Stat {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             var io_status_block: windows.IO_STATUS_BLOCK = undefined;
             var info: windows.FILE_ALL_INFORMATION = undefined;
             const rc = windows.ntdll.NtQueryInformationFile(self.handle, &io_status_block, &info, @sizeOf(windows.FILE_ALL_INFORMATION), .FileAllInformation);
@@ -229,7 +209,7 @@ pub const File = struct {
         /// last modification timestamp in nanoseconds
         mtime: i64,
     ) UpdateTimesError!void {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const atime_ft = windows.nanoSecondsToFileTime(atime);
             const mtime_ft = windows.nanoSecondsToFileTime(mtime);
             return windows.SetFileTime(self.handle, null, &atime_ft, &mtime_ft);

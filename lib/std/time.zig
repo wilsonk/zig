@@ -1,5 +1,5 @@
-const builtin = @import("builtin");
 const std = @import("std.zig");
+const builtin = std.builtin;
 const assert = std.debug.assert;
 const testing = std.testing;
 const os = std.os;
@@ -7,9 +7,12 @@ const math = std.math;
 
 pub const epoch = @import("time/epoch.zig");
 
+const is_windows = std.Target.current.os.tag == .windows;
+
 /// Spurious wakeups are possible and no precision of timing is guaranteed.
+/// TODO integrate with evented I/O
 pub fn sleep(nanoseconds: u64) void {
-    if (builtin.os == .windows) {
+    if (is_windows) {
         const ns_per_ms = ns_per_s / ms_per_s;
         const big_ms_from_ns = nanoseconds / ns_per_ms;
         const ms = math.cast(os.windows.DWORD, big_ms_from_ns) catch math.maxInt(os.windows.DWORD);
@@ -30,7 +33,7 @@ pub fn timestamp() u64 {
 /// Get the posix timestamp, UTC, in milliseconds
 /// TODO audit this function. is it possible to return an error?
 pub fn milliTimestamp() u64 {
-    if (builtin.os == .windows) {
+    if (is_windows) {
         //FileTime has a granularity of 100 nanoseconds
         //  and uses the NTFS/Windows epoch
         var ft: os.windows.FILETIME = undefined;
@@ -41,7 +44,7 @@ pub fn milliTimestamp() u64 {
         const ft64 = (@as(u64, ft.dwHighDateTime) << 32) | ft.dwLowDateTime;
         return @divFloor(ft64, hns_per_ms) - -epoch_adj;
     }
-    if (builtin.os == .wasi and !builtin.link_libc) {
+    if (builtin.os.tag == .wasi and !builtin.link_libc) {
         var ns: os.wasi.timestamp_t = undefined;
 
         // TODO: Verify that precision is ignored
@@ -101,7 +104,7 @@ pub const Timer = struct {
     ///if we used resolution's value when performing the
     ///  performance counter calc on windows/darwin, it would
     ///  be less precise
-    frequency: switch (builtin.os) {
+    frequency: switch (builtin.os.tag) {
         .windows => u64,
         .macosx, .ios, .tvos, .watchos => os.darwin.mach_timebase_info_data,
         else => void,
@@ -126,7 +129,7 @@ pub const Timer = struct {
     pub fn start() Error!Timer {
         var self: Timer = undefined;
 
-        if (builtin.os == .windows) {
+        if (is_windows) {
             self.frequency = os.windows.QueryPerformanceFrequency();
             self.resolution = @divFloor(ns_per_s, self.frequency);
             self.start_time = os.windows.QueryPerformanceCounter();
@@ -152,15 +155,9 @@ pub const Timer = struct {
     }
 
     /// Reads the timer value since start or the last reset in nanoseconds
-    pub fn read(self: *Timer) u64 {
+    pub fn read(self: Timer) u64 {
         var clock = clockNative() - self.start_time;
-        if (builtin.os == .windows) {
-            return @divFloor(clock * ns_per_s, self.frequency);
-        }
-        if (comptime std.Target.current.isDarwin()) {
-            return @divFloor(clock * self.frequency.numer, self.frequency.denom);
-        }
-        return clock;
+        return self.nativeDurationToNanos(clock);
     }
 
     /// Resets the timer value to 0/now.
@@ -171,13 +168,13 @@ pub const Timer = struct {
     /// Returns the current value of the timer in nanoseconds, then resets it
     pub fn lap(self: *Timer) u64 {
         var now = clockNative();
-        var lap_time = self.read();
+        var lap_time = self.nativeDurationToNanos(now - self.start_time);
         self.start_time = now;
         return lap_time;
     }
 
     fn clockNative() u64 {
-        if (builtin.os == .windows) {
+        if (is_windows) {
             return os.windows.QueryPerformanceCounter();
         }
         if (comptime std.Target.current.isDarwin()) {
@@ -186,6 +183,16 @@ pub const Timer = struct {
         var ts: os.timespec = undefined;
         os.clock_gettime(monotonic_clock_id, &ts) catch unreachable;
         return @intCast(u64, ts.tv_sec) * @as(u64, ns_per_s) + @intCast(u64, ts.tv_nsec);
+    }
+
+    fn nativeDurationToNanos(self: Timer, duration: u64) u64 {
+        if (is_windows) {
+            return @divFloor(duration * ns_per_s, self.frequency);
+        }
+        if (comptime std.Target.current.isDarwin()) {
+            return @divFloor(duration * self.frequency.numer, self.frequency.denom);
+        }
+        return duration;
     }
 };
 

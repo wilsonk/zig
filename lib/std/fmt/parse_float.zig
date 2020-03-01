@@ -382,7 +382,7 @@ pub fn parseFloat(comptime T: type, s: []const u8) !T {
 }
 
 test "fmt.parseFloat" {
-    if (std.Target.current.isWindows()) {
+    if (std.Target.current.os.tag == .windows) {
         // TODO https://github.com/ziglang/zig/issues/508
         return error.SkipZigTest;
     }
@@ -393,7 +393,7 @@ test "fmt.parseFloat" {
     const epsilon = 1e-7;
 
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
-        const Z = @IntType(false, T.bit_count);
+        const Z = std.meta.IntType(false, T.bit_count);
 
         testing.expectError(error.InvalidCharacter, parseFloat(T, ""));
         testing.expectError(error.InvalidCharacter, parseFloat(T, "   1"));

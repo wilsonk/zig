@@ -1,4 +1,4 @@
-// Introspection and determination of system libraries needed by zig.
+//! Introspection and determination of system libraries needed by zig.
 
 const std = @import("std");
 const mem = std.mem;

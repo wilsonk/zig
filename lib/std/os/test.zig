@@ -29,7 +29,7 @@ test "makePath, put some files in it, deleteTree" {
 
 test "access file" {
     try fs.makePath(a, "os_test_tmp");
-    if (File.access("os_test_tmp" ++ fs.path.sep_str ++ "file.txt")) |ok| {
+    if (fs.cwd().access("os_test_tmp" ++ fs.path.sep_str ++ "file.txt", .{})) |ok| {
         @panic("expected error");
     } else |err| {
         expect(err == error.FileNotFound);
@@ -53,7 +53,7 @@ test "std.Thread.getCurrentId" {
     thread.wait();
     if (Thread.use_pthreads) {
         expect(thread_current_id == thread_id);
-    } else if (builtin.os == .windows) {
+    } else if (builtin.os.tag == .windows) {
         expect(Thread.getCurrentId() != thread_current_id);
     } else {
         // If the thread completes very quickly, then thread_id can be 0. See the
@@ -151,7 +151,7 @@ test "realpath" {
 }
 
 test "sigaltstack" {
-    if (builtin.os == .windows or builtin.os == .wasi) return error.SkipZigTest;
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi) return error.SkipZigTest;
 
     var st: os.stack_t = undefined;
     try os.sigaltstack(null, &st);
@@ -165,16 +165,19 @@ test "sigaltstack" {
 // analyzed
 const dl_phdr_info = if (@hasDecl(os, "dl_phdr_info")) os.dl_phdr_info else c_void;
 
-fn iter_fn(info: *dl_phdr_info, size: usize, data: ?*usize) callconv(.C) i32 {
-    if (builtin.os == .windows or builtin.os == .wasi or builtin.os == .macosx)
-        return 0;
+const IterFnError = error{
+    MissingPtLoadSegment,
+    MissingLoad,
+    BadElfMagic,
+    FailedConsistencyCheck,
+};
 
-    var counter = data.?;
+fn iter_fn(info: *dl_phdr_info, size: usize, counter: *usize) IterFnError!void {
     // Count how many libraries are loaded
     counter.* += @as(usize, 1);
 
     // The image should contain at least a PT_LOAD segment
-    if (info.dlpi_phnum < 1) return -1;
+    if (info.dlpi_phnum < 1) return error.MissingPtLoadSegment;
 
     // Quick & dirty validation of the phdr pointers, make sure we're not
     // pointing to some random gibberish
@@ -189,30 +192,28 @@ fn iter_fn(info: *dl_phdr_info, size: usize, data: ?*usize) callconv(.C) i32 {
         // Find the ELF header
         const elf_header = @intToPtr(*elf.Ehdr, reloc_addr - phdr.p_offset);
         // Validate the magic
-        if (!mem.eql(u8, elf_header.e_ident[0..4], "\x7fELF")) return -1;
+        if (!mem.eql(u8, elf_header.e_ident[0..4], "\x7fELF")) return error.BadElfMagic;
         // Consistency check
-        if (elf_header.e_phnum != info.dlpi_phnum) return -1;
+        if (elf_header.e_phnum != info.dlpi_phnum) return error.FailedConsistencyCheck;
 
         found_load = true;
         break;
     }
 
-    if (!found_load) return -1;
-
-    return 42;
+    if (!found_load) return error.MissingLoad;
 }
 
 test "dl_iterate_phdr" {
-    if (builtin.os == .windows or builtin.os == .wasi or builtin.os == .macosx)
+    if (builtin.os.tag == .windows or builtin.os.tag == .wasi or builtin.os.tag == .macosx)
         return error.SkipZigTest;
 
     var counter: usize = 0;
-    expect(os.dl_iterate_phdr(usize, iter_fn, &counter) != 0);
+    try os.dl_iterate_phdr(&counter, IterFnError, iter_fn);
     expect(counter != 0);
 }
 
 test "gethostname" {
-    if (builtin.os == .windows)
+    if (builtin.os.tag == .windows)
         return error.SkipZigTest;
 
     var buf: [os.HOST_NAME_MAX]u8 = undefined;
@@ -221,7 +222,7 @@ test "gethostname" {
 }
 
 test "pipe" {
-    if (builtin.os == .windows)
+    if (builtin.os.tag == .windows)
         return error.SkipZigTest;
 
     var fds = try os.pipe();
@@ -240,7 +241,7 @@ test "argsAlloc" {
 
 test "memfd_create" {
     // memfd_create is linux specific.
-    if (builtin.os != .linux) return error.SkipZigTest;
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     const fd = std.os.memfd_create("test", 0) catch |err| switch (err) {
         // Related: https://github.com/ziglang/zig/issues/4019
         error.SystemOutdated => return error.SkipZigTest,
@@ -257,7 +258,7 @@ test "memfd_create" {
 }
 
 test "mmap" {
-    if (builtin.os == .windows)
+    if (builtin.os.tag == .windows)
         return error.SkipZigTest;
 
     // Simple mmap() call with non page-aligned size
@@ -349,4 +350,12 @@ test "mmap" {
     }
 
     try fs.cwd().deleteFile(test_out_file);
+}
+
+test "getenv" {
+    if (builtin.os.tag == .windows) {
+        expect(os.getenvW(&[_:0]u16{ 'B', 'O', 'G', 'U', 'S', 0x11, 0x22, 0x33, 0x44, 0x55 }) == null);
+    } else {
+        expect(os.getenvZ("BOGUSDOESNOTEXISTENVVAR") == null);
+    }
 }
