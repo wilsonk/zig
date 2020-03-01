@@ -1,6 +1,6 @@
 const tests = @import("tests.zig");
-const builtin = @import("builtin");
-const Target = @import("std").Target;
+const std = @import("std");
+const CrossTarget = std.zig.CrossTarget;
 
 pub fn addCases(cases: *tests.TranslateCContext) void {
     cases.add("macro line continuation",
@@ -665,7 +665,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     });
 
-    if (builtin.os != builtin.Os.windows) {
+    if (std.Target.current.os.tag != .windows) {
         // Windows treats this as an enum with type c_int
         cases.add("big negative enum init values when C ABI supports long long enums",
             \\enum EnumWithInits {
@@ -1064,7 +1064,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     });
 
-    if (builtin.os != builtin.Os.windows) {
+    if (std.Target.current.os.tag != .windows) {
         // sysv_abi not currently supported on windows
         cases.add("Macro qualified functions",
             \\void __attribute__((sysv_abi)) foo(void);
@@ -1093,12 +1093,10 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub const fn1 = ?fn (u8) callconv(.C) void;
     });
 
-    cases.addWithTarget("Calling convention", tests.Target{
-        .Cross = .{
-            .cpu = Target.Cpu.baseline(.i386),
-            .os = .linux,
-            .abi = .none,
-        },
+    cases.addWithTarget("Calling convention", .{
+        .cpu_arch = .i386,
+        .os_tag = .linux,
+        .abi = .none,
     },
         \\void __attribute__((fastcall)) foo1(float *a);
         \\void __attribute__((stdcall)) foo2(float *a);
@@ -1113,7 +1111,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub fn foo5(a: [*c]f32) callconv(.Thiscall) void;
     });
 
-    cases.addWithTarget("Calling convention", Target.parse(.{
+    cases.addWithTarget("Calling convention", CrossTarget.parse(.{
         .arch_os_abi = "arm-linux-none",
         .cpu_features = "generic+v8_5a",
     }) catch unreachable,
@@ -1124,7 +1122,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub fn foo2(a: [*c]f32) callconv(.AAPCSVFP) void;
     });
 
-    cases.addWithTarget("Calling convention", Target.parse(.{
+    cases.addWithTarget("Calling convention", CrossTarget.parse(.{
         .arch_os_abi = "aarch64-linux-none",
         .cpu_features = "generic+v8_5a",
     }) catch unreachable,
@@ -1354,7 +1352,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     cases.add("macro pointer cast",
         \\#define NRF_GPIO ((NRF_GPIO_Type *) NRF_GPIO_BASE)
     , &[_][]const u8{
-        \\pub const NRF_GPIO = if (@typeId(@TypeOf(NRF_GPIO_BASE)) == .Pointer) @ptrCast([*c]NRF_GPIO_Type, NRF_GPIO_BASE) else if (@typeId(@TypeOf(NRF_GPIO_BASE)) == .Int) @intToPtr([*c]NRF_GPIO_Type, NRF_GPIO_BASE) else @as([*c]NRF_GPIO_Type, NRF_GPIO_BASE);
+        \\pub const NRF_GPIO = if (@typeInfo(@TypeOf(NRF_GPIO_BASE)) == .Pointer) @ptrCast([*c]NRF_GPIO_Type, NRF_GPIO_BASE) else if (@typeInfo(@TypeOf(NRF_GPIO_BASE)) == .Int) @intToPtr([*c]NRF_GPIO_Type, NRF_GPIO_BASE) else @as([*c]NRF_GPIO_Type, NRF_GPIO_BASE);
     });
 
     cases.add("basic macro function",
@@ -1596,7 +1594,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     });
 
-    if (builtin.os != .windows) {
+    if (std.Target.current.os.tag != .windows) {
         // When clang uses the <arch>-windows-none triple it behaves as MSVC and
         // interprets the inner `struct Bar` as an anonymous structure
         cases.add("type referenced struct",
@@ -2538,11 +2536,11 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\#define FOO(bar) baz((void *)(baz))
         \\#define BAR (void*) a
     , &[_][]const u8{
-        \\pub inline fn FOO(bar: var) @TypeOf(baz(if (@typeId(@TypeOf(baz)) == .Pointer) @ptrCast(*c_void, baz) else if (@typeId(@TypeOf(baz)) == .Int) @intToPtr(*c_void, baz) else @as(*c_void, baz))) {
-        \\    return baz(if (@typeId(@TypeOf(baz)) == .Pointer) @ptrCast(*c_void, baz) else if (@typeId(@TypeOf(baz)) == .Int) @intToPtr(*c_void, baz) else @as(*c_void, baz));
+        \\pub inline fn FOO(bar: var) @TypeOf(baz(if (@typeInfo(@TypeOf(baz)) == .Pointer) @ptrCast(*c_void, baz) else if (@typeInfo(@TypeOf(baz)) == .Int) @intToPtr(*c_void, baz) else @as(*c_void, baz))) {
+        \\    return baz(if (@typeInfo(@TypeOf(baz)) == .Pointer) @ptrCast(*c_void, baz) else if (@typeInfo(@TypeOf(baz)) == .Int) @intToPtr(*c_void, baz) else @as(*c_void, baz));
         \\}
     ,
-        \\pub const BAR = if (@typeId(@TypeOf(a)) == .Pointer) @ptrCast(*c_void, a) else if (@typeId(@TypeOf(a)) == .Int) @intToPtr(*c_void, a) else @as(*c_void, a);
+        \\pub const BAR = if (@typeInfo(@TypeOf(a)) == .Pointer) @ptrCast(*c_void, a) else if (@typeInfo(@TypeOf(a)) == .Int) @intToPtr(*c_void, a) else @as(*c_void, a);
     });
 
     cases.add("macro conditional operator",
