@@ -7,8 +7,6 @@
 const std = @import("../std.zig");
 const math = std.math;
 const expect = std.testing.expect;
-const builtin = @import("builtin");
-const TypeId = builtin.TypeId;
 
 /// Returns the natural logarithm of x.
 ///
@@ -19,21 +17,21 @@ const TypeId = builtin.TypeId;
 ///  - ln(nan)   = nan
 pub fn ln(x: var) @TypeOf(x) {
     const T = @TypeOf(x);
-    switch (@typeId(T)) {
-        TypeId.ComptimeFloat => {
-            return @TypeOf(1.0)(ln_64(x));
+    switch (@typeInfo(T)) {
+        .ComptimeFloat => {
+            return @as(comptime_float, ln_64(x));
         },
-        TypeId.Float => {
+        .Float => {
             return switch (T) {
                 f32 => ln_32(x),
                 f64 => ln_64(x),
                 else => @compileError("ln not implemented for " ++ @typeName(T)),
             };
         },
-        TypeId.ComptimeInt => {
-            return @TypeOf(1)(math.floor(ln_64(@as(f64, x))));
+        .ComptimeInt => {
+            return @as(comptime_int, math.floor(ln_64(@as(f64, x))));
         },
-        TypeId.Int => {
+        .Int => {
             return @as(T, math.floor(ln_64(@as(f64, x))));
         },
         else => @compileError("ln not implemented for " ++ @typeName(T)),

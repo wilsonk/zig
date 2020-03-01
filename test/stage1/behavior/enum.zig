@@ -11,21 +11,78 @@ test "extern enum" {
         };
         fn doTheTest(y: c_int) void {
             var x = i.o;
-            expect(@enumToInt(x) == 2);
-            x = @intToEnum(i, 12);
-            expect(@enumToInt(x) == 12);
-            x = @intToEnum(i, y);
-            expect(@enumToInt(x) == 52);
             switch (x) {
-                .n,
-                .o,
-                .p => unreachable,
-                else => {},
+                .n, .p => unreachable,
+                .o => {},
             }
         }
     };
     S.doTheTest(52);
     comptime S.doTheTest(52);
+}
+
+test "non-exhaustive enum" {
+    const S = struct {
+        const E = enum(u8) {
+            a,
+            b,
+            _,
+        };
+        fn doTheTest(y: u8) void {
+            var e: E = .b;
+            expect(switch (e) {
+                .a => false,
+                .b => true,
+                _ => false,
+            });
+            e = @intToEnum(E, 12);
+            expect(switch (e) {
+                .a => false,
+                .b => false,
+                _ => true,
+            });
+
+            expect(switch (e) {
+                .a => false,
+                .b => false,
+                else => true,
+            });
+            e = .b;
+            expect(switch (e) {
+                .a => false,
+                else => true,
+            });
+
+            expect(@typeInfo(E).Enum.fields.len == 2);
+            e = @intToEnum(E, 12);
+            expect(@enumToInt(e) == 12);
+            e = @intToEnum(E, y);
+            expect(@enumToInt(e) == 52);
+            expect(@typeInfo(E).Enum.is_exhaustive == false);
+        }
+    };
+    S.doTheTest(52);
+    comptime S.doTheTest(52);
+}
+
+test "empty non-exhaustive enum" {
+    const S = struct {
+        const E = enum(u8) {
+            _,
+        };
+        fn doTheTest(y: u8) void {
+            var e = @intToEnum(E, y);
+            expect(switch (e) {
+                _ => true,
+            });
+            expect(@enumToInt(e) == y);
+
+            expect(@typeInfo(E).Enum.fields.len == 0);
+            expect(@typeInfo(E).Enum.is_exhaustive == false);
+        }
+    };
+    S.doTheTest(42);
+    comptime S.doTheTest(42);
 }
 
 test "enum type" {
@@ -39,8 +96,8 @@ test "enum type" {
     const bar = Bar.B;
 
     expect(bar == Bar.B);
-    expect(@memberCount(Foo) == 3);
-    expect(@memberCount(Bar) == 4);
+    expect(@typeInfo(Foo).Union.fields.len == 3);
+    expect(@typeInfo(Bar).Enum.fields.len == 4);
     expect(@sizeOf(Foo) == @sizeOf(FooNoVoid));
     expect(@sizeOf(Bar) == 1);
 }
@@ -141,7 +198,17 @@ test "@tagName" {
     comptime expect(mem.eql(u8, testEnumTagNameBare(BareNumber.Three), "Three"));
 }
 
-fn testEnumTagNameBare(n: BareNumber) []const u8 {
+test "@tagName extern enum with duplicates" {
+    expect(mem.eql(u8, testEnumTagNameBare(ExternDuplicates.B), "A"));
+    comptime expect(mem.eql(u8, testEnumTagNameBare(ExternDuplicates.B), "A"));
+}
+
+test "@tagName non-exhaustive enum" {
+    expect(mem.eql(u8, testEnumTagNameBare(NonExhaustive.B), "B"));
+    comptime expect(mem.eql(u8, testEnumTagNameBare(NonExhaustive.B), "B"));
+}
+
+fn testEnumTagNameBare(n: var) []const u8 {
     return @tagName(n);
 }
 
@@ -149,6 +216,17 @@ const BareNumber = enum {
     One,
     Two,
     Three,
+};
+
+const ExternDuplicates = extern enum(u8) {
+    A = 1,
+    B = 1,
+};
+
+const NonExhaustive = enum(u8) {
+    A,
+    B,
+    _,
 };
 
 test "enum alignment" {
@@ -1056,4 +1134,9 @@ test "enum with one member default to u0 tag type" {
         X,
     };
     comptime expect(@TagType(E0) == u0);
+}
+
+test "tagName on enum literals" {
+    expect(mem.eql(u8, @tagName(.FooBar), "FooBar"));
+    comptime expect(mem.eql(u8, @tagName(.FooBar), "FooBar"));
 }

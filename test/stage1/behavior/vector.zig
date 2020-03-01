@@ -1,7 +1,7 @@
 const std = @import("std");
 const mem = std.mem;
 const expect = std.testing.expect;
-const builtin = @import("builtin");
+const expectEqual = std.testing.expectEqual;
 
 test "implicit cast vector to array - bool" {
     const S = struct {
@@ -113,7 +113,7 @@ test "array to vector" {
 
 test "vector casts of sizes not divisable by 8" {
     // https://github.com/ziglang/zig/issues/3563
-    if (builtin.os == .dragonfly) return error.SkipZigTest;
+    if (std.Target.current.os.tag == .dragonfly) return error.SkipZigTest;
 
     const S = struct {
         fn doTheTest() void {
@@ -245,6 +245,32 @@ test "initialize vector which is a struct field" {
             var foo = Vec4Obj{
                 .data = [_]f32{ 1, 2, 3, 4 },
             };
+        }
+    };
+    S.doTheTest();
+    comptime S.doTheTest();
+}
+
+test "vector comparison operators" {
+    const S = struct {
+        fn doTheTest() void {
+            {
+                const v1: @Vector(4, bool) = [_]bool{ true, false, true, false };
+                const v2: @Vector(4, bool) = [_]bool{ false, true, false, true };
+                expectEqual(@splat(4, true), v1 == v1);
+                expectEqual(@splat(4, false), v1 == v2);
+                expectEqual(@splat(4, true), v1 != v2);
+                expectEqual(@splat(4, false), v2 != v2);
+            }
+            {
+                const v1 = @splat(4, @as(u32, 0xc0ffeeee));
+                const v2: @Vector(4, c_uint) = v1;
+                const v3 = @splat(4, @as(u32, 0xdeadbeef));
+                expectEqual(@splat(4, true), v1 == v2);
+                expectEqual(@splat(4, false), v1 == v3);
+                expectEqual(@splat(4, true), v1 != v3);
+                expectEqual(@splat(4, false), v1 != v2);
+            }
         }
     };
     S.doTheTest();

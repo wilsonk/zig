@@ -270,7 +270,7 @@ fn testBinaryNot(x: u16) void {
 }
 
 test "small int addition" {
-    var x: @IntType(false, 2) = 0;
+    var x: u2 = 0;
     expect(x == 0);
 
     x += 1;
@@ -529,6 +529,10 @@ test "comptime_int xor" {
 }
 
 test "f128" {
+    if (std.Target.current.os.tag == .windows) {
+        // TODO https://github.com/ziglang/zig/issues/508
+        return error.SkipZigTest;
+    }
     test_f128();
     comptime test_f128();
 }
@@ -587,12 +591,12 @@ test "@sqrt" {
 
     const x = 14.0;
     const y = x * x;
-    const z = @sqrt(@TypeOf(y), y);
+    const z = @sqrt(y);
     comptime expect(z == x);
 }
 
 fn testSqrt(comptime T: type, x: T) void {
-    expect(@sqrt(T, x * x) == x);
+    expect(@sqrt(x * x) == x);
 }
 
 test "comptime_int param and return" {
@@ -627,6 +631,10 @@ test "NaN comparison" {
         // TODO: https://github.com/ziglang/zig/issues/3338
         return error.SkipZigTest;
     }
+    if (std.Target.current.os.tag == .windows) {
+        // TODO https://github.com/ziglang/zig/issues/508
+        return error.SkipZigTest;
+    }
     testNanEqNan(f16);
     testNanEqNan(f32);
     testNanEqNan(f64);
@@ -658,14 +666,14 @@ test "128-bit multiplication" {
 test "vector comparison" {
     const S = struct {
         fn doTheTest() void {
-            var a: @Vector(6, i32) = [_]i32{1, 3, -1, 5, 7, 9};
-            var b: @Vector(6, i32) = [_]i32{-1, 3, 0, 6, 10, -10};
-            expect(mem.eql(bool, &@as([6]bool, a < b), &[_]bool{false, false, true, true, true, false}));
-            expect(mem.eql(bool, &@as([6]bool, a <= b), &[_]bool{false, true, true, true, true, false}));
-            expect(mem.eql(bool, &@as([6]bool, a == b), &[_]bool{false, true, false, false, false, false}));
-            expect(mem.eql(bool, &@as([6]bool, a != b), &[_]bool{true, false, true, true, true, true}));
-            expect(mem.eql(bool, &@as([6]bool, a > b), &[_]bool{true, false, false, false, false, true}));
-            expect(mem.eql(bool, &@as([6]bool, a >= b), &[_]bool{true, true, false, false, false, true}));
+            var a: @Vector(6, i32) = [_]i32{ 1, 3, -1, 5, 7, 9 };
+            var b: @Vector(6, i32) = [_]i32{ -1, 3, 0, 6, 10, -10 };
+            expect(mem.eql(bool, &@as([6]bool, a < b), &[_]bool{ false, false, true, true, true, false }));
+            expect(mem.eql(bool, &@as([6]bool, a <= b), &[_]bool{ false, true, true, true, true, false }));
+            expect(mem.eql(bool, &@as([6]bool, a == b), &[_]bool{ false, true, false, false, false, false }));
+            expect(mem.eql(bool, &@as([6]bool, a != b), &[_]bool{ true, false, true, true, true, true }));
+            expect(mem.eql(bool, &@as([6]bool, a > b), &[_]bool{ true, false, false, false, false, true }));
+            expect(mem.eql(bool, &@as([6]bool, a >= b), &[_]bool{ true, true, false, false, false, true }));
         }
     };
     S.doTheTest();

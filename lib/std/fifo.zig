@@ -101,7 +101,7 @@ pub fn LinearFifo(
                 }
             }
             { // set unused area to undefined
-                const unused = @sliceToBytes(self.buf[self.count..]);
+                const unused = mem.sliceAsBytes(self.buf[self.count..]);
                 @memset(unused.ptr, undefined, unused.len);
             }
         }
@@ -166,12 +166,12 @@ pub fn LinearFifo(
             { // set old range to undefined. Note: may be wrapped around
                 const slice = self.readableSliceMut(0);
                 if (slice.len >= count) {
-                    const unused = @sliceToBytes(slice[0..count]);
+                    const unused = mem.sliceAsBytes(slice[0..count]);
                     @memset(unused.ptr, undefined, unused.len);
                 } else {
-                    const unused = @sliceToBytes(slice[0..]);
+                    const unused = mem.sliceAsBytes(slice[0..]);
                     @memset(unused.ptr, undefined, unused.len);
-                    const unused2 = @sliceToBytes(self.readableSliceMut(slice.len)[0 .. count - slice.len]);
+                    const unused2 = mem.sliceAsBytes(self.readableSliceMut(slice.len)[0 .. count - slice.len]);
                     @memset(unused2.ptr, undefined, unused2.len);
                 }
             }
@@ -347,7 +347,7 @@ pub fn LinearFifo(
 }
 
 test "LinearFifo(u8, .Dynamic)" {
-    var fifo = LinearFifo(u8, .Dynamic).init(debug.global_allocator);
+    var fifo = LinearFifo(u8, .Dynamic).init(testing.allocator);
     defer fifo.deinit();
 
     try fifo.write("HELLO");
@@ -422,7 +422,7 @@ test "LinearFifo" {
             var fifo = switch (bt) {
                 .Static => FifoType.init(),
                 .Slice => FifoType.init(buf[0..]),
-                .Dynamic => FifoType.init(debug.global_allocator),
+                .Dynamic => FifoType.init(testing.allocator),
             };
             defer fifo.deinit();
 

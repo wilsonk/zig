@@ -3,6 +3,7 @@ const maxInt = std.math.maxInt;
 
 pub const fd_t = c_int;
 pub const pid_t = c_int;
+pub const mode_t = c_uint;
 
 /// Renamed from `kevent` to `Kevent` to avoid conflict with function name.
 pub const Kevent = extern struct {
@@ -16,7 +17,7 @@ pub const Kevent = extern struct {
 
 pub const dl_phdr_info = extern struct {
     dlpi_addr: usize,
-    dlpi_name: ?[*]const u8,
+    dlpi_name: ?[*:0]const u8,
     dlpi_phdr: [*]std.elf.Phdr,
     dlpi_phnum: u16,
 };

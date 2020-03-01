@@ -1,4 +1,7 @@
-const expect = @import("std").testing.expect;
+const std = @import("std");
+const testing = std.testing;
+const expect = testing.expect;
+const expectEqual = testing.expectEqual;
 
 test "params" {
     expect(testParamsAdd(22, 11) == 33);
@@ -186,9 +189,9 @@ test "return inner function which references comptime variable of outer function
 
 test "extern struct with stdcallcc fn pointer" {
     const S = extern struct {
-        ptr: stdcallcc fn () i32,
+        ptr: fn () callconv(.Stdcall) i32,
 
-        stdcallcc fn foo() i32 {
+        fn foo() callconv(.Stdcall) i32 {
             return 1234;
         }
     };
@@ -271,4 +274,13 @@ test "ability to give comptime types and non comptime types to same parameter" {
     };
     S.doTheTest();
     comptime S.doTheTest();
+}
+
+test "function with inferred error set but returning no error" {
+    const S = struct {
+        fn foo() !void {}
+    };
+
+    const return_ty = @typeInfo(@TypeOf(S.foo)).Fn.return_type.?;
+    expectEqual(0, @typeInfo(@typeInfo(return_ty).ErrorUnion.error_set).ErrorSet.?.len);
 }

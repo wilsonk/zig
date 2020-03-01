@@ -531,7 +531,7 @@ var glbl: Foo1 = undefined;
 
 test "global union with single field is correctly initialized" {
     glbl = Foo1{
-        .f = @memberType(Foo1, 0){ .x = 123 },
+        .f = @typeInfo(Foo1).Union.fields[0].field_type{ .x = 123 },
     };
     expect(glbl.f.x == 123);
 }
@@ -610,4 +610,31 @@ test "function call result coerces from tagged union to the tag" {
     };
     S.doTheTest();
     comptime S.doTheTest();
+}
+
+test "0-sized extern union definition" {
+    const U = extern union {
+        a: void,
+        const f = 1;
+    };
+
+    expect(U.f == 1);
+}
+
+test "union initializer generates padding only if needed" {
+    const U = union(enum) {
+        A: u24,
+    };
+
+    var v = U{ .A = 532 };
+    expect(v.A == 532);
+}
+
+test "runtime tag name with single field" {
+    const U = union(enum) {
+        A: i32,
+    };
+
+    var v = U{ .A = 42 };
+    expect(std.mem.eql(u8, @tagName(v), "A"));
 }

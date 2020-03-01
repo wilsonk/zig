@@ -145,3 +145,33 @@ test "coerce an anon struct literal to optional struct" {
     S.doTheTest();
     comptime S.doTheTest();
 }
+
+test "optional with void type" {
+    const Foo = struct {
+        x: ?void,
+    };
+    var x = Foo{ .x = null };
+    expect(x.x == null);
+}
+
+test "0-bit child type coerced to optional return ptr result location" {
+    const S = struct {
+        fn doTheTest() void {
+            var y = Foo{};
+            var z = y.thing();
+            expect(z != null);
+        }
+
+        const Foo = struct {
+            pub const Bar = struct {
+                field: *Foo,
+            };
+
+            pub fn thing(self: *Foo) ?Bar {
+                return Bar{ .field = self };
+            }
+        };
+    };
+    S.doTheTest();
+    comptime S.doTheTest();
+}

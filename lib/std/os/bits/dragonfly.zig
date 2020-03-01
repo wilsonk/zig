@@ -7,6 +7,7 @@ pub fn S_ISCHR(m: u32) bool {
 pub const fd_t = c_int;
 pub const pid_t = c_int;
 pub const off_t = c_long;
+pub const mode_t = c_uint;
 
 pub const ENOTSUP = EOPNOTSUPP;
 pub const EWOULDBLOCK = EAGAIN;
@@ -612,7 +613,7 @@ pub const sockaddr_storage = extern struct {
 };
 pub const dl_phdr_info = extern struct {
     dlpi_addr: usize,
-    dlpi_name: ?[*]const u8,
+    dlpi_name: ?[*:0]const u8,
     dlpi_phdr: [*]std.elf.Phdr,
     dlpi_phnum: u16,
 };

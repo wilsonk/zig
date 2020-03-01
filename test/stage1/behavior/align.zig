@@ -81,20 +81,6 @@ fn testBytesAlign(b: u8) void {
     expect(ptr.* == 0x33333333);
 }
 
-test "specifying alignment allows slice cast" {
-    testBytesAlignSlice(0x33);
-}
-fn testBytesAlignSlice(b: u8) void {
-    var bytes align(4) = [_]u8{
-        b,
-        b,
-        b,
-        b,
-    };
-    const slice: []u32 = @bytesToSlice(u32, bytes[0..]);
-    expect(slice[0] == 0x33333333);
-}
-
 test "@alignCast pointers" {
     var x: u32 align(4) = 1;
     expectsOnly1(&x);
@@ -221,14 +207,14 @@ test "alignment of structs" {
     }) == @alignOf(usize));
 }
 
-test "alignment of extern() void" {
+test "alignment of function with c calling convention" {
     var runtime_nothing = nothing;
     const casted1 = @ptrCast(*const u8, runtime_nothing);
-    const casted2 = @ptrCast(extern fn () void, casted1);
+    const casted2 = @ptrCast(fn () callconv(.C) void, casted1);
     casted2();
 }
 
-extern fn nothing() void {}
+fn nothing() callconv(.C) void {}
 
 test "return error union with 128-bit integer" {
     expect(3 == try give());

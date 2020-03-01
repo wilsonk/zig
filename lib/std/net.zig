@@ -18,7 +18,7 @@ pub const Address = extern union {
     in6: os.sockaddr_in6,
     un: if (has_unix_sockets) os.sockaddr_un else void,
 
-    // TODO this crashed the compiler
+    // TODO this crashed the compiler. https://github.com/ziglang/zig/issues/3512
     //pub const localhost = initIp4(parseIp4("127.0.0.1") catch unreachable, 0);
 
     pub fn parseIp(name: []const u8, port: u16) !Address {
@@ -120,7 +120,7 @@ pub const Address = extern union {
                 ip_slice[10] = 0xff;
                 ip_slice[11] = 0xff;
 
-                const ptr = @sliceToBytes(@as(*const [1]u32, &addr)[0..]);
+                const ptr = mem.sliceAsBytes(@as(*const [1]u32, &addr)[0..]);
 
                 ip_slice[12] = ptr[0];
                 ip_slice[13] = ptr[1];
@@ -164,7 +164,7 @@ pub const Address = extern union {
                 .addr = undefined,
             },
         };
-        const out_ptr = @sliceToBytes(@as(*[1]u32, &result.in.addr)[0..]);
+        const out_ptr = mem.sliceAsBytes(@as(*[1]u32, &result.in.addr)[0..]);
 
         var x: u8 = 0;
         var index: u8 = 0;
@@ -271,7 +271,7 @@ pub const Address = extern union {
         options: std.fmt.FormatOptions,
         context: var,
         comptime Errors: type,
-        output: fn (@TypeOf(context), []const u8) Errors!void,
+        comptime output: fn (@TypeOf(context), []const u8) Errors!void,
     ) !void {
         switch (self.any.family) {
             os.AF_INET => {
@@ -352,7 +352,7 @@ pub const Address = extern union {
                     unreachable;
                 }
 
-                const path_len = std.mem.len(u8, @ptrCast([*:0]const u8, &self.un.path));
+                const path_len = std.mem.len(@ptrCast([*:0]const u8, &self.un.path));
                 return @intCast(os.socklen_t, @sizeOf(os.sockaddr_un) - self.un.path.len + path_len);
             },
             else => unreachable,
@@ -361,7 +361,7 @@ pub const Address = extern union {
 };
 
 pub fn connectUnixSocket(path: []const u8) !fs.File {
-    const opt_non_block = if (std.io.mode == .evented) os.SOCK_NONBLOCK else 0;
+    const opt_non_block = if (std.io.is_async) os.SOCK_NONBLOCK else 0;
     const sockfd = try os.socket(
         os.AF_UNIX,
         os.SOCK_STREAM | os.SOCK_CLOEXEC | opt_non_block,
@@ -377,7 +377,10 @@ pub fn connectUnixSocket(path: []const u8) !fs.File {
         addr.getOsSockLen(),
     );
 
-    return fs.File.openHandle(sockfd);
+    return fs.File{
+        .handle = sockfd,
+        .io_mode = std.io.mode,
+    };
 }
 
 pub const AddressList = struct {
@@ -412,7 +415,7 @@ pub fn tcpConnectToAddress(address: Address) !fs.File {
     errdefer os.close(sockfd);
     try os.connect(sockfd, &address.any, address.getOsSockLen());
 
-    return fs.File{ .handle = sockfd };
+    return fs.File{ .handle = sockfd, .io_mode = std.io.mode };
 }
 
 /// Call `AddressList.deinit` on the result.
@@ -451,23 +454,19 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
             .next = null,
         };
         var res: *os.addrinfo = undefined;
-        switch (os.system.getaddrinfo(
-                name_c.ptr,
-                @ptrCast([*:0]const u8, port_c.ptr),
-                &hints,
-                &res)) {
-            0 => {},
-            c.EAI_ADDRFAMILY => return error.HostLacksNetworkAddresses,
-            c.EAI_AGAIN => return error.TemporaryNameServerFailure,
-            c.EAI_BADFLAGS => unreachable, // Invalid hints
-            c.EAI_FAIL => return error.NameServerFailure,
-            c.EAI_FAMILY => return error.AddressFamilyNotSupported,
-            c.EAI_MEMORY => return error.OutOfMemory,
-            c.EAI_NODATA => return error.HostLacksNetworkAddresses,
-            c.EAI_NONAME => return error.UnknownHostName,
-            c.EAI_SERVICE => return error.ServiceUnavailable,
-            c.EAI_SOCKTYPE => unreachable, // Invalid socket type requested in hints
-            c.EAI_SYSTEM => switch (os.errno(-1)) {
+        switch (os.system.getaddrinfo(name_c.ptr, @ptrCast([*:0]const u8, port_c.ptr), &hints, &res)) {
+            @intToEnum(os.system.EAI, 0) => {},
+            .ADDRFAMILY => return error.HostLacksNetworkAddresses,
+            .AGAIN => return error.TemporaryNameServerFailure,
+            .BADFLAGS => unreachable, // Invalid hints
+            .FAIL => return error.NameServerFailure,
+            .FAMILY => return error.AddressFamilyNotSupported,
+            .MEMORY => return error.OutOfMemory,
+            .NODATA => return error.HostLacksNetworkAddresses,
+            .NONAME => return error.UnknownHostName,
+            .SERVICE => return error.ServiceUnavailable,
+            .SOCKTYPE => unreachable, // Invalid socket type requested in hints
+            .SYSTEM => switch (os.errno(-1)) {
                 else => |e| return os.unexpectedErrno(e),
             },
             else => unreachable,
@@ -502,7 +501,7 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
 
         return result;
     }
-    if (builtin.os == .linux) {
+    if (builtin.os.tag == .linux) {
         const flags = std.c.AI_NUMERICSERV;
         const family = os.AF_UNSPEC;
         var lookup_addrs = std.ArrayList(LookupAddr).init(allocator);
@@ -1383,7 +1382,10 @@ pub const StreamServer = struct {
         var adr_len: os.socklen_t = @sizeOf(Address);
         if (os.accept4(self.sockfd.?, &accepted_addr.any, &adr_len, accept_flags)) |fd| {
             return Connection{
-                .file = fs.File.openHandle(fd),
+                .file = fs.File{
+                    .handle = fd,
+                    .io_mode = std.io.mode,
+                },
                 .address = accepted_addr,
             };
         } else |err| switch (err) {

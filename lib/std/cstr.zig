@@ -4,8 +4,8 @@ const debug = std.debug;
 const mem = std.mem;
 const testing = std.testing;
 
-pub const line_sep = switch (builtin.os) {
-    builtin.Os.windows => "\r\n",
+pub const line_sep = switch (builtin.os.tag) {
+    .windows => "\r\n",
     else => "\n",
 };
 
@@ -28,7 +28,7 @@ test "cstr fns" {
 
 fn testCStrFnsImpl() void {
     testing.expect(cmp("aoeu", "aoez") == -1);
-    testing.expect(mem.len(u8, "123456789") == 9);
+    testing.expect(mem.len("123456789") == 9);
 }
 
 /// Returns a mutable, null-terminated slice with the same length as `slice`.
@@ -41,9 +41,8 @@ pub fn addNullByte(allocator: *mem.Allocator, slice: []const u8) ![:0]u8 {
 }
 
 test "addNullByte" {
-    var buf: [30]u8 = undefined;
-    const allocator = &std.heap.FixedBufferAllocator.init(&buf).allocator;
-    const slice = try addNullByte(allocator, "hello"[0..4]);
+    const slice = try addNullByte(std.testing.allocator, "hello"[0..4]);
+    defer std.testing.allocator.free(slice);
     testing.expect(slice.len == 4);
     testing.expect(slice[4] == 0);
 }
@@ -73,7 +72,7 @@ pub const NullTerminated2DArray = struct {
         errdefer allocator.free(buf);
 
         var write_index = index_size;
-        const index_buf = @bytesToSlice(?[*]u8, buf);
+        const index_buf = mem.bytesAsSlice(?[*]u8, buf);
 
         var i: usize = 0;
         for (slices) |slice| {

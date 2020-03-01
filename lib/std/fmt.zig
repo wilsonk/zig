@@ -21,17 +21,6 @@ pub const FormatOptions = struct {
     fill: u8 = ' ',
 };
 
-fn nextArg(comptime used_pos_args: *u32, comptime maybe_pos_arg: ?comptime_int, comptime next_arg: *comptime_int) comptime_int {
-    if (maybe_pos_arg) |pos_arg| {
-        used_pos_args.* |= 1 << pos_arg;
-        return pos_arg;
-    } else {
-        const arg = next_arg.*;
-        next_arg.* += 1;
-        return arg;
-    }
-}
-
 fn peekIsAlign(comptime fmt: []const u8) bool {
     // Should only be called during a state transition to the format segment.
     comptime assert(fmt[0] == ':');
@@ -80,20 +69,20 @@ fn peekIsAlign(comptime fmt: []const u8) bool {
 ///
 /// If a formatted user type contains a function of the type
 /// ```
-/// fn format(value: ?, comptime fmt: []const u8, options: std.fmt.FormatOptions, context: var, comptime Errors: type, output: fn (@TypeOf(context), []const u8) Errors!void) Errors!void
+/// fn format(value: ?, comptime fmt: []const u8, options: std.fmt.FormatOptions, context: var, comptime Errors: type, comptime output: fn (@TypeOf(context), []const u8) Errors!void) Errors!void
 /// ```
 /// with `?` being the type formatted, this function will be called instead of the default implementation.
 /// This allows user types to be formatted in a logical manner instead of dumping all fields of the type.
 ///
-/// A user type may be a `struct`, `union` or `enum` type.
+/// A user type may be a `struct`, `vector`, `union` or `enum` type.
 pub fn format(
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
     comptime fmt: []const u8,
     args: var,
 ) Errors!void {
-    const ArgSetType = @IntType(false, 32);
+    const ArgSetType = u32;
     if (@typeInfo(@TypeOf(args)) != .Struct) {
         @compileError("Expected tuple or struct argument, found " ++ @typeName(@TypeOf(args)));
     }
@@ -113,12 +102,36 @@ pub fn format(
 
     comptime var start_index = 0;
     comptime var state = State.Start;
-    comptime var next_arg = 0;
     comptime var maybe_pos_arg: ?comptime_int = null;
-    comptime var used_pos_args: ArgSetType = 0;
     comptime var specifier_start = 0;
     comptime var specifier_end = 0;
     comptime var options = FormatOptions{};
+    comptime var arg_state: struct {
+        next_arg: usize = 0,
+        used_args: ArgSetType = 0,
+        args_len: usize = args.len,
+
+        fn hasUnusedArgs(comptime self: *@This()) bool {
+            return (@popCount(ArgSetType, self.used_args) != self.args_len);
+        }
+
+        fn nextArg(comptime self: *@This(), comptime pos_arg: ?comptime_int) comptime_int {
+            const next_idx = pos_arg orelse blk: {
+                const arg = self.next_arg;
+                self.next_arg += 1;
+                break :blk arg;
+            };
+
+            if (next_idx >= self.args_len) {
+                @compileError("Too few arguments");
+            }
+
+            // Mark this argument as used
+            self.used_args |= 1 << next_idx;
+
+            return next_idx;
+        }
+    } = .{};
 
     inline for (fmt) |c, i| {
         switch (state) {
@@ -166,11 +179,7 @@ pub fn format(
                     }
                 },
                 '}' => {
-                    const arg_to_print = comptime nextArg(&used_pos_args, maybe_pos_arg, &next_arg);
-
-                    if (arg_to_print >= args.len) {
-                        @compileError("Too few arguments");
-                    }
+                    const arg_to_print = comptime arg_state.nextArg(maybe_pos_arg);
 
                     try formatType(
                         args[arg_to_print],
@@ -203,7 +212,7 @@ pub fn format(
                     state = if (comptime peekIsAlign(fmt[i..])) State.FormatFillAndAlign else State.FormatWidth;
                 },
                 '}' => {
-                    const arg_to_print = comptime nextArg(&used_pos_args, maybe_pos_arg, &next_arg);
+                    const arg_to_print = comptime arg_state.nextArg(maybe_pos_arg);
 
                     try formatType(
                         args[arg_to_print],
@@ -250,7 +259,7 @@ pub fn format(
                     state = .FormatPrecision;
                 },
                 '}' => {
-                    const arg_to_print = comptime nextArg(&used_pos_args, maybe_pos_arg, &next_arg);
+                    const arg_to_print = comptime arg_state.nextArg(maybe_pos_arg);
 
                     try formatType(
                         args[arg_to_print],
@@ -278,7 +287,7 @@ pub fn format(
                     options.precision.? += c - '0';
                 },
                 '}' => {
-                    const arg_to_print = comptime nextArg(&used_pos_args, maybe_pos_arg, &next_arg);
+                    const arg_to_print = comptime arg_state.nextArg(maybe_pos_arg);
 
                     try formatType(
                         args[arg_to_print],
@@ -299,13 +308,7 @@ pub fn format(
         }
     }
     comptime {
-        // All arguments must have been printed but we allow mixing positional and fixed to achieve this.
-        var i: usize = 0;
-        inline while (i < next_arg) : (i += 1) {
-            used_pos_args |= 1 << i;
-        }
-
-        if (@popCount(ArgSetType, used_pos_args) != args.len) {
+        if (comptime arg_state.hasUnusedArgs()) {
             @compileError("Unused arguments");
         }
         if (state != State.Start) {
@@ -323,7 +326,7 @@ pub fn formatType(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
     max_depth: usize,
 ) Errors!void {
     if (comptime std.mem.eql(u8, fmt, "*")) {
@@ -362,14 +365,21 @@ pub fn formatType(
             try output(context, "error.");
             return output(context, @errorName(value));
         },
-        .Enum => {
+        .Enum => |enumInfo| {
             if (comptime std.meta.trait.hasFn("format")(T)) {
                 return value.format(fmt, options, context, Errors, output);
             }
 
             try output(context, @typeName(T));
-            try output(context, ".");
-            return formatType(@tagName(value), "", options, context, Errors, output, max_depth);
+            if (enumInfo.is_exhaustive) {
+                try output(context, ".");
+                try output(context, @tagName(value));
+            } else {
+                // TODO: when @tagName works on exhaustive enums print known enum strings
+                try output(context, "(");
+                try formatType(@enumToInt(value), fmt, options, context, Errors, output, max_depth);
+                try output(context, ")");
+            }
         },
         .Union => {
             if (comptime std.meta.trait.hasFn("format")(T)) {
@@ -387,7 +397,7 @@ pub fn formatType(
                 try output(context, " = ");
                 inline for (info.fields) |u_field| {
                     if (@enumToInt(@as(UnionTagType, value)) == u_field.enum_field.?.value) {
-                        try formatType(@field(value, u_field.name), "", options, context, Errors, output, max_depth - 1);
+                        try formatType(@field(value, u_field.name), fmt, options, context, Errors, output, max_depth - 1);
                     }
                 }
                 try output(context, " }");
@@ -395,7 +405,7 @@ pub fn formatType(
                 try format(context, Errors, output, "@{x}", .{@ptrToInt(&value)});
             }
         },
-        .Struct => {
+        .Struct => |StructT| {
             if (comptime std.meta.trait.hasFn("format")(T)) {
                 return value.format(fmt, options, context, Errors, output);
             }
@@ -404,38 +414,39 @@ pub fn formatType(
             if (max_depth == 0) {
                 return output(context, "{ ... }");
             }
-            comptime var field_i = 0;
             try output(context, "{");
-            inline while (field_i < @memberCount(T)) : (field_i += 1) {
-                if (field_i == 0) {
+            inline for (StructT.fields) |f, i| {
+                if (i == 0) {
                     try output(context, " .");
                 } else {
                     try output(context, ", .");
                 }
-                try output(context, @memberName(T, field_i));
+                try output(context, f.name);
                 try output(context, " = ");
-                try formatType(@field(value, @memberName(T, field_i)), "", options, context, Errors, output, max_depth - 1);
+                try formatType(@field(value, f.name), fmt, options, context, Errors, output, max_depth - 1);
             }
             try output(context, " }");
         },
         .Pointer => |ptr_info| switch (ptr_info.size) {
             .One => switch (@typeInfo(ptr_info.child)) {
-                builtin.TypeId.Array => |info| {
+                .Array => |info| {
                     if (info.child == u8) {
                         return formatText(value, fmt, options, context, Errors, output);
                     }
                     return format(context, Errors, output, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) });
                 },
-                builtin.TypeId.Enum, builtin.TypeId.Union, builtin.TypeId.Struct => {
+                .Enum, .Union, .Struct => {
                     return formatType(value.*, fmt, options, context, Errors, output, max_depth);
                 },
                 else => return format(context, Errors, output, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) }),
             },
-            .Many => {
+            .Many, .C => {
+                if (ptr_info.sentinel) |sentinel| {
+                    return formatType(mem.span(value), fmt, options, context, Errors, output, max_depth);
+                }
                 if (ptr_info.child == u8) {
                     if (fmt.len > 0 and fmt[0] == 's') {
-                        const len = mem.len(u8, value);
-                        return formatText(value[0..len], fmt, options, context, Errors, output);
+                        return formatText(mem.span(value), fmt, options, context, Errors, output);
                     }
                 }
                 return format(context, Errors, output, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) });
@@ -448,9 +459,6 @@ pub fn formatType(
                     return formatText(value, fmt, options, context, Errors, output);
                 }
                 return format(context, Errors, output, "{}@{x}", .{ @typeName(ptr_info.child), @ptrToInt(value.ptr) });
-            },
-            .C => {
-                return format(context, Errors, output, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) });
             },
         },
         .Array => |info| {
@@ -467,6 +475,18 @@ pub fn formatType(
             });
             return formatType(@as(Slice, &value), fmt, options, context, Errors, output, max_depth);
         },
+        .Vector => {
+            const len = @typeInfo(T).Vector.len;
+            try output(context, "{ ");
+            var i: usize = 0;
+            while (i < len) : (i += 1) {
+                try formatValue(value[i], fmt, options, context, Errors, output);
+                if (i < len - 1) {
+                    try output(context, ", ");
+                }
+            }
+            try output(context, " }");
+        },
         .Fn => {
             return format(context, Errors, output, "{}@{x}", .{ @typeName(T), @ptrToInt(value) });
         },
@@ -481,7 +501,7 @@ fn formatValue(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     if (comptime std.mem.eql(u8, fmt, "B")) {
         return formatBytes(value, options, 1000, context, Errors, output);
@@ -490,9 +510,10 @@ fn formatValue(
     }
 
     const T = @TypeOf(value);
-    switch (@typeId(T)) {
+    switch (@typeInfo(T)) {
         .Float => return formatFloatValue(value, fmt, options, context, Errors, output),
         .Int, .ComptimeInt => return formatIntValue(value, fmt, options, context, Errors, output),
+        .Bool => return output(context, if (value) "true" else "false"),
         else => comptime unreachable,
     }
 }
@@ -503,7 +524,7 @@ pub fn formatIntValue(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     comptime var radix = 10;
     comptime var uppercase = false;
@@ -545,7 +566,7 @@ fn formatFloatValue(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     if (fmt.len == 0 or comptime std.mem.eql(u8, fmt, "e")) {
         return formatFloatScientific(value, options, context, Errors, output);
@@ -562,7 +583,7 @@ pub fn formatText(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     if (fmt.len == 0) {
         return output(context, bytes);
@@ -583,11 +604,9 @@ pub fn formatAsciiChar(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
-    if (std.ascii.isPrint(c))
-        return output(context, @as(*const [1]u8, &c)[0..]);
-    return format(context, Errors, output, "\\x{x:0<2}", .{c});
+    return output(context, @as(*const [1]u8, &c)[0..]);
 }
 
 pub fn formatBuf(
@@ -595,7 +614,7 @@ pub fn formatBuf(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     try output(context, buf);
 
@@ -615,7 +634,7 @@ pub fn formatFloatScientific(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     var x = @floatCast(f64, value);
 
@@ -710,7 +729,7 @@ pub fn formatFloatDecimal(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     var x = @as(f64, value);
 
@@ -739,8 +758,6 @@ pub fn formatFloatDecimal(
             } else {
                 try output(context, ".0");
             }
-        } else {
-            try output(context, "0");
         }
 
         return;
@@ -856,7 +873,7 @@ pub fn formatBytes(
     comptime radix: usize,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     if (value == 0) {
         return output(context, "0B");
@@ -897,7 +914,7 @@ pub fn formatInt(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     const int_value = if (@TypeOf(value) == comptime_int) blk: {
         const Int = math.IntFittingRange(value, value);
@@ -919,7 +936,7 @@ fn formatIntSigned(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     const new_options = FormatOptions{
         .width = if (options.width) |w| (if (w == 0) 0 else w - 1) else null,
@@ -927,7 +944,7 @@ fn formatIntSigned(
         .fill = options.fill,
     };
 
-    const uint = @IntType(false, @TypeOf(value).bit_count);
+    const uint = std.meta.IntType(false, @TypeOf(value).bit_count);
     if (value < 0) {
         const minus_sign: u8 = '-';
         try output(context, @as(*const [1]u8, &minus_sign)[0..]);
@@ -950,12 +967,12 @@ fn formatIntUnsigned(
     options: FormatOptions,
     context: var,
     comptime Errors: type,
-    output: fn (@TypeOf(context), []const u8) Errors!void,
+    comptime output: fn (@TypeOf(context), []const u8) Errors!void,
 ) Errors!void {
     assert(base >= 2);
     var buf: [math.max(@TypeOf(value).bit_count, 1)]u8 = undefined;
     const min_int_bits = comptime math.max(@TypeOf(value).bit_count, @TypeOf(base).bit_count);
-    const MinInt = @IntType(@TypeOf(value).is_signed, min_int_bits);
+    const MinInt = std.meta.IntType(@TypeOf(value).is_signed, min_int_bits);
     var a: MinInt = value;
     var index: usize = buf.len;
 
@@ -1140,6 +1157,11 @@ fn countSize(size: *usize, bytes: []const u8) (error{}!void) {
     size.* += bytes.len;
 }
 
+pub fn allocPrint0(allocator: *mem.Allocator, comptime fmt: []const u8, args: var) AllocPrintError![:0]u8 {
+    const result = try allocPrint(allocator, fmt ++ "\x00", args);
+    return result[0 .. result.len - 1 :0];
+}
+
 test "bufPrintInt" {
     var buffer: [100]u8 = undefined;
     const buf = buffer[0..];
@@ -1287,15 +1309,19 @@ test "pointer" {
 }
 
 test "cstr" {
-    try testFmt("cstr: Test C\n", "cstr: {s}\n", .{"Test C"});
-    try testFmt("cstr: Test C    \n", "cstr: {s:10}\n", .{"Test C"});
+    try testFmt(
+        "cstr: Test C\n",
+        "cstr: {s}\n",
+        .{@ptrCast([*c]const u8, "Test C")},
+    );
+    try testFmt(
+        "cstr: Test C    \n",
+        "cstr: {s:10}\n",
+        .{@ptrCast([*c]const u8, "Test C")},
+    );
 }
 
 test "filesize" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
     try testFmt("file size: 63MiB\n", "file size: {Bi}\n", .{@as(usize, 63 * 1024 * 1024)});
     try testFmt("file size: 66.06MB\n", "file size: {B:.2}\n", .{@as(usize, 63 * 1024 * 1024)});
 }
@@ -1329,11 +1355,21 @@ test "enum" {
     try testFmt("enum: Enum.Two\n", "enum: {}\n", .{&value});
 }
 
+test "non-exhaustive enum" {
+    const Enum = enum(u16) {
+        One = 0x000f,
+        Two = 0xbeef,
+        _,
+    };
+    try testFmt("enum: Enum(15)\n", "enum: {}\n", .{Enum.One});
+    try testFmt("enum: Enum(48879)\n", "enum: {}\n", .{Enum.Two});
+    try testFmt("enum: Enum(4660)\n", "enum: {}\n", .{@intToEnum(Enum, 0x1234)});
+    try testFmt("enum: Enum(f)\n", "enum: {x}\n", .{Enum.One});
+    try testFmt("enum: Enum(beef)\n", "enum: {x}\n", .{Enum.Two});
+    try testFmt("enum: Enum(1234)\n", "enum: {x}\n", .{@intToEnum(Enum, 0x1234)});
+}
+
 test "float.scientific" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
     try testFmt("f32: 1.34000003e+00", "f32: {e}", .{@as(f32, 1.34)});
     try testFmt("f32: 1.23400001e+01", "f32: {e}", .{@as(f32, 12.34)});
     try testFmt("f64: -1.234e+11", "f64: {e}", .{@as(f64, -12.34e10)});
@@ -1341,10 +1377,6 @@ test "float.scientific" {
 }
 
 test "float.scientific.precision" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
     try testFmt("f64: 1.40971e-42", "f64: {e:.5}", .{@as(f64, 1.409706e-42)});
     try testFmt("f64: 1.00000e-09", "f64: {e:.5}", .{@as(f64, @bitCast(f32, @as(u32, 814313563)))});
     try testFmt("f64: 7.81250e-03", "f64: {e:.5}", .{@as(f64, @bitCast(f32, @as(u32, 1006632960)))});
@@ -1354,10 +1386,6 @@ test "float.scientific.precision" {
 }
 
 test "float.special" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
     try testFmt("f64: nan", "f64: {}", .{math.nan_f64});
     // negative nan is not defined by IEE 754,
     // and ARM thus normalizes it to positive nan
@@ -1369,11 +1397,8 @@ test "float.special" {
 }
 
 test "float.decimal" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
     try testFmt("f64: 152314000000000000000000000000", "f64: {d}", .{@as(f64, 1.52314e+29)});
+    try testFmt("f32: 0", "f32: {d}", .{@as(f32, 0.0)});
     try testFmt("f32: 1.1", "f32: {d:.1}", .{@as(f32, 1.1234)});
     try testFmt("f32: 1234.57", "f32: {d:.2}", .{@as(f32, 1234.567)});
     // -11.1234 is converted to f64 -11.12339... internally (errol3() function takes f64).
@@ -1391,10 +1416,6 @@ test "float.decimal" {
 }
 
 test "float.libc.sanity" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
     try testFmt("f64: 0.00001", "f64: {d:.5}", .{@as(f64, @bitCast(f32, @as(u32, 916964781)))});
     try testFmt("f64: 0.00001", "f64: {d:.5}", .{@as(f64, @bitCast(f32, @as(u32, 925353389)))});
     try testFmt("f64: 0.10000", "f64: {d:.5}", .{@as(f64, @bitCast(f32, @as(u32, 1036831278)))});
@@ -1425,7 +1446,7 @@ test "custom" {
             options: FormatOptions,
             context: var,
             comptime Errors: type,
-            output: fn (@TypeOf(context), []const u8) Errors!void,
+            comptime output: fn (@TypeOf(context), []const u8) Errors!void,
         ) Errors!void {
             if (fmt.len == 0 or comptime std.mem.eql(u8, fmt, "p")) {
                 return std.fmt.format(context, Errors, output, "({d:.3},{d:.3})", .{ self.x, self.y });
@@ -1614,7 +1635,8 @@ test "hexToBytes" {
 test "formatIntValue with comptime_int" {
     const value: comptime_int = 123456789123456789;
 
-    var buf = try std.Buffer.init(std.debug.global_allocator, "");
+    var buf = try std.Buffer.init(std.testing.allocator, "");
+    defer buf.deinit();
     try formatIntValue(value, "", FormatOptions{}, &buf, @TypeOf(std.Buffer.append).ReturnType.ErrorSet, std.Buffer.append);
     std.testing.expect(mem.eql(u8, buf.toSlice(), "123456789123456789"));
 }
@@ -1631,7 +1653,7 @@ test "formatType max_depth" {
             options: FormatOptions,
             context: var,
             comptime Errors: type,
-            output: fn (@TypeOf(context), []const u8) Errors!void,
+            comptime output: fn (@TypeOf(context), []const u8) Errors!void,
         ) Errors!void {
             if (fmt.len == 0) {
                 return std.fmt.format(context, Errors, output, "({d:.3},{d:.3})", .{ self.x, self.y });
@@ -1668,19 +1690,23 @@ test "formatType max_depth" {
     inst.a = &inst;
     inst.tu.ptr = &inst.tu;
 
-    var buf0 = try std.Buffer.init(std.debug.global_allocator, "");
+    var buf0 = try std.Buffer.init(std.testing.allocator, "");
+    defer buf0.deinit();
     try formatType(inst, "", FormatOptions{}, &buf0, @TypeOf(std.Buffer.append).ReturnType.ErrorSet, std.Buffer.append, 0);
     std.testing.expect(mem.eql(u8, buf0.toSlice(), "S{ ... }"));
 
-    var buf1 = try std.Buffer.init(std.debug.global_allocator, "");
+    var buf1 = try std.Buffer.init(std.testing.allocator, "");
+    defer buf1.deinit();
     try formatType(inst, "", FormatOptions{}, &buf1, @TypeOf(std.Buffer.append).ReturnType.ErrorSet, std.Buffer.append, 1);
     std.testing.expect(mem.eql(u8, buf1.toSlice(), "S{ .a = S{ ... }, .tu = TU{ ... }, .e = E.Two, .vec = (10.200,2.220) }"));
 
-    var buf2 = try std.Buffer.init(std.debug.global_allocator, "");
+    var buf2 = try std.Buffer.init(std.testing.allocator, "");
+    defer buf2.deinit();
     try formatType(inst, "", FormatOptions{}, &buf2, @TypeOf(std.Buffer.append).ReturnType.ErrorSet, std.Buffer.append, 2);
     std.testing.expect(mem.eql(u8, buf2.toSlice(), "S{ .a = S{ .a = S{ ... }, .tu = TU{ ... }, .e = E.Two, .vec = (10.200,2.220) }, .tu = TU{ .ptr = TU{ ... } }, .e = E.Two, .vec = (10.200,2.220) }"));
 
-    var buf3 = try std.Buffer.init(std.debug.global_allocator, "");
+    var buf3 = try std.Buffer.init(std.testing.allocator, "");
+    defer buf3.deinit();
     try formatType(inst, "", FormatOptions{}, &buf3, @TypeOf(std.Buffer.append).ReturnType.ErrorSet, std.Buffer.append, 3);
     std.testing.expect(mem.eql(u8, buf3.toSlice(), "S{ .a = S{ .a = S{ .a = S{ ... }, .tu = TU{ ... }, .e = E.Two, .vec = (10.200,2.220) }, .tu = TU{ .ptr = TU{ ... } }, .e = E.Two, .vec = (10.200,2.220) }, .tu = TU{ .ptr = TU{ .ptr = TU{ ... } } }, .e = E.Two, .vec = (10.200,2.220) }"));
 }
@@ -1699,4 +1725,21 @@ test "positional with specifier" {
 
 test "positional/alignment/width/precision" {
     try testFmt("10.0", "{0d: >3.1}", .{@as(f64, 9.999)});
+}
+
+test "vector" {
+    // https://github.com/ziglang/zig/issues/3317
+    if (builtin.arch == .mipsel) return error.SkipZigTest;
+
+    const vbool: @Vector(4, bool) = [_]bool{ true, false, true, false };
+    const vi64: @Vector(4, i64) = [_]i64{ -2, -1, 0, 1 };
+    const vu64: @Vector(4, u64) = [_]u64{ 1000, 2000, 3000, 4000 };
+
+    try testFmt("{ true, false, true, false }", "{}", .{vbool});
+    try testFmt("{ -2, -1, 0, 1 }", "{}", .{vi64});
+    try testFmt("{ -   2, -   1, +   0, +   1 }", "{d:5}", .{vi64});
+    try testFmt("{ 1000, 2000, 3000, 4000 }", "{}", .{vu64});
+    try testFmt("{ 3e8, 7d0, bb8, fa0 }", "{x}", .{vu64});
+    try testFmt("{ 1kB, 2kB, 3kB, 4kB }", "{B}", .{vu64});
+    try testFmt("{ 1000B, 1.953125KiB, 2.9296875KiB, 3.90625KiB }", "{Bi}", .{vu64});
 }

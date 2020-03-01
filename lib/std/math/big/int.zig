@@ -1,5 +1,4 @@
 const std = @import("../../std.zig");
-const builtin = @import("builtin");
 const debug = std.debug;
 const testing = std.testing;
 const math = std.math;
@@ -9,10 +8,8 @@ const ArrayList = std.ArrayList;
 const maxInt = std.math.maxInt;
 const minInt = std.math.minInt;
 
-const TypeId = builtin.TypeId;
-
 pub const Limb = usize;
-pub const DoubleLimb = @IntType(false, 2 * Limb.bit_count);
+pub const DoubleLimb = std.meta.IntType(false, 2 * Limb.bit_count);
 pub const Log2Limb = math.Log2Int(Limb);
 
 comptime {
@@ -137,10 +134,9 @@ pub const Int = struct {
     }
 
     /// Frees all memory associated with an Int.
-    pub fn deinit(self: *Int) void {
+    pub fn deinit(self: Int) void {
         self.assertWritable();
         self.allocator.?.free(self.limbs);
-        self.* = undefined;
     }
 
     /// Clones an Int and returns a new Int with the same value. The new Int is a deep copy and
@@ -271,8 +267,8 @@ pub const Int = struct {
         const T = @TypeOf(value);
 
         switch (@typeInfo(T)) {
-            TypeId.Int => |info| {
-                const UT = if (T.is_signed) @IntType(false, T.bit_count - 1) else T;
+            .Int => |info| {
+                const UT = if (T.is_signed) std.meta.IntType(false, T.bit_count - 1) else T;
 
                 try self.ensureCapacity(@sizeOf(UT) / @sizeOf(Limb));
                 self.metadata = 0;
@@ -295,7 +291,7 @@ pub const Int = struct {
                     }
                 }
             },
-            TypeId.ComptimeInt => {
+            .ComptimeInt => {
                 comptime var w_value = if (value < 0) -value else value;
 
                 const req_limbs = @divFloor(math.log2(w_value), Limb.bit_count) + 1;
@@ -333,9 +329,9 @@ pub const Int = struct {
     ///
     /// Returns an error if self cannot be narrowed into the requested type without truncation.
     pub fn to(self: Int, comptime T: type) ConvertError!T {
-        switch (@typeId(T)) {
-            TypeId.Int => {
-                const UT = @IntType(false, T.bit_count);
+        switch (@typeInfo(T)) {
+            .Int => {
+                const UT = std.meta.IntType(false, T.bit_count);
 
                 if (self.bitCountTwosComp() > T.bit_count) {
                     return error.TargetTooSmall;
@@ -1361,13 +1357,10 @@ pub const Int = struct {
 // They will still run on larger than this and should pass, but the multi-limb code-paths
 // may be untested in some cases.
 
-var buffer: [64 * 8192]u8 = undefined;
-var fixed = std.heap.FixedBufferAllocator.init(buffer[0..]);
-const al = &fixed.allocator;
-
 test "big.int comptime_int set" {
     comptime var s = 0xefffffff00000001eeeeeeefaaaaaaab;
-    var a = try Int.initSet(al, s);
+    var a = try Int.initSet(testing.allocator, s);
+    defer a.deinit();
 
     const s_limb_count = 128 / Limb.bit_count;
 
@@ -1381,39 +1374,45 @@ test "big.int comptime_int set" {
 }
 
 test "big.int comptime_int set negative" {
-    var a = try Int.initSet(al, -10);
+    var a = try Int.initSet(testing.allocator, -10);
+    defer a.deinit();
 
     testing.expect(a.limbs[0] == 10);
     testing.expect(a.isPositive() == false);
 }
 
 test "big.int int set unaligned small" {
-    var a = try Int.initSet(al, @as(u7, 45));
+    var a = try Int.initSet(testing.allocator, @as(u7, 45));
+    defer a.deinit();
 
     testing.expect(a.limbs[0] == 45);
     testing.expect(a.isPositive() == true);
 }
 
 test "big.int comptime_int to" {
-    const a = try Int.initSet(al, 0xefffffff00000001eeeeeeefaaaaaaab);
+    const a = try Int.initSet(testing.allocator, 0xefffffff00000001eeeeeeefaaaaaaab);
+    defer a.deinit();
 
     testing.expect((try a.to(u128)) == 0xefffffff00000001eeeeeeefaaaaaaab);
 }
 
 test "big.int sub-limb to" {
-    const a = try Int.initSet(al, 10);
+    const a = try Int.initSet(testing.allocator, 10);
+    defer a.deinit();
 
     testing.expect((try a.to(u8)) == 10);
 }
 
 test "big.int to target too small error" {
-    const a = try Int.initSet(al, 0xffffffff);
+    const a = try Int.initSet(testing.allocator, 0xffffffff);
+    defer a.deinit();
 
     testing.expectError(error.TargetTooSmall, a.to(u8));
 }
 
 test "big.int normalize" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
     try a.ensureCapacity(8);
 
     a.limbs[0] = 1;
@@ -1440,7 +1439,8 @@ test "big.int normalize" {
 }
 
 test "big.int normalize multi" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
     try a.ensureCapacity(8);
 
     a.limbs[0] = 1;
@@ -1469,7 +1469,9 @@ test "big.int normalize multi" {
 }
 
 test "big.int parity" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
+
     try a.set(0);
     testing.expect(a.isEven());
     testing.expect(!a.isOdd());
@@ -1480,7 +1482,8 @@ test "big.int parity" {
 }
 
 test "big.int bitcount + sizeInBase" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
     try a.set(0b100);
     testing.expect(a.bitCountAbs() == 3);
@@ -1507,7 +1510,8 @@ test "big.int bitcount + sizeInBase" {
 }
 
 test "big.int bitcount/to" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
     try a.set(0);
     testing.expect(a.bitCountTwosComp() == 0);
@@ -1537,7 +1541,8 @@ test "big.int bitcount/to" {
 }
 
 test "big.int fits" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
     try a.set(0);
     testing.expect(a.fits(u0));
@@ -1564,82 +1569,100 @@ test "big.int fits" {
 }
 
 test "big.int string set" {
-    var a = try Int.init(al);
-    try a.setString(10, "120317241209124781241290847124");
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
+    try a.setString(10, "120317241209124781241290847124");
     testing.expect((try a.to(u128)) == 120317241209124781241290847124);
 }
 
 test "big.int string negative" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
+
     try a.setString(10, "-1023");
     testing.expect((try a.to(i32)) == -1023);
 }
 
 test "big.int string set bad char error" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
     testing.expectError(error.InvalidCharForDigit, a.setString(10, "x"));
 }
 
 test "big.int string set bad base error" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
     testing.expectError(error.InvalidBase, a.setString(45, "10"));
 }
 
 test "big.int string to" {
-    const a = try Int.initSet(al, 120317241209124781241290847124);
+    const a = try Int.initSet(testing.allocator, 120317241209124781241290847124);
+    defer a.deinit();
 
-    const as = try a.toString(al, 10);
+    const as = try a.toString(testing.allocator, 10);
+    defer testing.allocator.free(as);
     const es = "120317241209124781241290847124";
 
     testing.expect(mem.eql(u8, as, es));
 }
 
 test "big.int string to base base error" {
-    const a = try Int.initSet(al, 0xffffffff);
+    const a = try Int.initSet(testing.allocator, 0xffffffff);
+    defer a.deinit();
 
-    testing.expectError(error.InvalidBase, a.toString(al, 45));
+    testing.expectError(error.InvalidBase, a.toString(testing.allocator, 45));
 }
 
 test "big.int string to base 2" {
-    const a = try Int.initSet(al, -0b1011);
+    const a = try Int.initSet(testing.allocator, -0b1011);
+    defer a.deinit();
 
-    const as = try a.toString(al, 2);
+    const as = try a.toString(testing.allocator, 2);
+    defer testing.allocator.free(as);
     const es = "-1011";
 
     testing.expect(mem.eql(u8, as, es));
 }
 
 test "big.int string to base 16" {
-    const a = try Int.initSet(al, 0xefffffff00000001eeeeeeefaaaaaaab);
+    const a = try Int.initSet(testing.allocator, 0xefffffff00000001eeeeeeefaaaaaaab);
+    defer a.deinit();
 
-    const as = try a.toString(al, 16);
+    const as = try a.toString(testing.allocator, 16);
+    defer testing.allocator.free(as);
     const es = "efffffff00000001eeeeeeefaaaaaaab";
 
     testing.expect(mem.eql(u8, as, es));
 }
 
 test "big.int neg string to" {
-    const a = try Int.initSet(al, -123907434);
+    const a = try Int.initSet(testing.allocator, -123907434);
+    defer a.deinit();
 
-    const as = try a.toString(al, 10);
+    const as = try a.toString(testing.allocator, 10);
+    defer testing.allocator.free(as);
     const es = "-123907434";
 
     testing.expect(mem.eql(u8, as, es));
 }
 
 test "big.int zero string to" {
-    const a = try Int.initSet(al, 0);
+    const a = try Int.initSet(testing.allocator, 0);
+    defer a.deinit();
 
-    const as = try a.toString(al, 10);
+    const as = try a.toString(testing.allocator, 10);
+    defer testing.allocator.free(as);
     const es = "0";
 
     testing.expect(mem.eql(u8, as, es));
 }
 
 test "big.int clone" {
-    var a = try Int.initSet(al, 1234);
+    var a = try Int.initSet(testing.allocator, 1234);
+    defer a.deinit();
     const b = try a.clone();
+    defer b.deinit();
 
     testing.expect((try a.to(u32)) == 1234);
     testing.expect((try b.to(u32)) == 1234);
@@ -1650,8 +1673,10 @@ test "big.int clone" {
 }
 
 test "big.int swap" {
-    var a = try Int.initSet(al, 1234);
-    var b = try Int.initSet(al, 5678);
+    var a = try Int.initSet(testing.allocator, 1234);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 5678);
+    defer b.deinit();
 
     testing.expect((try a.to(u32)) == 1234);
     testing.expect((try b.to(u32)) == 5678);
@@ -1663,53 +1688,65 @@ test "big.int swap" {
 }
 
 test "big.int to negative" {
-    var a = try Int.initSet(al, -10);
+    var a = try Int.initSet(testing.allocator, -10);
+    defer a.deinit();
 
     testing.expect((try a.to(i32)) == -10);
 }
 
 test "big.int compare" {
-    var a = try Int.initSet(al, -11);
-    var b = try Int.initSet(al, 10);
+    var a = try Int.initSet(testing.allocator, -11);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 10);
+    defer b.deinit();
 
     testing.expect(a.cmpAbs(b) == 1);
     testing.expect(a.cmp(b) == -1);
 }
 
 test "big.int compare similar" {
-    var a = try Int.initSet(al, 0xffffffffeeeeeeeeffffffffeeeeeeee);
-    var b = try Int.initSet(al, 0xffffffffeeeeeeeeffffffffeeeeeeef);
+    var a = try Int.initSet(testing.allocator, 0xffffffffeeeeeeeeffffffffeeeeeeee);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0xffffffffeeeeeeeeffffffffeeeeeeef);
+    defer b.deinit();
 
     testing.expect(a.cmpAbs(b) == -1);
     testing.expect(b.cmpAbs(a) == 1);
 }
 
 test "big.int compare different limb size" {
-    var a = try Int.initSet(al, maxInt(Limb) + 1);
-    var b = try Int.initSet(al, 1);
+    var a = try Int.initSet(testing.allocator, maxInt(Limb) + 1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 1);
+    defer b.deinit();
 
     testing.expect(a.cmpAbs(b) == 1);
     testing.expect(b.cmpAbs(a) == -1);
 }
 
 test "big.int compare multi-limb" {
-    var a = try Int.initSet(al, -0x7777777799999999ffffeeeeffffeeeeffffeeeef);
-    var b = try Int.initSet(al, 0x7777777799999999ffffeeeeffffeeeeffffeeeee);
+    var a = try Int.initSet(testing.allocator, -0x7777777799999999ffffeeeeffffeeeeffffeeeef);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x7777777799999999ffffeeeeffffeeeeffffeeeee);
+    defer b.deinit();
 
     testing.expect(a.cmpAbs(b) == 1);
     testing.expect(a.cmp(b) == -1);
 }
 
 test "big.int equality" {
-    var a = try Int.initSet(al, 0xffffffff1);
-    var b = try Int.initSet(al, -0xffffffff1);
+    var a = try Int.initSet(testing.allocator, 0xffffffff1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, -0xffffffff1);
+    defer b.deinit();
 
     testing.expect(a.eqAbs(b));
     testing.expect(!a.eq(b));
 }
 
 test "big.int abs" {
-    var a = try Int.initSet(al, -5);
+    var a = try Int.initSet(testing.allocator, -5);
+    defer a.deinit();
 
     a.abs();
     testing.expect((try a.to(u32)) == 5);
@@ -1719,7 +1756,8 @@ test "big.int abs" {
 }
 
 test "big.int negate" {
-    var a = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 5);
+    defer a.deinit();
 
     a.negate();
     testing.expect((try a.to(i32)) == -5);
@@ -1729,20 +1767,26 @@ test "big.int negate" {
 }
 
 test "big.int add single-single" {
-    var a = try Int.initSet(al, 50);
-    var b = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 50);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 5);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.add(a, b);
 
     testing.expect((try c.to(u32)) == 55);
 }
 
 test "big.int add multi-single" {
-    var a = try Int.initSet(al, maxInt(Limb) + 1);
-    var b = try Int.initSet(al, 1);
+    var a = try Int.initSet(testing.allocator, maxInt(Limb) + 1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 1);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
 
     try c.add(a, b);
     testing.expect((try c.to(DoubleLimb)) == maxInt(Limb) + 2);
@@ -1754,20 +1798,26 @@ test "big.int add multi-single" {
 test "big.int add multi-multi" {
     const op1 = 0xefefefef7f7f7f7f;
     const op2 = 0xfefefefe9f9f9f9f;
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.add(a, b);
 
     testing.expect((try c.to(u128)) == op1 + op2);
 }
 
 test "big.int add zero-zero" {
-    var a = try Int.initSet(al, 0);
-    var b = try Int.initSet(al, 0);
+    var a = try Int.initSet(testing.allocator, 0);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.add(a, b);
 
     testing.expect((try c.to(u32)) == 0);
@@ -1775,8 +1825,10 @@ test "big.int add zero-zero" {
 
 test "big.int add alias multi-limb nonzero-zero" {
     const op1 = 0xffffffff777777771;
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, 0);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0);
+    defer b.deinit();
 
     try a.add(a, b);
 
@@ -1784,12 +1836,17 @@ test "big.int add alias multi-limb nonzero-zero" {
 }
 
 test "big.int add sign" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
-    const one = try Int.initSet(al, 1);
-    const two = try Int.initSet(al, 2);
-    const neg_one = try Int.initSet(al, -1);
-    const neg_two = try Int.initSet(al, -2);
+    const one = try Int.initSet(testing.allocator, 1);
+    defer one.deinit();
+    const two = try Int.initSet(testing.allocator, 2);
+    defer two.deinit();
+    const neg_one = try Int.initSet(testing.allocator, -1);
+    defer neg_one.deinit();
+    const neg_two = try Int.initSet(testing.allocator, -2);
+    defer neg_two.deinit();
 
     try a.add(one, two);
     testing.expect((try a.to(i32)) == 3);
@@ -1805,20 +1862,26 @@ test "big.int add sign" {
 }
 
 test "big.int sub single-single" {
-    var a = try Int.initSet(al, 50);
-    var b = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 50);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 5);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.sub(a, b);
 
     testing.expect((try c.to(u32)) == 45);
 }
 
 test "big.int sub multi-single" {
-    var a = try Int.initSet(al, maxInt(Limb) + 1);
-    var b = try Int.initSet(al, 1);
+    var a = try Int.initSet(testing.allocator, maxInt(Limb) + 1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 1);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.sub(a, b);
 
     testing.expect((try c.to(Limb)) == maxInt(Limb));
@@ -1828,32 +1891,43 @@ test "big.int sub multi-multi" {
     const op1 = 0xefefefefefefefefefefefef;
     const op2 = 0xabababababababababababab;
 
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.sub(a, b);
 
     testing.expect((try c.to(u128)) == op1 - op2);
 }
 
 test "big.int sub equal" {
-    var a = try Int.initSet(al, 0x11efefefefefefefefefefefef);
-    var b = try Int.initSet(al, 0x11efefefefefefefefefefefef);
+    var a = try Int.initSet(testing.allocator, 0x11efefefefefefefefefefefef);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x11efefefefefefefefefefefef);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.sub(a, b);
 
     testing.expect((try c.to(u32)) == 0);
 }
 
 test "big.int sub sign" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
-    const one = try Int.initSet(al, 1);
-    const two = try Int.initSet(al, 2);
-    const neg_one = try Int.initSet(al, -1);
-    const neg_two = try Int.initSet(al, -2);
+    const one = try Int.initSet(testing.allocator, 1);
+    defer one.deinit();
+    const two = try Int.initSet(testing.allocator, 2);
+    defer two.deinit();
+    const neg_one = try Int.initSet(testing.allocator, -1);
+    defer neg_one.deinit();
+    const neg_two = try Int.initSet(testing.allocator, -2);
+    defer neg_two.deinit();
 
     try a.sub(one, two);
     testing.expect((try a.to(i32)) == -1);
@@ -1872,20 +1946,26 @@ test "big.int sub sign" {
 }
 
 test "big.int mul single-single" {
-    var a = try Int.initSet(al, 50);
-    var b = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 50);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 5);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.mul(a, b);
 
     testing.expect((try c.to(u64)) == 250);
 }
 
 test "big.int mul multi-single" {
-    var a = try Int.initSet(al, maxInt(Limb));
-    var b = try Int.initSet(al, 2);
+    var a = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 2);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.mul(a, b);
 
     testing.expect((try c.to(DoubleLimb)) == 2 * maxInt(Limb));
@@ -1894,18 +1974,23 @@ test "big.int mul multi-single" {
 test "big.int mul multi-multi" {
     const op1 = 0x998888efefefefefefefef;
     const op2 = 0x333000abababababababab;
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.mul(a, b);
 
     testing.expect((try c.to(u256)) == op1 * op2);
 }
 
 test "big.int mul alias r with a" {
-    var a = try Int.initSet(al, maxInt(Limb));
-    var b = try Int.initSet(al, 2);
+    var a = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 2);
+    defer b.deinit();
 
     try a.mul(a, b);
 
@@ -1913,8 +1998,10 @@ test "big.int mul alias r with a" {
 }
 
 test "big.int mul alias r with b" {
-    var a = try Int.initSet(al, maxInt(Limb));
-    var b = try Int.initSet(al, 2);
+    var a = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 2);
+    defer b.deinit();
 
     try a.mul(b, a);
 
@@ -1922,7 +2009,8 @@ test "big.int mul alias r with b" {
 }
 
 test "big.int mul alias r with a and b" {
-    var a = try Int.initSet(al, maxInt(Limb));
+    var a = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer a.deinit();
 
     try a.mul(a, a);
 
@@ -1930,31 +2018,41 @@ test "big.int mul alias r with a and b" {
 }
 
 test "big.int mul a*0" {
-    var a = try Int.initSet(al, 0xefefefefefefefef);
-    var b = try Int.initSet(al, 0);
+    var a = try Int.initSet(testing.allocator, 0xefefefefefefefef);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.mul(a, b);
 
     testing.expect((try c.to(u32)) == 0);
 }
 
 test "big.int mul 0*0" {
-    var a = try Int.initSet(al, 0);
-    var b = try Int.initSet(al, 0);
+    var a = try Int.initSet(testing.allocator, 0);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0);
+    defer b.deinit();
 
-    var c = try Int.init(al);
+    var c = try Int.init(testing.allocator);
+    defer c.deinit();
     try c.mul(a, b);
 
     testing.expect((try c.to(u32)) == 0);
 }
 
 test "big.int div single-single no rem" {
-    var a = try Int.initSet(al, 50);
-    var b = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 50);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 5);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u32)) == 10);
@@ -1962,11 +2060,15 @@ test "big.int div single-single no rem" {
 }
 
 test "big.int div single-single with rem" {
-    var a = try Int.initSet(al, 49);
-    var b = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 49);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 5);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u32)) == 9);
@@ -1977,11 +2079,15 @@ test "big.int div multi-single no rem" {
     const op1 = 0xffffeeeeddddcccc;
     const op2 = 34;
 
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u64)) == op1 / op2);
@@ -1992,11 +2098,15 @@ test "big.int div multi-single with rem" {
     const op1 = 0xffffeeeeddddcccf;
     const op2 = 34;
 
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u64)) == op1 / op2);
@@ -2007,11 +2117,15 @@ test "big.int div multi>2-single" {
     const op1 = 0xfefefefefefefefefefefefefefefefe;
     const op2 = 0xefab8;
 
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == op1 / op2);
@@ -2019,11 +2133,15 @@ test "big.int div multi>2-single" {
 }
 
 test "big.int div single-single q < r" {
-    var a = try Int.initSet(al, 0x0078f432);
-    var b = try Int.initSet(al, 0x01000000);
+    var a = try Int.initSet(testing.allocator, 0x0078f432);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x01000000);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u64)) == 0);
@@ -2031,11 +2149,15 @@ test "big.int div single-single q < r" {
 }
 
 test "big.int div single-single q == r" {
-    var a = try Int.initSet(al, 10);
-    var b = try Int.initSet(al, 10);
+    var a = try Int.initSet(testing.allocator, 10);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 10);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u64)) == 1);
@@ -2043,8 +2165,10 @@ test "big.int div single-single q == r" {
 }
 
 test "big.int div q=0 alias" {
-    var a = try Int.initSet(al, 3);
-    var b = try Int.initSet(al, 10);
+    var a = try Int.initSet(testing.allocator, 3);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 10);
+    defer b.deinit();
 
     try Int.divTrunc(&a, &b, a, b);
 
@@ -2055,11 +2179,15 @@ test "big.int div q=0 alias" {
 test "big.int div multi-multi q < r" {
     const op1 = 0x1ffffffff0078f432;
     const op2 = 0x1ffffffff01000000;
-    var a = try Int.initSet(al, op1);
-    var b = try Int.initSet(al, op2);
+    var a = try Int.initSet(testing.allocator, op1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, op2);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0);
@@ -2070,11 +2198,15 @@ test "big.int div trunc single-single +/+" {
     const u: i32 = 5;
     const v: i32 = 3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     // n = q * d + r
@@ -2090,11 +2222,15 @@ test "big.int div trunc single-single -/+" {
     const u: i32 = -5;
     const v: i32 = 3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     //  n = q *  d + r
@@ -2110,11 +2246,15 @@ test "big.int div trunc single-single +/-" {
     const u: i32 = 5;
     const v: i32 = -3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     // n =  q *  d + r
@@ -2130,11 +2270,15 @@ test "big.int div trunc single-single -/-" {
     const u: i32 = -5;
     const v: i32 = -3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     //  n = q *  d + r
@@ -2150,11 +2294,15 @@ test "big.int div floor single-single +/+" {
     const u: i32 = 5;
     const v: i32 = 3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divFloor(&q, &r, a, b);
 
     //  n =  q *  d + r
@@ -2170,11 +2318,15 @@ test "big.int div floor single-single -/+" {
     const u: i32 = -5;
     const v: i32 = 3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divFloor(&q, &r, a, b);
 
     //  n =  q *  d + r
@@ -2190,11 +2342,15 @@ test "big.int div floor single-single +/-" {
     const u: i32 = 5;
     const v: i32 = -3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divFloor(&q, &r, a, b);
 
     //  n =  q *  d + r
@@ -2210,11 +2366,15 @@ test "big.int div floor single-single -/-" {
     const u: i32 = -5;
     const v: i32 = -3;
 
-    var a = try Int.initSet(al, u);
-    var b = try Int.initSet(al, v);
+    var a = try Int.initSet(testing.allocator, u);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, v);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divFloor(&q, &r, a, b);
 
     //  n =  q *  d + r
@@ -2227,11 +2387,15 @@ test "big.int div floor single-single -/-" {
 }
 
 test "big.int div multi-multi with rem" {
-    var a = try Int.initSet(al, 0x8888999911110000ffffeeeeddddccccbbbbaaaa9999);
-    var b = try Int.initSet(al, 0x99990000111122223333);
+    var a = try Int.initSet(testing.allocator, 0x8888999911110000ffffeeeeddddccccbbbbaaaa9999);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x99990000111122223333);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0xe38f38e39161aaabd03f0f1b);
@@ -2239,11 +2403,15 @@ test "big.int div multi-multi with rem" {
 }
 
 test "big.int div multi-multi no rem" {
-    var a = try Int.initSet(al, 0x8888999911110000ffffeeeedb4fec200ee3a4286361);
-    var b = try Int.initSet(al, 0x99990000111122223333);
+    var a = try Int.initSet(testing.allocator, 0x8888999911110000ffffeeeedb4fec200ee3a4286361);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x99990000111122223333);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0xe38f38e39161aaabd03f0f1b);
@@ -2251,11 +2419,15 @@ test "big.int div multi-multi no rem" {
 }
 
 test "big.int div multi-multi (2 branch)" {
-    var a = try Int.initSet(al, 0x866666665555555588888887777777761111111111111111);
-    var b = try Int.initSet(al, 0x86666666555555554444444433333333);
+    var a = try Int.initSet(testing.allocator, 0x866666665555555588888887777777761111111111111111);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x86666666555555554444444433333333);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0x10000000000000000);
@@ -2263,11 +2435,15 @@ test "big.int div multi-multi (2 branch)" {
 }
 
 test "big.int div multi-multi (3.1/3.3 branch)" {
-    var a = try Int.initSet(al, 0x11111111111111111111111111111111111111111111111111111111111111);
-    var b = try Int.initSet(al, 0x1111111111111111111111111111111111111111171);
+    var a = try Int.initSet(testing.allocator, 0x11111111111111111111111111111111111111111111111111111111111111);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x1111111111111111111111111111111111111111171);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0xfffffffffffffffffff);
@@ -2275,145 +2451,189 @@ test "big.int div multi-multi (3.1/3.3 branch)" {
 }
 
 test "big.int div multi-single zero-limb trailing" {
-    var a = try Int.initSet(al, 0x60000000000000000000000000000000000000000000000000000000000000000);
-    var b = try Int.initSet(al, 0x10000000000000000);
+    var a = try Int.initSet(testing.allocator, 0x60000000000000000000000000000000000000000000000000000000000000000);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x10000000000000000);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
-    var expected = try Int.initSet(al, 0x6000000000000000000000000000000000000000000000000);
+    var expected = try Int.initSet(testing.allocator, 0x6000000000000000000000000000000000000000000000000);
+    defer expected.deinit();
     testing.expect(q.eq(expected));
     testing.expect(r.eqZero());
 }
 
 test "big.int div multi-multi zero-limb trailing (with rem)" {
-    var a = try Int.initSet(al, 0x86666666555555558888888777777776111111111111111100000000000000000000000000000000);
-    var b = try Int.initSet(al, 0x8666666655555555444444443333333300000000000000000000000000000000);
+    var a = try Int.initSet(testing.allocator, 0x86666666555555558888888777777776111111111111111100000000000000000000000000000000);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x8666666655555555444444443333333300000000000000000000000000000000);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0x10000000000000000);
 
-    const rs = try r.toString(al, 16);
+    const rs = try r.toString(testing.allocator, 16);
+    defer testing.allocator.free(rs);
     testing.expect(std.mem.eql(u8, rs, "4444444344444443111111111111111100000000000000000000000000000000"));
 }
 
 test "big.int div multi-multi zero-limb trailing (with rem) and dividend zero-limb count > divisor zero-limb count" {
-    var a = try Int.initSet(al, 0x8666666655555555888888877777777611111111111111110000000000000000);
-    var b = try Int.initSet(al, 0x8666666655555555444444443333333300000000000000000000000000000000);
+    var a = try Int.initSet(testing.allocator, 0x8666666655555555888888877777777611111111111111110000000000000000);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x8666666655555555444444443333333300000000000000000000000000000000);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
     testing.expect((try q.to(u128)) == 0x1);
 
-    const rs = try r.toString(al, 16);
+    const rs = try r.toString(testing.allocator, 16);
+    defer testing.allocator.free(rs);
     testing.expect(std.mem.eql(u8, rs, "444444434444444311111111111111110000000000000000"));
 }
 
 test "big.int div multi-multi zero-limb trailing (with rem) and dividend zero-limb count < divisor zero-limb count" {
-    var a = try Int.initSet(al, 0x86666666555555558888888777777776111111111111111100000000000000000000000000000000);
-    var b = try Int.initSet(al, 0x866666665555555544444444333333330000000000000000);
+    var a = try Int.initSet(testing.allocator, 0x86666666555555558888888777777776111111111111111100000000000000000000000000000000);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x866666665555555544444444333333330000000000000000);
+    defer b.deinit();
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
-    const qs = try q.toString(al, 16);
+    const qs = try q.toString(testing.allocator, 16);
+    defer testing.allocator.free(qs);
     testing.expect(std.mem.eql(u8, qs, "10000000000000000820820803105186f"));
 
-    const rs = try r.toString(al, 16);
+    const rs = try r.toString(testing.allocator, 16);
+    defer testing.allocator.free(rs);
     testing.expect(std.mem.eql(u8, rs, "4e11f2baa5896a321d463b543d0104e30000000000000000"));
 }
 
 test "big.int div multi-multi fuzz case #1" {
-    var a = try Int.init(al);
-    var b = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
+    var b = try Int.init(testing.allocator);
+    defer b.deinit();
 
     try a.setString(16, "ffffffffffffffffffffffffffffc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff80000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000003ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000");
     try b.setString(16, "3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe0000000000000000000000000000000000001ffffffffffffffffffffffffffffffffffffffffffffffffffc000000000000000000000000000000007fffffffffff");
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
-    const qs = try q.toString(al, 16);
+    const qs = try q.toString(testing.allocator, 16);
+    defer testing.allocator.free(qs);
     testing.expect(std.mem.eql(u8, qs, "3ffffffffffffffffffffffffffff0000000000000000000000000000000000001ffffffffffffffffffffffffffff7fffffffe000000000000000000000000000180000000000000000000003fffffbfffffffdfffffffffffffeffff800000100101000000100000000020003fffffdfbfffffe3ffffffffffffeffff7fffc00800a100000017ffe000002000400007efbfff7fe9f00000037ffff3fff7fffa004006100000009ffe00000190038200bf7d2ff7fefe80400060000f7d7f8fbf9401fe38e0403ffc0bdffffa51102c300d7be5ef9df4e5060007b0127ad3fa69f97d0f820b6605ff617ddf7f32ad7a05c0d03f2e7bc78a6000e087a8bbcdc59e07a5a079128a7861f553ddebed7e8e56701756f9ead39b48cd1b0831889ea6ec1fddf643d0565b075ff07e6caea4e2854ec9227fd635ed60a2f5eef2893052ffd54718fa08604acbf6a15e78a467c4a3c53c0278af06c4416573f925491b195e8fd79302cb1aaf7caf4ecfc9aec1254cc969786363ac729f914c6ddcc26738d6b0facd54eba026580aba2eb6482a088b0d224a8852420b91ec1"));
 
-    const rs = try r.toString(al, 16);
+    const rs = try r.toString(testing.allocator, 16);
+    defer testing.allocator.free(rs);
     testing.expect(std.mem.eql(u8, rs, "310d1d4c414426b4836c2635bad1df3a424e50cbdd167ffccb4dfff57d36b4aae0d6ca0910698220171a0f3373c1060a046c2812f0027e321f72979daa5e7973214170d49e885de0c0ecc167837d44502430674a82522e5df6a0759548052420b91ec1"));
 }
 
 test "big.int div multi-multi fuzz case #2" {
-    var a = try Int.init(al);
-    var b = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
+    var b = try Int.init(testing.allocator);
+    defer b.deinit();
 
     try a.setString(16, "3ffffffffe00000000000000000000000000fffffffffffffffffffffffffffffffffffffffffffffffffffffffffe000000000000000000000000000000000000000000000000000000000000001fffffffffffffffff800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ffffffffffffffffffffc000000000000000000000000000000000000000000000000000000000000000");
     try b.setString(16, "ffc0000000000000000000000000000000000000000000000000");
 
-    var q = try Int.init(al);
-    var r = try Int.init(al);
+    var q = try Int.init(testing.allocator);
+    defer q.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
     try Int.divTrunc(&q, &r, a, b);
 
-    const qs = try q.toString(al, 16);
+    const qs = try q.toString(testing.allocator, 16);
+    defer testing.allocator.free(qs);
     testing.expect(std.mem.eql(u8, qs, "40100400fe3f8fe3f8fe3f8fe3f8fe3f8fe4f93e4f93e4f93e4f93e4f93e4f93e4f93e4f93e4f93e4f93e4f93e4f91e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4992649926499264991e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4791e4792e4b92e4b92e4b92e4b92a4a92a4a92a4"));
 
-    const rs = try r.toString(al, 16);
+    const rs = try r.toString(testing.allocator, 16);
+    defer testing.allocator.free(rs);
     testing.expect(std.mem.eql(u8, rs, "a900000000000000000000000000000000000000000000000000"));
 }
 
 test "big.int shift-right single" {
-    var a = try Int.initSet(al, 0xffff0000);
+    var a = try Int.initSet(testing.allocator, 0xffff0000);
+    defer a.deinit();
     try a.shiftRight(a, 16);
 
     testing.expect((try a.to(u32)) == 0xffff);
 }
 
 test "big.int shift-right multi" {
-    var a = try Int.initSet(al, 0xffff0000eeee1111dddd2222cccc3333);
+    var a = try Int.initSet(testing.allocator, 0xffff0000eeee1111dddd2222cccc3333);
+    defer a.deinit();
     try a.shiftRight(a, 67);
 
     testing.expect((try a.to(u64)) == 0x1fffe0001dddc222);
 }
 
 test "big.int shift-left single" {
-    var a = try Int.initSet(al, 0xffff);
+    var a = try Int.initSet(testing.allocator, 0xffff);
+    defer a.deinit();
     try a.shiftLeft(a, 16);
 
     testing.expect((try a.to(u64)) == 0xffff0000);
 }
 
 test "big.int shift-left multi" {
-    var a = try Int.initSet(al, 0x1fffe0001dddc222);
+    var a = try Int.initSet(testing.allocator, 0x1fffe0001dddc222);
+    defer a.deinit();
     try a.shiftLeft(a, 67);
 
     testing.expect((try a.to(u128)) == 0xffff0000eeee11100000000000000000);
 }
 
 test "big.int shift-right negative" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
-    try a.shiftRight(try Int.initSet(al, -20), 2);
+    try a.shiftRight(try Int.initSet(testing.allocator, -20), 2);
+    defer a.deinit();
     testing.expect((try a.to(i32)) == -20 >> 2);
 
-    try a.shiftRight(try Int.initSet(al, -5), 10);
+    try a.shiftRight(try Int.initSet(testing.allocator, -5), 10);
+    defer a.deinit();
     testing.expect((try a.to(i32)) == -5 >> 10);
 }
 
 test "big.int shift-left negative" {
-    var a = try Int.init(al);
+    var a = try Int.init(testing.allocator);
+    defer a.deinit();
 
-    try a.shiftRight(try Int.initSet(al, -10), 1232);
+    try a.shiftRight(try Int.initSet(testing.allocator, -10), 1232);
+    defer a.deinit();
     testing.expect((try a.to(i32)) == -10 >> 1232);
 }
 
 test "big.int bitwise and simple" {
-    var a = try Int.initSet(al, 0xffffffff11111111);
-    var b = try Int.initSet(al, 0xeeeeeeee22222222);
+    var a = try Int.initSet(testing.allocator, 0xffffffff11111111);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0xeeeeeeee22222222);
+    defer b.deinit();
 
     try a.bitAnd(a, b);
 
@@ -2421,8 +2641,10 @@ test "big.int bitwise and simple" {
 }
 
 test "big.int bitwise and multi-limb" {
-    var a = try Int.initSet(al, maxInt(Limb) + 1);
-    var b = try Int.initSet(al, maxInt(Limb));
+    var a = try Int.initSet(testing.allocator, maxInt(Limb) + 1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer b.deinit();
 
     try a.bitAnd(a, b);
 
@@ -2430,8 +2652,10 @@ test "big.int bitwise and multi-limb" {
 }
 
 test "big.int bitwise xor simple" {
-    var a = try Int.initSet(al, 0xffffffff11111111);
-    var b = try Int.initSet(al, 0xeeeeeeee22222222);
+    var a = try Int.initSet(testing.allocator, 0xffffffff11111111);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0xeeeeeeee22222222);
+    defer b.deinit();
 
     try a.bitXor(a, b);
 
@@ -2439,8 +2663,10 @@ test "big.int bitwise xor simple" {
 }
 
 test "big.int bitwise xor multi-limb" {
-    var a = try Int.initSet(al, maxInt(Limb) + 1);
-    var b = try Int.initSet(al, maxInt(Limb));
+    var a = try Int.initSet(testing.allocator, maxInt(Limb) + 1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer b.deinit();
 
     try a.bitXor(a, b);
 
@@ -2448,8 +2674,10 @@ test "big.int bitwise xor multi-limb" {
 }
 
 test "big.int bitwise or simple" {
-    var a = try Int.initSet(al, 0xffffffff11111111);
-    var b = try Int.initSet(al, 0xeeeeeeee22222222);
+    var a = try Int.initSet(testing.allocator, 0xffffffff11111111);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0xeeeeeeee22222222);
+    defer b.deinit();
 
     try a.bitOr(a, b);
 
@@ -2457,8 +2685,10 @@ test "big.int bitwise or simple" {
 }
 
 test "big.int bitwise or multi-limb" {
-    var a = try Int.initSet(al, maxInt(Limb) + 1);
-    var b = try Int.initSet(al, maxInt(Limb));
+    var a = try Int.initSet(testing.allocator, maxInt(Limb) + 1);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, maxInt(Limb));
+    defer b.deinit();
 
     try a.bitOr(a, b);
 
@@ -2467,11 +2697,19 @@ test "big.int bitwise or multi-limb" {
 }
 
 test "big.int var args" {
-    var a = try Int.initSet(al, 5);
+    var a = try Int.initSet(testing.allocator, 5);
+    defer a.deinit();
 
-    try a.add(a, try Int.initSet(al, 6));
+    const b = try Int.initSet(testing.allocator, 6);
+    defer b.deinit();
+    try a.add(a, b);
     testing.expect((try a.to(u64)) == 11);
 
-    testing.expect(a.cmp(try Int.initSet(al, 11)) == 0);
-    testing.expect(a.cmp(try Int.initSet(al, 14)) <= 0);
+    const c = try Int.initSet(testing.allocator, 11);
+    defer c.deinit();
+    testing.expect(a.cmp(c) == 0);
+
+    const d = try Int.initSet(testing.allocator, 14);
+    defer d.deinit();
+    testing.expect(a.cmp(d) <= 0);
 }

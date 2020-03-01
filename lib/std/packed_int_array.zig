@@ -34,13 +34,13 @@ pub fn PackedIntIo(comptime Int: type, comptime endian: builtin.Endian) type {
 
     //we bitcast the desired Int type to an unsigned version of itself
     // to avoid issues with shifting signed ints.
-    const UnInt = @IntType(false, int_bits);
+    const UnInt = std.meta.IntType(false, int_bits);
 
     //The maximum container int type
-    const MinIo = @IntType(false, min_io_bits);
+    const MinIo = std.meta.IntType(false, min_io_bits);
 
     //The minimum container int type
-    const MaxIo = @IntType(false, max_io_bits);
+    const MaxIo = std.meta.IntType(false, max_io_bits);
 
     return struct {
         pub fn get(bytes: []const u8, index: usize, bit_offset: u7) Int {
@@ -322,7 +322,7 @@ test "PackedIntArray" {
     inline while (bits <= 256) : (bits += 1) {
         //alternate unsigned and signed
         const even = bits % 2 == 0;
-        const I = @IntType(even, bits);
+        const I = std.meta.IntType(even, bits);
 
         const PackedArray = PackedIntArray(I, int_count);
         const expected_bytes = ((bits * int_count) + 7) / 8;
@@ -369,7 +369,7 @@ test "PackedIntSlice" {
     inline while (bits <= 256) : (bits += 1) {
         //alternate unsigned and signed
         const even = bits % 2 == 0;
-        const I = @IntType(even, bits);
+        const I = std.meta.IntType(even, bits);
         const P = PackedIntSlice(I);
 
         var data = P.init(&buffer, int_count);
@@ -399,7 +399,7 @@ test "PackedIntSlice of PackedInt(Array/Slice)" {
 
     comptime var bits = 0;
     inline while (bits <= max_bits) : (bits += 1) {
-        const Int = @IntType(false, bits);
+        const Int = std.meta.IntType(false, bits);
 
         const PackedArray = PackedIntArray(Int, int_count);
         var packed_array = @as(PackedArray, undefined);
@@ -593,7 +593,7 @@ test "PackedInt(Array/Slice)Endian" {
 // after this one is not mapped and will cause a segfault if we
 // don't account for the bounds.
 test "PackedIntArray at end of available memory" {
-    switch (builtin.os) {
+    switch (builtin.os.tag) {
         .linux, .macosx, .ios, .freebsd, .netbsd, .windows => {},
         else => return,
     }
@@ -604,7 +604,7 @@ test "PackedIntArray at end of available memory" {
         p: PackedArray,
     };
 
-    const allocator = std.heap.page_allocator;
+    const allocator = std.testing.allocator;
 
     var pad = try allocator.create(Padded);
     defer allocator.destroy(pad);
@@ -612,13 +612,13 @@ test "PackedIntArray at end of available memory" {
 }
 
 test "PackedIntSlice at end of available memory" {
-    switch (builtin.os) {
+    switch (builtin.os.tag) {
         .linux, .macosx, .ios, .freebsd, .netbsd, .windows => {},
         else => return,
     }
     const PackedSlice = PackedIntSlice(u11);
 
-    const allocator = std.heap.page_allocator;
+    const allocator = std.testing.allocator;
 
     var page = try allocator.alloc(u8, std.mem.page_size);
     defer allocator.free(page);

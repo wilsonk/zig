@@ -1,13 +1,10 @@
 const std = @import("../../std.zig");
-const builtin = @import("builtin");
 const debug = std.debug;
 const math = std.math;
 const mem = std.mem;
 const testing = std.testing;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
-
-const TypeId = builtin.TypeId;
 
 const bn = @import("int.zig");
 const Limb = bn.Limb;
@@ -129,9 +126,9 @@ pub const Rational = struct {
     /// completely represent the provided float.
     pub fn setFloat(self: *Rational, comptime T: type, f: T) !void {
         // Translated from golang.go/src/math/big/rat.go.
-        debug.assert(@typeId(T) == builtin.TypeId.Float);
+        debug.assert(@typeInfo(T) == .Float);
 
-        const UnsignedIntType = @IntType(false, T.bit_count);
+        const UnsignedIntType = std.meta.IntType(false, T.bit_count);
         const f_bits = @bitCast(UnsignedIntType, f);
 
         const exponent_bits = math.floatExponentBits(T);
@@ -187,10 +184,10 @@ pub const Rational = struct {
     pub fn toFloat(self: Rational, comptime T: type) !T {
         // Translated from golang.go/src/math/big/rat.go.
         // TODO: Indicate whether the result is not exact.
-        debug.assert(@typeId(T) == builtin.TypeId.Float);
+        debug.assert(@typeInfo(T) == .Float);
 
         const fsize = T.bit_count;
-        const BitReprType = @IntType(false, T.bit_count);
+        const BitReprType = std.meta.IntType(false, T.bit_count);
 
         const msize = math.floatMantissaBits(T);
         const msize1 = msize + 1;
@@ -465,7 +462,7 @@ pub const Rational = struct {
     }
 };
 
-const SignedDoubleLimb = @IntType(true, DoubleLimb.bit_count);
+const SignedDoubleLimb = std.meta.IntType(true, DoubleLimb.bit_count);
 
 fn gcd(rma: *Int, x: Int, y: Int) !void {
     rma.assertWritable();
@@ -587,14 +584,13 @@ fn gcdLehmer(r: *Int, xa: Int, ya: Int) !void {
     r.swap(&x);
 }
 
-var buffer: [64 * 8192]u8 = undefined;
-var fixed = std.heap.FixedBufferAllocator.init(buffer[0..]);
-var al = &fixed.allocator;
-
 test "big.rational gcd non-one small" {
-    var a = try Int.initSet(al, 17);
-    var b = try Int.initSet(al, 97);
-    var r = try Int.init(al);
+    var a = try Int.initSet(testing.allocator, 17);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 97);
+    defer b.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
 
     try gcd(&r, a, b);
 
@@ -602,9 +598,12 @@ test "big.rational gcd non-one small" {
 }
 
 test "big.rational gcd non-one small" {
-    var a = try Int.initSet(al, 4864);
-    var b = try Int.initSet(al, 3458);
-    var r = try Int.init(al);
+    var a = try Int.initSet(testing.allocator, 4864);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 3458);
+    defer b.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
 
     try gcd(&r, a, b);
 
@@ -612,9 +611,12 @@ test "big.rational gcd non-one small" {
 }
 
 test "big.rational gcd non-one large" {
-    var a = try Int.initSet(al, 0xffffffffffffffff);
-    var b = try Int.initSet(al, 0xffffffffffffffff7777);
-    var r = try Int.init(al);
+    var a = try Int.initSet(testing.allocator, 0xffffffffffffffff);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0xffffffffffffffff7777);
+    defer b.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
 
     try gcd(&r, a, b);
 
@@ -622,9 +624,12 @@ test "big.rational gcd non-one large" {
 }
 
 test "big.rational gcd large multi-limb result" {
-    var a = try Int.initSet(al, 0x12345678123456781234567812345678123456781234567812345678);
-    var b = try Int.initSet(al, 0x12345671234567123456712345671234567123456712345671234567);
-    var r = try Int.init(al);
+    var a = try Int.initSet(testing.allocator, 0x12345678123456781234567812345678123456781234567812345678);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 0x12345671234567123456712345671234567123456712345671234567);
+    defer b.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
 
     try gcd(&r, a, b);
 
@@ -632,9 +637,12 @@ test "big.rational gcd large multi-limb result" {
 }
 
 test "big.rational gcd one large" {
-    var a = try Int.initSet(al, 1897056385327307);
-    var b = try Int.initSet(al, 2251799813685248);
-    var r = try Int.init(al);
+    var a = try Int.initSet(testing.allocator, 1897056385327307);
+    defer a.deinit();
+    var b = try Int.initSet(testing.allocator, 2251799813685248);
+    defer b.deinit();
+    var r = try Int.init(testing.allocator);
+    defer r.deinit();
 
     try gcd(&r, a, b);
 
@@ -642,7 +650,7 @@ test "big.rational gcd one large" {
 }
 
 fn extractLowBits(a: Int, comptime T: type) T {
-    testing.expect(@typeId(T) == builtin.TypeId.Int);
+    testing.expect(@typeInfo(T) == .Int);
 
     if (T.bit_count <= Limb.bit_count) {
         return @truncate(T, a.limbs[0]);
@@ -661,7 +669,8 @@ fn extractLowBits(a: Int, comptime T: type) T {
 }
 
 test "big.rational extractLowBits" {
-    var a = try Int.initSet(al, 0x11112222333344441234567887654321);
+    var a = try Int.initSet(testing.allocator, 0x11112222333344441234567887654321);
+    defer a.deinit();
 
     const a1 = extractLowBits(a, u8);
     testing.expect(a1 == 0x21);
@@ -680,7 +689,8 @@ test "big.rational extractLowBits" {
 }
 
 test "big.rational set" {
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
     try a.setInt(5);
     testing.expect((try a.p.to(u32)) == 5);
@@ -708,7 +718,8 @@ test "big.rational set" {
 }
 
 test "big.rational setFloat" {
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
     try a.setFloat(f64, 2.5);
     testing.expect((try a.p.to(i32)) == 5);
@@ -732,7 +743,8 @@ test "big.rational setFloat" {
 }
 
 test "big.rational setFloatString" {
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
     try a.setFloatString("72.14159312071241458852455252781510353");
 
@@ -742,11 +754,8 @@ test "big.rational setFloatString" {
 }
 
 test "big.rational toFloat" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
     // = 3.14159297943115234375
     try a.setRatio(3294199, 1048576);
@@ -758,11 +767,8 @@ test "big.rational toFloat" {
 }
 
 test "big.rational set/to Float round-trip" {
-    if (builtin.os == .linux and builtin.arch == .arm and builtin.abi == .musleabihf) {
-        // TODO https://github.com/ziglang/zig/issues/3289
-        return error.SkipZigTest;
-    }
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
     var prng = std.rand.DefaultPrng.init(0x5EED);
     var i: usize = 0;
     while (i < 512) : (i += 1) {
@@ -773,23 +779,29 @@ test "big.rational set/to Float round-trip" {
 }
 
 test "big.rational copy" {
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
-    const b = try Int.initSet(al, 5);
+    const b = try Int.initSet(testing.allocator, 5);
+    defer b.deinit();
 
     try a.copyInt(b);
     testing.expect((try a.p.to(u32)) == 5);
     testing.expect((try a.q.to(u32)) == 1);
 
-    const c = try Int.initSet(al, 7);
-    const d = try Int.initSet(al, 3);
+    const c = try Int.initSet(testing.allocator, 7);
+    defer c.deinit();
+    const d = try Int.initSet(testing.allocator, 3);
+    defer d.deinit();
 
     try a.copyRatio(c, d);
     testing.expect((try a.p.to(u32)) == 7);
     testing.expect((try a.q.to(u32)) == 3);
 
-    const e = try Int.initSet(al, 9);
-    const f = try Int.initSet(al, 3);
+    const e = try Int.initSet(testing.allocator, 9);
+    defer e.deinit();
+    const f = try Int.initSet(testing.allocator, 3);
+    defer f.deinit();
 
     try a.copyRatio(e, f);
     testing.expect((try a.p.to(u32)) == 3);
@@ -797,7 +809,8 @@ test "big.rational copy" {
 }
 
 test "big.rational negate" {
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
     try a.setInt(-50);
     testing.expect((try a.p.to(i32)) == -50);
@@ -813,7 +826,8 @@ test "big.rational negate" {
 }
 
 test "big.rational abs" {
-    var a = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
 
     try a.setInt(-50);
     testing.expect((try a.p.to(i32)) == -50);
@@ -829,8 +843,10 @@ test "big.rational abs" {
 }
 
 test "big.rational swap" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
 
     try a.setRatio(50, 23);
     try b.setRatio(17, 3);
@@ -851,8 +867,10 @@ test "big.rational swap" {
 }
 
 test "big.rational cmp" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
 
     try a.setRatio(500, 231);
     try b.setRatio(18903, 8584);
@@ -864,8 +882,10 @@ test "big.rational cmp" {
 }
 
 test "big.rational add single-limb" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
 
     try a.setRatio(500, 231);
     try b.setRatio(18903, 8584);
@@ -877,9 +897,12 @@ test "big.rational add single-limb" {
 }
 
 test "big.rational add" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
-    var r = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
+    var r = try Rational.init(testing.allocator);
+    defer r.deinit();
 
     try a.setRatio(78923, 23341);
     try b.setRatio(123097, 12441414);
@@ -890,9 +913,12 @@ test "big.rational add" {
 }
 
 test "big.rational sub" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
-    var r = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
+    var r = try Rational.init(testing.allocator);
+    defer r.deinit();
 
     try a.setRatio(78923, 23341);
     try b.setRatio(123097, 12441414);
@@ -903,9 +929,12 @@ test "big.rational sub" {
 }
 
 test "big.rational mul" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
-    var r = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
+    var r = try Rational.init(testing.allocator);
+    defer r.deinit();
 
     try a.setRatio(78923, 23341);
     try b.setRatio(123097, 12441414);
@@ -916,9 +945,12 @@ test "big.rational mul" {
 }
 
 test "big.rational div" {
-    var a = try Rational.init(al);
-    var b = try Rational.init(al);
-    var r = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var b = try Rational.init(testing.allocator);
+    defer b.deinit();
+    var r = try Rational.init(testing.allocator);
+    defer r.deinit();
 
     try a.setRatio(78923, 23341);
     try b.setRatio(123097, 12441414);
@@ -929,8 +961,10 @@ test "big.rational div" {
 }
 
 test "big.rational div" {
-    var a = try Rational.init(al);
-    var r = try Rational.init(al);
+    var a = try Rational.init(testing.allocator);
+    defer a.deinit();
+    var r = try Rational.init(testing.allocator);
+    defer r.deinit();
 
     try a.setRatio(78923, 23341);
     a.invert();

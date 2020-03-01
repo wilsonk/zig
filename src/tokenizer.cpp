@@ -110,6 +110,7 @@ static const struct ZigKeyword zig_keywords[] = {
     {"async", TokenIdKeywordAsync},
     {"await", TokenIdKeywordAwait},
     {"break", TokenIdKeywordBreak},
+    {"callconv", TokenIdKeywordCallconv},
     {"catch", TokenIdKeywordCatch},
     {"comptime", TokenIdKeywordCompTime},
     {"const", TokenIdKeywordConst},
@@ -126,7 +127,6 @@ static const struct ZigKeyword zig_keywords[] = {
     {"for", TokenIdKeywordFor},
     {"if", TokenIdKeywordIf},
     {"inline", TokenIdKeywordInline},
-    {"nakedcc", TokenIdKeywordNakedCC},
     {"noalias", TokenIdKeywordNoAlias},
     {"noasync", TokenIdKeywordNoAsync},
     {"noinline", TokenIdKeywordNoInline},
@@ -138,7 +138,6 @@ static const struct ZigKeyword zig_keywords[] = {
     {"resume", TokenIdKeywordResume},
     {"return", TokenIdKeywordReturn},
     {"linksection", TokenIdKeywordLinkSection},
-    {"stdcallcc", TokenIdKeywordStdcallCC},
     {"struct", TokenIdKeywordStruct},
     {"suspend", TokenIdKeywordSuspend},
     {"switch", TokenIdKeywordSwitch},
@@ -210,7 +209,6 @@ enum TokenizeState {
     TokenizeStateLineString,
     TokenizeStateLineStringEnd,
     TokenizeStateLineStringContinue,
-    TokenizeStateLineStringContinueC,
     TokenizeStateSawEq,
     TokenizeStateSawBang,
     TokenizeStateSawLessThan,
@@ -267,7 +265,7 @@ static void set_token_id(Tokenize *t, Token *token, TokenId id) {
     } else if (id == TokenIdFloatLiteral) {
         bigfloat_init_32(&token->data.float_lit.bigfloat, 0.0f);
         token->data.float_lit.overflow = false;
-    } else if (id == TokenIdStringLiteral || id == TokenIdSymbol) {
+    } else if (id == TokenIdStringLiteral || id == TokenIdMultilineStringLiteral || id == TokenIdSymbol) {
         memset(&token->data.str_lit.str, 0, sizeof(Buf));
         buf_resize(&token->data.str_lit.str, 0);
     }
@@ -399,10 +397,10 @@ static void invalid_char_error(Tokenize *t, uint8_t c) {
 void tokenize(Buf *buf, Tokenization *out) {
     Tokenize t = {0};
     t.out = out;
-    t.tokens = out->tokens = allocate<ZigList<Token>>(1);
+    t.tokens = out->tokens = heap::c_allocator.create<ZigList<Token>>();
     t.buf = buf;
 
-    out->line_offsets = allocate<ZigList<size_t>>(1);
+    out->line_offsets = heap::c_allocator.create<ZigList<size_t>>();
     out->line_offsets->append(0);
 
     // Skip the UTF-8 BOM if present
@@ -504,7 +502,7 @@ void tokenize(Buf *buf, Tokenization *out) {
                         t.state = TokenizeStateSawSlash;
                         break;
                     case '\\':
-                        begin_token(&t, TokenIdStringLiteral);
+                        begin_token(&t, TokenIdMultilineStringLiteral);
                         t.state = TokenizeStateSawBackslash;
                         break;
                     case '%':
@@ -936,18 +934,6 @@ void tokenize(Buf *buf, Tokenization *out) {
                 switch (c) {
                     case WHITESPACE:
                         break;
-                    case '\\':
-                        t.state = TokenizeStateLineStringContinue;
-                        break;
-                    default:
-                        t.pos -= 1;
-                        end_token(&t);
-                        t.state = TokenizeStateStart;
-                        continue;
-                }
-                break;
-            case TokenizeStateLineStringContinueC:
-                switch (c) {
                     case '\\':
                         t.state = TokenizeStateLineStringContinue;
                         break;
@@ -1472,7 +1458,6 @@ void tokenize(Buf *buf, Tokenization *out) {
         case TokenizeStateSawDotDot:
         case TokenizeStateSawBackslash:
         case TokenizeStateLineStringContinue:
-        case TokenizeStateLineStringContinueC:
             tokenize_error(&t, "unexpected EOF");
             break;
         case TokenizeStateLineComment:
@@ -1545,6 +1530,7 @@ const char * token_name(TokenId id) {
         case TokenIdKeywordAsm: return "asm";
         case TokenIdKeywordBreak: return "break";
         case TokenIdKeywordCatch: return "catch";
+        case TokenIdKeywordCallconv: return "callconv";
         case TokenIdKeywordCompTime: return "comptime";
         case TokenIdKeywordConst: return "const";
         case TokenIdKeywordContinue: return "continue";
@@ -1560,7 +1546,6 @@ const char * token_name(TokenId id) {
         case TokenIdKeywordFor: return "for";
         case TokenIdKeywordIf: return "if";
         case TokenIdKeywordInline: return "inline";
-        case TokenIdKeywordNakedCC: return "nakedcc";
         case TokenIdKeywordNoAlias: return "noalias";
         case TokenIdKeywordNoAsync: return "noasync";
         case TokenIdKeywordNoInline: return "noinline";
@@ -1571,7 +1556,6 @@ const char * token_name(TokenId id) {
         case TokenIdKeywordPub: return "pub";
         case TokenIdKeywordReturn: return "return";
         case TokenIdKeywordLinkSection: return "linksection";
-        case TokenIdKeywordStdcallCC: return "stdcallcc";
         case TokenIdKeywordStruct: return "struct";
         case TokenIdKeywordSwitch: return "switch";
         case TokenIdKeywordTest: return "test";
@@ -1609,6 +1593,7 @@ const char * token_name(TokenId id) {
         case TokenIdStar: return "*";
         case TokenIdStarStar: return "**";
         case TokenIdStringLiteral: return "StringLiteral";
+        case TokenIdMultilineStringLiteral: return "MultilineStringLiteral";
         case TokenIdSymbol: return "Symbol";
         case TokenIdTilde: return "~";
         case TokenIdTimesEq: return "*=";

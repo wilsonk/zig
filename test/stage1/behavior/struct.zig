@@ -315,7 +315,7 @@ test "packed array 24bits" {
 
     var bytes = [_]u8{0} ** (@sizeOf(FooArray24Bits) + 1);
     bytes[bytes.len - 1] = 0xaa;
-    const ptr = &@bytesToSlice(FooArray24Bits, bytes[0 .. bytes.len - 1])[0];
+    const ptr = &std.mem.bytesAsSlice(FooArray24Bits, bytes[0 .. bytes.len - 1])[0];
     expect(ptr.a == 0);
     expect(ptr.b[0].field == 0);
     expect(ptr.b[1].field == 0);
@@ -364,7 +364,7 @@ test "aligned array of packed struct" {
     }
 
     var bytes = [_]u8{0xbb} ** @sizeOf(FooArrayOfAligned);
-    const ptr = &@bytesToSlice(FooArrayOfAligned, bytes[0..bytes.len])[0];
+    const ptr = &std.mem.bytesAsSlice(FooArrayOfAligned, bytes[0..])[0];
 
     expect(ptr.a[0].a == 0xbb);
     expect(ptr.a[0].b == 0xbb);
@@ -580,7 +580,7 @@ test "default struct initialization fields" {
     expectEqual(1239, x.a + x.b);
 }
 
-test "extern fn returns struct by value" {
+test "fn with C calling convention returns struct by value" {
     const S = struct {
         fn entry() void {
             var x = makeBar(10);
@@ -591,7 +591,7 @@ test "extern fn returns struct by value" {
             handle: i32,
         };
 
-        extern fn makeBar(t: i32) ExternBar {
+        fn makeBar(t: i32) callconv(.C) ExternBar {
             return ExternBar{
                 .handle = t,
             };

@@ -5,9 +5,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub extern fn __divsf3(a: f32, b: f32) f32 {
+pub fn __divsf3(a: f32, b: f32) callconv(.C) f32 {
     @setRuntimeSafety(builtin.is_test);
-    const Z = @IntType(false, f32.bit_count);
+    const Z = std.meta.IntType(false, f32.bit_count);
 
     const typeWidth = f32.bit_count;
     const significandBits = std.math.floatMantissaBits(f32);
@@ -185,15 +185,20 @@ pub extern fn __divsf3(a: f32, b: f32) f32 {
     }
 }
 
-fn normalize(comptime T: type, significand: *@IntType(false, T.bit_count)) i32 {
+fn normalize(comptime T: type, significand: *std.meta.IntType(false, T.bit_count)) i32 {
     @setRuntimeSafety(builtin.is_test);
-    const Z = @IntType(false, T.bit_count);
+    const Z = std.meta.IntType(false, T.bit_count);
     const significandBits = std.math.floatMantissaBits(T);
     const implicitBit = @as(Z, 1) << significandBits;
 
     const shift = @clz(Z, significand.*) - @clz(Z, implicitBit);
     significand.* <<= @intCast(std.math.Log2Int(Z), shift);
     return 1 - shift;
+}
+
+pub fn __aeabi_fdiv(a: f32, b: f32) callconv(.AAPCS) f32 {
+    @setRuntimeSafety(false);
+    return @call(.{ .modifier = .always_inline }, __divsf3, .{ a, b });
 }
 
 test "import divsf3" {

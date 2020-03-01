@@ -10,7 +10,7 @@ const Wyhash = std.hash.Wyhash;
 const Allocator = mem.Allocator;
 const builtin = @import("builtin");
 
-const want_modification_safety = builtin.mode != builtin.Mode.ReleaseFast;
+const want_modification_safety = builtin.mode != .ReleaseFast;
 const debug_u32 = if (want_modification_safety) u32 else void;
 
 pub fn AutoHashMap(comptime K: type, comptime V: type) type {
@@ -419,7 +419,7 @@ pub fn HashMap(comptime K: type, comptime V: type, comptime hash: fn (key: K) u3
 }
 
 test "basic hash map usage" {
-    var map = AutoHashMap(i32, i32).init(std.heap.page_allocator);
+    var map = AutoHashMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
     testing.expect((try map.put(1, 11)) == null);
@@ -463,7 +463,7 @@ test "basic hash map usage" {
 }
 
 test "iterator hash map" {
-    var reset_map = AutoHashMap(i32, i32).init(std.heap.page_allocator);
+    var reset_map = AutoHashMap(i32, i32).init(std.testing.allocator);
     defer reset_map.deinit();
 
     try reset_map.putNoClobber(1, 11);
@@ -509,7 +509,7 @@ test "iterator hash map" {
 }
 
 test "ensure capacity" {
-    var map = AutoHashMap(i32, i32).init(std.heap.page_allocator);
+    var map = AutoHashMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
     try map.ensureCapacity(20);

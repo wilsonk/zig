@@ -7,11 +7,28 @@ const testing = std.testing;
 const SpinLock = std.SpinLock;
 const ResetEvent = std.ResetEvent;
 
-/// Lock may be held only once. If the same thread
-/// tries to acquire the same mutex twice, it deadlocks.
-/// This type supports static initialization and is at most `@sizeOf(usize)` in size.
-/// When an application is built in single threaded release mode, all the functions are
-/// no-ops. In single threaded debug mode, there is deadlock detection.
+/// Lock may be held only once. If the same thread tries to acquire
+/// the same mutex twice, it deadlocks.  This type supports static
+/// initialization and is at most `@sizeOf(usize)` in size.  When an
+/// application is built in single threaded release mode, all the
+/// functions are no-ops. In single threaded debug mode, there is
+/// deadlock detection.
+///
+/// Example usage:
+/// var m = Mutex.init();
+/// defer m.deinit();
+///
+/// const lock = m.acquire();
+/// defer lock.release();
+/// ... critical code
+///
+/// Non-blocking:
+/// if (m.tryAcquire) |lock| {
+///     defer lock.release();
+///     // ... critical section
+/// } else {
+///     // ... lock not acquired
+/// }
 pub const Mutex = if (builtin.single_threaded)
     struct {
         lock: @TypeOf(lock_init),
@@ -28,14 +45,20 @@ pub const Mutex = if (builtin.single_threaded)
             }
         };
 
+        /// Create a new mutex in unlocked state.
         pub fn init() Mutex {
             return Mutex{ .lock = lock_init };
         }
 
+        /// Free a mutex created with init. Calling this while the
+        /// mutex is held is illegal behavior.
         pub fn deinit(self: *Mutex) void {
             self.* = undefined;
         }
 
+        /// Try to acquire the mutex without blocking. Returns null if
+        /// the mutex is unavailable. Otherwise returns Held. Call
+        /// release on Held.
         pub fn tryAcquire(self: *Mutex) ?Held {
             if (std.debug.runtime_safety) {
                 if (self.lock) return null;
@@ -44,12 +67,14 @@ pub const Mutex = if (builtin.single_threaded)
             return Held{ .mutex = self };
         }
 
+        /// Acquire the mutex. Will deadlock if the mutex is already
+        /// held by the calling thread.
         pub fn acquire(self: *Mutex) Held {
             return self.tryAcquire() orelse @panic("deadlock detected");
         }
     }
-else if (builtin.os == .windows) 
-    // https://locklessinc.com/articles/keyed_events/
+else if (builtin.os.tag == .windows)
+// https://locklessinc.com/articles/keyed_events/
     extern union {
         locked: u8,
         waiters: u32,
@@ -97,11 +122,11 @@ else if (builtin.os == .windows)
                         return Held{ .mutex = self };
                     }
 
-                // otherwise, try and update the waiting count.
-                // then unset the WAKE bit so that another unlocker can wake up a thread.
+                    // otherwise, try and update the waiting count.
+                    // then unset the WAKE bit so that another unlocker can wake up a thread.
                 } else if (@cmpxchgWeak(u32, &self.waiters, waiters, (waiters + WAIT) | 1, .Monotonic, .Monotonic) == null) {
                     const rc = windows.ntdll.NtWaitForKeyedEvent(handle, key, windows.FALSE, null);
-                    assert(rc == 0);
+                    assert(rc == .SUCCESS);
                     _ = @atomicRmw(u32, &self.waiters, .Sub, WAKE, .Monotonic);
                 }
             }
@@ -118,7 +143,7 @@ else if (builtin.os == .windows)
 
                 while (true) : (SpinLock.loopHint(1)) {
                     const waiters = @atomicLoad(u32, &self.mutex.waiters, .Monotonic);
-                
+
                     // no one is waiting
                     if (waiters < WAIT) return;
                     // someone grabbed the lock and will do the wake instead
@@ -129,15 +154,15 @@ else if (builtin.os == .windows)
                     // try to decrease the waiter count & set the WAKE bit meaning a thread is waking up
                     if (@cmpxchgWeak(u32, &self.mutex.waiters, waiters, waiters - WAIT + WAKE, .Release, .Monotonic) == null) {
                         const rc = windows.ntdll.NtReleaseKeyedEvent(handle, key, windows.FALSE, null);
-                        assert(rc == 0);
-                        return;   
+                        assert(rc == .SUCCESS);
+                        return;
                     }
                 }
             }
         };
     }
-else if (builtin.link_libc or builtin.os == .linux)
-    // stack-based version of https://github.com/Amanieu/parking_lot/blob/master/core/src/word_lock.rs
+else if (builtin.link_libc or builtin.os.tag == .linux)
+// stack-based version of https://github.com/Amanieu/parking_lot/blob/master/core/src/word_lock.rs
     struct {
         state: usize,
 
@@ -170,8 +195,8 @@ else if (builtin.link_libc or builtin.os == .linux)
 
         pub fn acquire(self: *Mutex) Held {
             return self.tryAcquire() orelse {
-               self.acquireSlow();
-               return Held{ .mutex = self };
+                self.acquireSlow();
+                return Held{ .mutex = self };
             };
         }
 
@@ -220,9 +245,12 @@ else if (builtin.link_libc or builtin.os == .linux)
             }
         }
 
+        /// Returned when the lock is acquired. Call release to
+        /// release.
         pub const Held = struct {
             mutex: *Mutex,
 
+            /// Release the held lock.
             pub fn release(self: Held) void {
                 // first, remove the lock bit so another possibly parallel acquire() can succeed.
                 // use .Sub since it can be usually compiled down more efficiency
@@ -237,7 +265,7 @@ else if (builtin.link_libc or builtin.os == .linux)
 
         fn releaseSlow(self: *Mutex) void {
             @setCold(true);
-            
+
             // try and lock the LFIO queue to pop a node off,
             // stopping altogether if its already locked or the queue is empty
             var state = @atomicLoad(usize, &self.state, .Monotonic);
@@ -265,9 +293,10 @@ else if (builtin.link_libc or builtin.os == .linux)
         }
     }
 
-// for platforms without a known OS blocking
-// primitive, default to SpinLock for correctness
-else SpinLock;
+    // for platforms without a known OS blocking
+    // primitive, default to SpinLock for correctness
+else
+    SpinLock;
 
 const TestContext = struct {
     mutex: *Mutex,
@@ -277,12 +306,6 @@ const TestContext = struct {
 };
 
 test "std.Mutex" {
-    var plenty_of_memory = try std.heap.page_allocator.alloc(u8, 300 * 1024);
-    defer std.heap.page_allocator.free(plenty_of_memory);
-
-    var fixed_buffer_allocator = std.heap.ThreadSafeFixedBufferAllocator.init(plenty_of_memory);
-    var a = &fixed_buffer_allocator.allocator;
-
     var mutex = Mutex.init();
     defer mutex.deinit();
 

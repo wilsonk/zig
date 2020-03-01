@@ -1,3 +1,80 @@
+test "zig fmt: noasync await" {
+    try testCanonical(
+        \\fn foo() void {
+        \\    x = noasync await y;
+        \\}
+        \\
+    );
+}
+
+test "zig fmt: trailing comma in container declaration" {
+    try testCanonical(
+        \\const X = struct { foo: i32 };
+        \\const X = struct { foo: i32, bar: i32 };
+        \\const X = struct { foo: i32 = 1, bar: i32 = 2 };
+        \\const X = struct { foo: i32 align(4), bar: i32 align(4) };
+        \\const X = struct { foo: i32 align(4) = 1, bar: i32 align(4) = 2 };
+        \\
+    );
+    try testCanonical(
+        \\test "" {
+        \\    comptime {
+        \\        const X = struct {
+        \\            x: i32
+        \\        };
+        \\    }
+        \\}
+        \\
+    );
+    try testTransform(
+        \\const X = struct {
+        \\    foo: i32, bar: i8 };
+    ,
+        \\const X = struct {
+        \\    foo: i32, bar: i8
+        \\};
+        \\
+    );
+}
+
+test "zig fmt: trailing comma in fn parameter list" {
+    try testCanonical(
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) align(8) i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) linksection(".text") i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) callconv(.C) i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) align(8) linksection(".text") i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) align(8) callconv(.C) i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) align(8) linksection(".text") callconv(.C) i32 {}
+        \\pub fn f(
+        \\    a: i32,
+        \\    b: i32,
+        \\) linksection(".text") callconv(.C) i32 {}
+        \\
+    );
+}
+
 // TODO: Remove condition after deprecating 'typeOf'. See https://github.com/ziglang/zig/issues/1348
 test "zig fmt: change @typeOf to @TypeOf" {
     try testTransform(
@@ -5,6 +82,22 @@ test "zig fmt: change @typeOf to @TypeOf" {
         \\
     ,
         \\const a = @TypeOf(@as(usize, 10));
+        \\
+    );
+}
+
+// TODO: Remove nakedcc/stdcallcc once zig 0.6.0 is released. See https://github.com/ziglang/zig/pull/3977
+test "zig fmt: convert extern/nakedcc/stdcallcc into callconv(...)" {
+    try testTransform(
+        \\nakedcc fn foo1() void {}
+        \\stdcallcc fn foo2() void {}
+        \\extern fn foo3() void {}
+        \\extern "mylib" fn foo4() void {}
+    ,
+        \\fn foo1() callconv(.Naked) void {}
+        \\fn foo2() callconv(.Stdcall) void {}
+        \\fn foo3() callconv(.C) void {}
+        \\fn foo4() callconv(.C) void {}
         \\
     );
 }
@@ -22,6 +115,21 @@ test "zig fmt: comptime struct field" {
 test "zig fmt: c pointer type" {
     try testCanonical(
         \\pub extern fn repro() [*c]const u8;
+        \\
+    );
+}
+
+test "zig fmt: builtin call with trailing comma" {
+    try testCanonical(
+        \\pub fn main() void {
+        \\    @breakpoint();
+        \\    _ = @boolToInt(a);
+        \\    _ = @call(
+        \\        a,
+        \\        b,
+        \\        c,
+        \\    );
+        \\}
         \\
     );
 }
@@ -219,7 +327,7 @@ test "zig fmt: threadlocal" {
 test "zig fmt: linksection" {
     try testCanonical(
         \\export var aoeu: u64 linksection(".text.derp") = 1234;
-        \\export nakedcc fn _start() linksection(".text.boot") noreturn {}
+        \\export fn _start() linksection(".text.boot") callconv(.Naked) noreturn {}
         \\
     );
 }
@@ -660,10 +768,7 @@ test "zig fmt: enum decl with no trailing comma" {
     try testTransform(
         \\const StrLitKind = enum {Normal, C};
     ,
-        \\const StrLitKind = enum {
-        \\    Normal,
-        \\    C,
-        \\};
+        \\const StrLitKind = enum { Normal, C };
         \\
     );
 }
@@ -917,15 +1022,9 @@ test "zig fmt: empty block with only comment" {
 }
 
 test "zig fmt: no trailing comma on struct decl" {
-    try testTransform(
+    try testCanonical(
         \\const RoundParam = struct {
         \\    k: usize, s: u32, t: u32
-        \\};
-    ,
-        \\const RoundParam = struct {
-        \\    k: usize,
-        \\    s: u32,
-        \\    t: u32,
         \\};
         \\
     );
@@ -1311,7 +1410,7 @@ test "zig fmt: same-line comment after non-block if expression" {
 test "zig fmt: same-line comment on comptime expression" {
     try testCanonical(
         \\test "" {
-        \\    comptime assert(@typeId(T) == builtin.TypeId.Int); // must pass an integer to absInt
+        \\    comptime assert(@typeInfo(T) == .Int); // must pass an integer to absInt
         \\}
         \\
     );
@@ -2311,7 +2410,7 @@ test "zig fmt: fn type" {
         \\
         \\const a: fn (u8) u8 = undefined;
         \\const b: extern fn (u8) u8 = undefined;
-        \\const c: nakedcc fn (u8) u8 = undefined;
+        \\const c: fn (u8) callconv(.Naked) u8 = undefined;
         \\const ap: fn (u8) u8 = a;
         \\
     );
@@ -2493,10 +2592,8 @@ test "zig fmt: if type expr" {
     );
 }
 test "zig fmt: file ends with struct field" {
-    try testTransform(
+    try testCanonical(
         \\a: bool
-    ,
-        \\a: bool,
         \\
     );
 }
@@ -2685,6 +2782,13 @@ test "zig fmt: top level doc comments" {
     );
 }
 
+test "zig fmt: extern without container keyword returns error" {
+    try testError(
+        \\const container = extern {};
+        \\
+    );
+}
+
 const std = @import("std");
 const mem = std.mem;
 const warn = std.debug.warn;
@@ -2737,7 +2841,7 @@ fn testTransform(source: []const u8, expected_source: []const u8) !void {
     const needed_alloc_count = x: {
         // Try it once with unlimited memory, make sure it works
         var fixed_allocator = std.heap.FixedBufferAllocator.init(fixed_buffer_mem[0..]);
-        var failing_allocator = std.debug.FailingAllocator.init(&fixed_allocator.allocator, maxInt(usize));
+        var failing_allocator = std.testing.FailingAllocator.init(&fixed_allocator.allocator, maxInt(usize));
         var anything_changed: bool = undefined;
         const result_source = try testParse(source, &failing_allocator.allocator, &anything_changed);
         if (!mem.eql(u8, result_source, expected_source)) {
@@ -2761,7 +2865,7 @@ fn testTransform(source: []const u8, expected_source: []const u8) !void {
     var fail_index: usize = 0;
     while (fail_index < needed_alloc_count) : (fail_index += 1) {
         var fixed_allocator = std.heap.FixedBufferAllocator.init(fixed_buffer_mem[0..]);
-        var failing_allocator = std.debug.FailingAllocator.init(&fixed_allocator.allocator, fail_index);
+        var failing_allocator = std.testing.FailingAllocator.init(&fixed_allocator.allocator, fail_index);
         var anything_changed: bool = undefined;
         if (testParse(source, &failing_allocator.allocator, &anything_changed)) |_| {
             return error.NondeterministicMemoryUsage;
@@ -2790,4 +2894,11 @@ fn testTransform(source: []const u8, expected_source: []const u8) !void {
 
 fn testCanonical(source: []const u8) !void {
     return testTransform(source, source);
+}
+
+fn testError(source: []const u8) !void {
+    const tree = try std.zig.parse(std.testing.allocator, source);
+    defer tree.deinit();
+
+    std.testing.expect(tree.errors.len != 0);
 }

@@ -202,7 +202,7 @@ fn testUnion() void {
     expect(typeinfo_info.Union.fields[4].enum_field != null);
     expect(typeinfo_info.Union.fields[4].enum_field.?.value == 4);
     expect(typeinfo_info.Union.fields[4].field_type == @TypeOf(@typeInfo(u8).Int));
-    expect(typeinfo_info.Union.decls.len == 21);
+    expect(typeinfo_info.Union.decls.len == 20);
 
     const TestNoTagUnion = union {
         Foo: void,
@@ -237,9 +237,11 @@ fn testStruct() void {
     const struct_info = @typeInfo(TestStruct);
     expect(@as(TypeId, struct_info) == TypeId.Struct);
     expect(struct_info.Struct.layout == TypeInfo.ContainerLayout.Packed);
-    expect(struct_info.Struct.fields.len == 3);
+    expect(struct_info.Struct.fields.len == 4);
     expect(struct_info.Struct.fields[1].offset == null);
     expect(struct_info.Struct.fields[2].field_type == *TestStruct);
+    expect(struct_info.Struct.fields[2].default_value == null);
+    expect(struct_info.Struct.fields[3].default_value.? == 4);
     expect(struct_info.Struct.decls.len == 2);
     expect(struct_info.Struct.decls[0].is_pub);
     expect(!struct_info.Struct.decls[0].data.Fn.is_extern);
@@ -254,6 +256,7 @@ const TestStruct = packed struct {
     fieldA: usize,
     fieldB: void,
     fieldC: *Self,
+    fieldD: u32 = 4,
 
     pub fn foo(self: *const Self) void {}
 };
@@ -266,7 +269,7 @@ test "type info: function type info" {
 fn testFunction() void {
     const fn_info = @typeInfo(@TypeOf(foo));
     expect(@as(TypeId, fn_info) == TypeId.Fn);
-    expect(fn_info.Fn.calling_convention == TypeInfo.CallingConvention.Unspecified);
+    expect(fn_info.Fn.calling_convention == .Unspecified);
     expect(fn_info.Fn.is_generic);
     expect(fn_info.Fn.args.len == 2);
     expect(fn_info.Fn.is_var_args);
@@ -371,4 +374,15 @@ test "data field is a compile-time value" {
 test "sentinel of opaque pointer type" {
     const c_void_info = @typeInfo(*c_void);
     expect(c_void_info.Pointer.sentinel == null);
+}
+
+test "@typeInfo does not force declarations into existence" {
+    const S = struct {
+        x: i32,
+
+        fn doNotReferenceMe() void {
+            @compileError("test failed");
+        }
+    };
+    comptime expect(@typeInfo(S).Struct.fields.len == 1);
 }

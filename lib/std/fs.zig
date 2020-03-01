@@ -23,11 +23,13 @@ pub const realpathW = os.realpathW;
 pub const getAppDataDir = @import("fs/get_app_data_dir.zig").getAppDataDir;
 pub const GetAppDataDirError = @import("fs/get_app_data_dir.zig").GetAppDataDirError;
 
+pub const Watch = @import("fs/watch.zig").Watch;
+
 /// This represents the maximum size of a UTF-8 encoded file path.
 /// All file system operations which return a path are guaranteed to
 /// fit into a UTF-8 encoded array of this length.
 /// The byte count includes room for a null sentinel byte.
-pub const MAX_PATH_BYTES = switch (builtin.os) {
+pub const MAX_PATH_BYTES = switch (builtin.os.tag) {
     .linux, .macosx, .ios, .freebsd, .netbsd, .dragonfly => os.PATH_MAX,
     // Each UTF-16LE character may be expanded to 3 UTF-8 bytes.
     // If it would require 4 UTF-8 bytes, then there would be a surrogate
@@ -37,8 +39,18 @@ pub const MAX_PATH_BYTES = switch (builtin.os) {
     else => @compileError("Unsupported OS"),
 };
 
-// here we replace the standard +/ with -_ so that it can be used in a file name
-const b64_fs_encoder = base64.Base64Encoder.init("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_", base64.standard_pad_char);
+/// Base64, replacing the standard `+/` with `-_` so that it can be used in a file name on any filesystem.
+pub const base64_encoder = base64.Base64Encoder.init(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_",
+    base64.standard_pad_char,
+);
+
+/// Whether or not async file system syscalls need a dedicated thread because the operating
+/// system does not support non-blocking I/O on the file system.
+pub const need_async_thread = std.io.is_async and switch (builtin.os.tag) {
+    .windows, .other => false,
+    else => true,
+};
 
 /// TODO remove the allocator requirement from this API
 pub fn atomicSymLink(allocator: *Allocator, existing_path: []const u8, new_path: []const u8) !void {
@@ -58,7 +70,7 @@ pub fn atomicSymLink(allocator: *Allocator, existing_path: []const u8, new_path:
     tmp_path[dirname.len] = path.sep;
     while (true) {
         try crypto.randomBytes(rand_buf[0..]);
-        b64_fs_encoder.encode(tmp_path[dirname.len + 1 ..], &rand_buf);
+        base64_encoder.encode(tmp_path[dirname.len + 1 ..], &rand_buf);
 
         if (symLink(existing_path, tmp_path)) {
             return rename(tmp_path, new_path);
@@ -84,7 +96,6 @@ pub fn updateFile(source_path: []const u8, dest_path: []const u8) !PrevStatus {
 /// atime, and mode of the source file so that the next call to `updateFile` will not need a copy.
 /// Returns the previous status of the file before updating.
 /// If any of the directories do not exist for dest_path, they are created.
-/// TODO https://github.com/ziglang/zig/issues/2885
 pub fn updateFileMode(source_path: []const u8, dest_path: []const u8, mode: ?File.Mode) !PrevStatus {
     const my_cwd = cwd();
 
@@ -227,10 +238,10 @@ pub const AtomicFile = struct {
 
         while (true) {
             try crypto.randomBytes(rand_buf[0..]);
-            b64_fs_encoder.encode(tmp_path_slice[dirname_component_len..tmp_path_len], &rand_buf);
+            base64_encoder.encode(tmp_path_slice[dirname_component_len..tmp_path_len], &rand_buf);
 
             const file = my_cwd.createFileC(
-                tmp_path_slice, 
+                tmp_path_slice,
                 .{ .mode = mode, .exclusive = true },
             ) catch |err| switch (err) {
                 error.PathAlreadyExists => continue,
@@ -259,7 +270,7 @@ pub const AtomicFile = struct {
         assert(!self.finished);
         self.file.close();
         self.finished = true;
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const dest_path_w = try os.windows.sliceToPrefixedFileW(self.dest_path);
             const tmp_path_w = try os.windows.cStrToPrefixedFileW(@ptrCast([*:0]u8, &self.tmp_path_buf));
             return os.renameW(&tmp_path_w, &dest_path_w);
@@ -383,7 +394,7 @@ pub const Dir = struct {
 
     const IteratorError = error{AccessDenied} || os.UnexpectedError;
 
-    pub const Iterator = switch (builtin.os) {
+    pub const Iterator = switch (builtin.os.tag) {
         .macosx, .ios, .freebsd, .netbsd, .dragonfly => struct {
             dir: Dir,
             seek: i64,
@@ -398,7 +409,7 @@ pub const Dir = struct {
             /// Memory such as file names referenced in this returned entry becomes invalid
             /// with subsequent calls to `next`, as well as when this `Dir` is deinitialized.
             pub fn next(self: *Self) Error!?Entry {
-                switch (builtin.os) {
+                switch (builtin.os.tag) {
                     .macosx, .ios => return self.nextDarwin(),
                     .freebsd, .netbsd, .dragonfly => return self.nextBsd(),
                     else => @compileError("unimplemented"),
@@ -595,8 +606,8 @@ pub const Dir = struct {
                         self.index = 0;
                         self.end_index = io.Information;
                         switch (rc) {
-                            w.STATUS.SUCCESS => {},
-                            w.STATUS.ACCESS_DENIED => return error.AccessDenied,
+                            .SUCCESS => {},
+                            .ACCESS_DENIED => return error.AccessDenied,
                             else => return w.unexpectedStatus(rc),
                         }
                     }
@@ -633,7 +644,7 @@ pub const Dir = struct {
     };
 
     pub fn iterate(self: Dir) Iterator {
-        switch (builtin.os) {
+        switch (builtin.os.tag) {
             .macosx, .ios, .freebsd, .netbsd, .dragonfly => return Iterator{
                 .dir = self,
                 .seek = 0,
@@ -685,16 +696,21 @@ pub const Dir = struct {
     }
 
     pub fn close(self: *Dir) void {
-        os.close(self.fd);
+        if (need_async_thread) {
+            std.event.Loop.instance.?.close(self.fd);
+        } else {
+            os.close(self.fd);
+        }
         self.* = undefined;
     }
 
     /// Opens a file for reading or writing, without attempting to create a new file.
+    /// To create a new file, see `createFile`.
     /// Call `File.close` to release the resource.
     /// Asserts that the path parameter has no null bytes.
     pub fn openFile(self: Dir, sub_path: []const u8, flags: File.OpenFlags) File.OpenError!File {
         if (std.debug.runtime_safety) for (sub_path) |byte| assert(byte != 0);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const path_w = try os.windows.sliceToPrefixedFileW(sub_path);
             return self.openFileW(&path_w, flags);
         }
@@ -704,7 +720,7 @@ pub const Dir = struct {
 
     /// Same as `openFile` but the path parameter is null-terminated.
     pub fn openFileC(self: Dir, sub_path: [*:0]const u8, flags: File.OpenFlags) File.OpenError!File {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const path_w = try os.windows.cStrToPrefixedFileW(sub_path);
             return self.openFileW(&path_w, flags);
         }
@@ -715,8 +731,18 @@ pub const Dir = struct {
             @as(u32, os.O_WRONLY)
         else
             @as(u32, os.O_RDONLY);
-        const fd = try os.openatC(self.fd, sub_path, os_flags, 0);
-        return File{ .handle = fd };
+        const fd = if (need_async_thread and !flags.always_blocking)
+            try std.event.Loop.instance.?.openatZ(self.fd, sub_path, os_flags, 0)
+        else
+            try os.openatC(self.fd, sub_path, os_flags, 0);
+        return File{
+            .handle = fd,
+            .io_mode = .blocking,
+            .async_block_allowed = if (flags.always_blocking)
+                File.async_block_allowed_yes
+            else
+                File.async_block_allowed_no,
+        };
     }
 
     /// Same as `openFile` but Windows-only and the path parameter is
@@ -734,7 +760,7 @@ pub const Dir = struct {
     /// Asserts that the path parameter has no null bytes.
     pub fn createFile(self: Dir, sub_path: []const u8, flags: File.CreateFlags) File.OpenError!File {
         if (std.debug.runtime_safety) for (sub_path) |byte| assert(byte != 0);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const path_w = try os.windows.sliceToPrefixedFileW(sub_path);
             return self.createFileW(&path_w, flags);
         }
@@ -744,7 +770,7 @@ pub const Dir = struct {
 
     /// Same as `createFile` but the path parameter is null-terminated.
     pub fn createFileC(self: Dir, sub_path_c: [*:0]const u8, flags: File.CreateFlags) File.OpenError!File {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const path_w = try os.windows.cStrToPrefixedFileW(sub_path_c);
             return self.createFileW(&path_w, flags);
         }
@@ -753,8 +779,11 @@ pub const Dir = struct {
             (if (flags.truncate) @as(u32, os.O_TRUNC) else 0) |
             (if (flags.read) @as(u32, os.O_RDWR) else os.O_WRONLY) |
             (if (flags.exclusive) @as(u32, os.O_EXCL) else 0);
-        const fd = try os.openatC(self.fd, sub_path_c, os_flags, flags.mode);
-        return File{ .handle = fd };
+        const fd = if (need_async_thread)
+            try std.event.Loop.instance.?.openatZ(self.fd, sub_path_c, os_flags, flags.mode)
+        else
+            try os.openatC(self.fd, sub_path_c, os_flags, flags.mode);
+        return File{ .handle = fd, .io_mode = .blocking };
     }
 
     /// Same as `createFile` but Windows-only and the path parameter is
@@ -795,7 +824,17 @@ pub const Dir = struct {
     ) File.OpenError!File {
         const w = os.windows;
 
-        var result = File{ .handle = undefined };
+        if (sub_path_w[0] == '.' and sub_path_w[1] == 0) {
+            return error.IsDir;
+        }
+        if (sub_path_w[0] == '.' and sub_path_w[1] == '.' and sub_path_w[2] == 0) {
+            return error.IsDir;
+        }
+
+        var result = File{
+            .handle = undefined,
+            .io_mode = .blocking,
+        };
 
         const path_len_bytes = math.cast(u16, mem.toSliceConst(u16, sub_path_w).len * 2) catch |err| switch (err) {
             error.Overflow => return error.NameTooLong,
@@ -807,18 +846,12 @@ pub const Dir = struct {
         };
         var attr = w.OBJECT_ATTRIBUTES{
             .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-            .RootDirectory = if (path.isAbsoluteW(sub_path_w)) null else self.fd,
+            .RootDirectory = if (path.isAbsoluteWindowsW(sub_path_w)) null else self.fd,
             .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
             .SecurityQualityOfService = null,
         };
-        if (sub_path_w[0] == '.' and sub_path_w[1] == 0) {
-            return error.IsDir;
-        }
-        if (sub_path_w[0] == '.' and sub_path_w[1] == '.' and sub_path_w[2] == 0) {
-            return error.IsDir;
-        }
         var io: w.IO_STATUS_BLOCK = undefined;
         const rc = w.ntdll.NtCreateFile(
             &result.handle,
@@ -834,16 +867,17 @@ pub const Dir = struct {
             0,
         );
         switch (rc) {
-            w.STATUS.SUCCESS => return result,
-            w.STATUS.OBJECT_NAME_INVALID => unreachable,
-            w.STATUS.OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
-            w.STATUS.OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
-            w.STATUS.INVALID_PARAMETER => unreachable,
-            w.STATUS.SHARING_VIOLATION => return error.SharingViolation,
-            w.STATUS.ACCESS_DENIED => return error.AccessDenied,
-            w.STATUS.PIPE_BUSY => return error.PipeBusy,
-            w.STATUS.OBJECT_PATH_SYNTAX_BAD => unreachable,
-            w.STATUS.OBJECT_NAME_COLLISION => return error.PathAlreadyExists,
+            .SUCCESS => return result,
+            .OBJECT_NAME_INVALID => unreachable,
+            .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
+            .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
+            .NO_MEDIA_IN_DEVICE => return error.NoDevice,
+            .INVALID_PARAMETER => unreachable,
+            .SHARING_VIOLATION => return error.SharingViolation,
+            .ACCESS_DENIED => return error.AccessDenied,
+            .PIPE_BUSY => return error.PipeBusy,
+            .OBJECT_PATH_SYNTAX_BAD => unreachable,
+            .OBJECT_NAME_COLLISION => return error.PathAlreadyExists,
             else => return w.unexpectedStatus(rc),
         }
     }
@@ -867,7 +901,7 @@ pub const Dir = struct {
     /// Asserts that the path parameter has no null bytes.
     pub fn openDirTraverse(self: Dir, sub_path: []const u8) OpenError!Dir {
         if (std.debug.runtime_safety) for (sub_path) |byte| assert(byte != 0);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const sub_path_w = try os.windows.sliceToPrefixedFileW(sub_path);
             return self.openDirTraverseW(&sub_path_w);
         }
@@ -885,7 +919,7 @@ pub const Dir = struct {
     /// Asserts that the path parameter has no null bytes.
     pub fn openDirList(self: Dir, sub_path: []const u8) OpenError!Dir {
         if (std.debug.runtime_safety) for (sub_path) |byte| assert(byte != 0);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const sub_path_w = try os.windows.sliceToPrefixedFileW(sub_path);
             return self.openDirListW(&sub_path_w);
         }
@@ -896,7 +930,7 @@ pub const Dir = struct {
 
     /// Same as `openDirTraverse` except the parameter is null-terminated.
     pub fn openDirTraverseC(self: Dir, sub_path_c: [*:0]const u8) OpenError!Dir {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const sub_path_w = try os.windows.cStrToPrefixedFileW(sub_path_c);
             return self.openDirTraverseW(&sub_path_w);
         } else {
@@ -907,7 +941,7 @@ pub const Dir = struct {
 
     /// Same as `openDirList` except the parameter is null-terminated.
     pub fn openDirListC(self: Dir, sub_path_c: [*:0]const u8) OpenError!Dir {
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const sub_path_w = try os.windows.cStrToPrefixedFileW(sub_path_c);
             return self.openDirListW(&sub_path_w);
         } else {
@@ -916,7 +950,12 @@ pub const Dir = struct {
     }
 
     fn openDirFlagsC(self: Dir, sub_path_c: [*:0]const u8, flags: u32) OpenError!Dir {
-        const fd = os.openatC(self.fd, sub_path_c, flags | os.O_DIRECTORY, 0) catch |err| switch (err) {
+        const os_flags = flags | os.O_DIRECTORY;
+        const result = if (need_async_thread)
+            std.event.Loop.instance.?.openatZ(self.fd, sub_path_c, os_flags, 0)
+        else
+            os.openatC(self.fd, sub_path_c, os_flags, 0);
+        const fd = result catch |err| switch (err) {
             error.FileTooBig => unreachable, // can't happen for directories
             error.IsDir => unreachable, // we're providing O_DIRECTORY
             error.NoSpaceLeft => unreachable, // not providing O_CREAT
@@ -957,7 +996,7 @@ pub const Dir = struct {
         };
         var attr = w.OBJECT_ATTRIBUTES{
             .Length = @sizeOf(w.OBJECT_ATTRIBUTES),
-            .RootDirectory = if (path.isAbsoluteW(sub_path_w)) null else self.fd,
+            .RootDirectory = if (path.isAbsoluteWindowsW(sub_path_w)) null else self.fd,
             .Attributes = 0, // Note we do not use OBJ_CASE_INSENSITIVE here.
             .ObjectName = &nt_name,
             .SecurityDescriptor = null,
@@ -987,11 +1026,11 @@ pub const Dir = struct {
             0,
         );
         switch (rc) {
-            w.STATUS.SUCCESS => return result,
-            w.STATUS.OBJECT_NAME_INVALID => unreachable,
-            w.STATUS.OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
-            w.STATUS.OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
-            w.STATUS.INVALID_PARAMETER => unreachable,
+            .SUCCESS => return result,
+            .OBJECT_NAME_INVALID => unreachable,
+            .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
+            .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
+            .INVALID_PARAMETER => unreachable,
             else => return w.unexpectedStatus(rc),
         }
     }
@@ -1044,7 +1083,7 @@ pub const Dir = struct {
     /// Asserts that the path parameter has no null bytes.
     pub fn deleteDir(self: Dir, sub_path: []const u8) DeleteDirError!void {
         if (std.debug.runtime_safety) for (sub_path) |byte| assert(byte != 0);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const sub_path_w = try os.windows.sliceToPrefixedFileW(sub_path);
             return self.deleteDirW(&sub_path_w);
         }
@@ -1292,13 +1331,57 @@ pub const Dir = struct {
         defer file.close();
         try file.write(data);
     }
+
+    pub const AccessError = os.AccessError;
+
+    /// Test accessing `path`.
+    /// `path` is UTF8-encoded.
+    /// Be careful of Time-Of-Check-Time-Of-Use race conditions when using this function.
+    /// For example, instead of testing if a file exists and then opening it, just
+    /// open it and handle the error for file not found.
+    pub fn access(self: Dir, sub_path: []const u8, flags: File.OpenFlags) AccessError!void {
+        if (builtin.os.tag == .windows) {
+            const sub_path_w = try os.windows.sliceToPrefixedFileW(sub_path);
+            return self.accessW(&sub_path_w, flags);
+        }
+        const path_c = try os.toPosixPath(sub_path);
+        return self.accessZ(&path_c, flags);
+    }
+
+    /// Same as `access` except the path parameter is null-terminated.
+    pub fn accessZ(self: Dir, sub_path: [*:0]const u8, flags: File.OpenFlags) AccessError!void {
+        if (builtin.os.tag == .windows) {
+            const sub_path_w = try os.windows.cStrToPrefixedFileW(sub_path);
+            return self.accessW(&sub_path_w, flags);
+        }
+        const os_mode = if (flags.write and flags.read)
+            @as(u32, os.R_OK | os.W_OK)
+        else if (flags.write)
+            @as(u32, os.W_OK)
+        else
+            @as(u32, os.F_OK);
+        const result = if (need_async_thread)
+            std.event.Loop.instance.?.faccessatZ(self.fd, sub_path, os_mode)
+        else
+            os.faccessatZ(self.fd, sub_path, os_mode, 0);
+        return result;
+    }
+
+    /// Same as `access` except asserts the target OS is Windows and the path parameter is
+    /// * WTF-16 encoded
+    /// * null-terminated
+    /// * NtDll prefixed
+    /// TODO currently this ignores `flags`.
+    pub fn accessW(self: Dir, sub_path_w: [*:0]const u16, flags: File.OpenFlags) AccessError!void {
+        return os.faccessatW(self.fd, sub_path_w, 0, 0);
+    }
 };
 
 /// Returns an handle to the current working directory that is open for traversal.
 /// Closing the returned `Dir` is checked illegal behavior. Iterating over the result is illegal behavior.
 /// On POSIX targets, this function is comptime-callable.
 pub fn cwd() Dir {
-    if (builtin.os == .windows) {
+    if (builtin.os.tag == .windows) {
         return Dir{ .fd = os.windows.peb().ProcessParameters.CurrentDirectory.Handle };
     } else {
         return Dir{ .fd = os.AT_FDCWD };
@@ -1324,7 +1407,7 @@ pub fn openFileAbsoluteC(absolute_path_c: [*:0]const u8, flags: File.OpenFlags) 
 
 /// Same as `openFileAbsolute` but the path parameter is WTF-16 encoded.
 pub fn openFileAbsoluteW(absolute_path_w: [*:0]const u16, flags: File.OpenFlags) File.OpenError!File {
-    assert(path.isAbsoluteW(absolute_path_w));
+    assert(path.isAbsoluteWindowsW(absolute_path_w));
     return cwd().openFileW(absolute_path_w, flags);
 }
 
@@ -1347,7 +1430,7 @@ pub fn createFileAbsoluteC(absolute_path_c: [*:0]const u8, flags: File.CreateFla
 
 /// Same as `createFileAbsolute` but the path parameter is WTF-16 encoded.
 pub fn createFileAbsoluteW(absolute_path_w: [*:0]const u16, flags: File.CreateFlags) File.OpenError!File {
-    assert(path.isAbsoluteW(absolute_path_w));
+    assert(path.isAbsoluteWindowsW(absolute_path_w));
     return cwd().createFileW(absolute_path_w, flags);
 }
 
@@ -1368,7 +1451,7 @@ pub fn deleteFileAbsoluteC(absolute_path_c: [*:0]const u8) DeleteFileError!void 
 
 /// Same as `deleteFileAbsolute` except the parameter is WTF-16 encoded.
 pub fn deleteFileAbsoluteW(absolute_path_w: [*:0]const u16) DeleteFileError!void {
-    assert(path.isAbsoluteW(absolute_path_w));
+    assert(path.isAbsoluteWindowsW(absolute_path_w));
     return cwd().deleteFileW(absolute_path_w);
 }
 
@@ -1477,10 +1560,10 @@ pub fn readLinkC(pathname_c: [*]const u8, buffer: *[MAX_PATH_BYTES]u8) ![]u8 {
 pub const OpenSelfExeError = os.OpenError || os.windows.CreateFileError || SelfExePathError;
 
 pub fn openSelfExe() OpenSelfExeError!File {
-    if (builtin.os == .linux) {
+    if (builtin.os.tag == .linux) {
         return openFileAbsoluteC("/proc/self/exe", .{});
     }
-    if (builtin.os == .windows) {
+    if (builtin.os.tag == .windows) {
         const wide_slice = selfExePathW();
         const prefixed_path_w = try os.windows.wToPrefixedFileW(wide_slice);
         return cwd().openReadW(&prefixed_path_w);
@@ -1492,7 +1575,7 @@ pub fn openSelfExe() OpenSelfExeError!File {
 }
 
 test "openSelfExe" {
-    switch (builtin.os) {
+    switch (builtin.os.tag) {
         .linux, .macosx, .ios, .windows, .freebsd, .dragonfly => (try openSelfExe()).close(),
         else => return error.SkipZigTest, // Unsupported OS.
     }
@@ -1517,7 +1600,7 @@ pub fn selfExePath(out_buffer: *[MAX_PATH_BYTES]u8) SelfExePathError![]u8 {
         if (rc != 0) return error.NameTooLong;
         return mem.toSlice(u8, @ptrCast([*:0]u8, out_buffer));
     }
-    switch (builtin.os) {
+    switch (builtin.os.tag) {
         .linux => return os.readlinkC("/proc/self/exe", out_buffer),
         .freebsd, .dragonfly => {
             var mib = [4]c_int{ os.CTL_KERN, os.KERN_PROC, os.KERN_PROC_PATHNAME, -1 };
@@ -1559,7 +1642,7 @@ pub fn selfExeDirPathAlloc(allocator: *Allocator) ![]u8 {
 /// Get the directory path that contains the current executable.
 /// Returned value is a slice of out_buffer.
 pub fn selfExeDirPath(out_buffer: *[MAX_PATH_BYTES]u8) SelfExePathError![]const u8 {
-    if (builtin.os == .linux) {
+    if (builtin.os.tag == .linux) {
         // If the currently executing binary has been deleted,
         // the file path looks something like `/a/b/c/exe (deleted)`
         // This path cannot be opened, but it's valid for determining the directory
@@ -1585,4 +1668,5 @@ test "" {
     _ = @import("fs/path.zig");
     _ = @import("fs/file.zig");
     _ = @import("fs/get_app_data_dir.zig");
+    _ = @import("fs/watch.zig");
 }

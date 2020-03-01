@@ -146,3 +146,44 @@ test "comptime bitcast used in expression has the correct type" {
     };
     expect(@bitCast(u8, Foo{ .value = 0xF }) == 0xf);
 }
+
+test "bitcast result to _" {
+    _ = @bitCast(u8, @as(i8, 1));
+}
+
+test "nested bitcast" {
+    const S = struct {
+        fn moo(x: isize) void {
+            @import("std").testing.expectEqual(@intCast(isize, 42), x);
+        }
+
+        fn foo(x: isize) void {
+            @This().moo(
+                @bitCast(isize, if (x != 0) @bitCast(usize, x) else @bitCast(usize, x)),
+            );
+        }
+    };
+
+    S.foo(42);
+    comptime S.foo(42);
+}
+
+test "bitcast passed as tuple element" {
+    const S = struct {
+        fn foo(args: var) void {
+            comptime expect(@TypeOf(args[0]) == f32);
+            expect(args[0] == 12.34);
+        }
+    };
+    S.foo(.{@bitCast(f32, @as(u32, 0x414570A4))});
+}
+
+test "triple level result location with bitcast sandwich passed as tuple element" {
+    const S = struct {
+        fn foo(args: var) void {
+            comptime expect(@TypeOf(args[0]) == f64);
+            expect(args[0] > 12.33 and args[0] < 12.35);
+        }
+    };
+    S.foo(.{@as(f64, @bitCast(f32, @as(u32, 0x414570A4)))});
+}

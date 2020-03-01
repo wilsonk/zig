@@ -243,7 +243,7 @@ pub const Utf16LeIterator = struct {
 
     pub fn init(s: []const u16) Utf16LeIterator {
         return Utf16LeIterator{
-            .bytes = @sliceToBytes(s),
+            .bytes = mem.sliceAsBytes(s),
             .i = 0,
         };
     }
@@ -496,19 +496,21 @@ pub fn utf16leToUtf8(utf8: []u8, utf16le: []const u16) !usize {
 
 test "utf16leToUtf8" {
     var utf16le: [2]u16 = undefined;
-    const utf16le_as_bytes = @sliceToBytes(utf16le[0..]);
+    const utf16le_as_bytes = mem.sliceAsBytes(utf16le[0..]);
 
     {
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[0..], 'A');
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[2..], 'a');
-        const utf8 = try utf16leToUtf8Alloc(std.debug.global_allocator, &utf16le);
+        const utf8 = try utf16leToUtf8Alloc(std.testing.allocator, &utf16le);
+        defer std.testing.allocator.free(utf8);
         testing.expect(mem.eql(u8, utf8, "Aa"));
     }
 
     {
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[0..], 0x80);
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[2..], 0xffff);
-        const utf8 = try utf16leToUtf8Alloc(std.debug.global_allocator, &utf16le);
+        const utf8 = try utf16leToUtf8Alloc(std.testing.allocator, &utf16le);
+        defer std.testing.allocator.free(utf8);
         testing.expect(mem.eql(u8, utf8, "\xc2\x80" ++ "\xef\xbf\xbf"));
     }
 
@@ -516,7 +518,8 @@ test "utf16leToUtf8" {
         // the values just outside the surrogate half range
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[0..], 0xd7ff);
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[2..], 0xe000);
-        const utf8 = try utf16leToUtf8Alloc(std.debug.global_allocator, &utf16le);
+        const utf8 = try utf16leToUtf8Alloc(std.testing.allocator, &utf16le);
+        defer std.testing.allocator.free(utf8);
         testing.expect(mem.eql(u8, utf8, "\xed\x9f\xbf" ++ "\xee\x80\x80"));
     }
 
@@ -524,7 +527,8 @@ test "utf16leToUtf8" {
         // smallest surrogate pair
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[0..], 0xd800);
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[2..], 0xdc00);
-        const utf8 = try utf16leToUtf8Alloc(std.debug.global_allocator, &utf16le);
+        const utf8 = try utf16leToUtf8Alloc(std.testing.allocator, &utf16le);
+        defer std.testing.allocator.free(utf8);
         testing.expect(mem.eql(u8, utf8, "\xf0\x90\x80\x80"));
     }
 
@@ -532,20 +536,21 @@ test "utf16leToUtf8" {
         // largest surrogate pair
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[0..], 0xdbff);
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[2..], 0xdfff);
-        const utf8 = try utf16leToUtf8Alloc(std.debug.global_allocator, &utf16le);
+        const utf8 = try utf16leToUtf8Alloc(std.testing.allocator, &utf16le);
+        defer std.testing.allocator.free(utf8);
         testing.expect(mem.eql(u8, utf8, "\xf4\x8f\xbf\xbf"));
     }
 
     {
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[0..], 0xdbff);
         mem.writeIntSliceLittle(u16, utf16le_as_bytes[2..], 0xdc00);
-        const utf8 = try utf16leToUtf8Alloc(std.debug.global_allocator, &utf16le);
+        const utf8 = try utf16leToUtf8Alloc(std.testing.allocator, &utf16le);
+        defer std.testing.allocator.free(utf8);
         testing.expect(mem.eql(u8, utf8, "\xf4\x8f\xb0\x80"));
     }
 }
 
-/// TODO type for null terminated pointer
-pub fn utf8ToUtf16LeWithNull(allocator: *mem.Allocator, utf8: []const u8) ![]u16 {
+pub fn utf8ToUtf16LeWithNull(allocator: *mem.Allocator, utf8: []const u8) ![:0]u16 {
     var result = std.ArrayList(u16).init(allocator);
     // optimistically guess that it will not require surrogate pairs
     try result.ensureCapacity(utf8.len + 1);
@@ -566,8 +571,9 @@ pub fn utf8ToUtf16LeWithNull(allocator: *mem.Allocator, utf8: []const u8) ![]u16
         }
     }
 
+    const len = result.len;
     try result.append(0);
-    return result.toOwnedSlice();
+    return result.toOwnedSlice()[0..len :0];
 }
 
 /// Returns index of next character. If exact fit, returned index equals output slice length.
@@ -600,26 +606,26 @@ test "utf8ToUtf16Le" {
     {
         const length = try utf8ToUtf16Le(utf16le[0..], "𐐷");
         testing.expectEqual(@as(usize, 2), length);
-        testing.expectEqualSlices(u8, "\x01\xd8\x37\xdc", @sliceToBytes(utf16le[0..]));
+        testing.expectEqualSlices(u8, "\x01\xd8\x37\xdc", mem.sliceAsBytes(utf16le[0..]));
     }
     {
         const length = try utf8ToUtf16Le(utf16le[0..], "\u{10FFFF}");
         testing.expectEqual(@as(usize, 2), length);
-        testing.expectEqualSlices(u8, "\xff\xdb\xff\xdf", @sliceToBytes(utf16le[0..]));
+        testing.expectEqualSlices(u8, "\xff\xdb\xff\xdf", mem.sliceAsBytes(utf16le[0..]));
     }
 }
 
 test "utf8ToUtf16LeWithNull" {
     {
-        var bytes: [128]u8 = undefined;
-        const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-        const utf16 = try utf8ToUtf16LeWithNull(allocator, "𐐷");
-        testing.expectEqualSlices(u8, "\x01\xd8\x37\xdc\x00\x00", @sliceToBytes(utf16[0..]));
+        const utf16 = try utf8ToUtf16LeWithNull(testing.allocator, "𐐷");
+        defer testing.allocator.free(utf16);
+        testing.expectEqualSlices(u8, "\x01\xd8\x37\xdc", mem.sliceAsBytes(utf16[0..]));
+        testing.expect(utf16[2] == 0);
     }
     {
-        var bytes: [128]u8 = undefined;
-        const allocator = &std.heap.FixedBufferAllocator.init(bytes[0..]).allocator;
-        const utf16 = try utf8ToUtf16LeWithNull(allocator, "\u{10FFFF}");
-        testing.expectEqualSlices(u8, "\xff\xdb\xff\xdf\x00\x00", @sliceToBytes(utf16[0..]));
+        const utf16 = try utf8ToUtf16LeWithNull(testing.allocator, "\u{10FFFF}");
+        defer testing.allocator.free(utf16);
+        testing.expectEqualSlices(u8, "\xff\xdb\xff\xdf", mem.sliceAsBytes(utf16[0..]));
+        testing.expect(utf16[2] == 0);
     }
 }

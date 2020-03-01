@@ -1,10 +1,16 @@
-const builtin = @import("builtin");
 const std = @import("std");
+const builtin = std.builtin;
 const page_size = std.mem.page_size;
+
+pub const tokenizer = @import("c/tokenizer.zig");
+pub const Token = tokenizer.Token;
+pub const Tokenizer = tokenizer.Tokenizer;
+pub const parse = @import("c/parse.zig").parse;
+pub const ast = @import("c/ast.zig");
 
 pub usingnamespace @import("os/bits.zig");
 
-pub usingnamespace switch (builtin.os) {
+pub usingnamespace switch (std.Target.current.os.tag) {
     .linux => @import("c/linux.zig"),
     .windows => @import("c/windows.zig"),
     .macosx, .ios, .tvos, .watchos => @import("c/darwin.zig"),
@@ -40,21 +46,22 @@ pub fn versionCheck(glibc_version: builtin.Version) type {
     return struct {
         pub const ok = blk: {
             if (!builtin.link_libc) break :blk false;
-            switch (builtin.abi) {
-                .musl, .musleabi, .musleabihf => break :blk true,
-                .gnu, .gnuabin32, .gnuabi64, .gnueabi, .gnueabihf, .gnux32 => {
-                    const ver = builtin.glibc_version orelse break :blk false;
-                    if (ver.major < glibc_version.major) break :blk false;
-                    if (ver.major > glibc_version.major) break :blk true;
-                    if (ver.minor < glibc_version.minor) break :blk false;
-                    if (ver.minor > glibc_version.minor) break :blk true;
-                    break :blk ver.patch >= glibc_version.patch;
-                },
-                else => break :blk false,
+            if (std.Target.current.abi.isMusl()) break :blk true;
+            if (std.Target.current.isGnuLibC()) {
+                const ver = std.Target.current.os.version_range.linux.glibc;
+                const order = ver.order(glibc_version);
+                break :blk switch (order) {
+                    .gt, .eq => true,
+                    .lt => false,
+                };
+            } else {
+                break :blk false;
             }
         };
     };
 }
+
+pub extern "c" var environ: [*:null]?[*:0]u8;
 
 pub extern "c" fn fopen(filename: [*:0]const u8, modes: [*:0]const u8) ?*FILE;
 pub extern "c" fn fclose(stream: *FILE) c_int;
@@ -90,6 +97,7 @@ pub extern "c" fn getcwd(buf: [*]u8, size: usize) ?[*]u8;
 pub extern "c" fn waitpid(pid: c_int, stat_loc: *c_uint, options: c_uint) c_int;
 pub extern "c" fn fork() c_int;
 pub extern "c" fn access(path: [*:0]const u8, mode: c_uint) c_int;
+pub extern "c" fn faccessat(dirfd: fd_t, path: [*:0]const u8, mode: c_uint, flags: c_uint) c_int;
 pub extern "c" fn pipe(fds: *[2]fd_t) c_int;
 pub extern "c" fn pipe2(fds: *[2]fd_t, flags: u32) c_int;
 pub extern "c" fn mkdir(path: [*:0]const u8, mode: c_uint) c_int;
@@ -100,6 +108,7 @@ pub extern "c" fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8
 pub extern "c" fn dup(fd: fd_t) c_int;
 pub extern "c" fn dup2(old_fd: fd_t, new_fd: fd_t) c_int;
 pub extern "c" fn readlink(noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
+pub extern "c" fn readlinkat(dirfd: fd_t, noalias path: [*:0]const u8, noalias buf: [*]u8, bufsize: usize) isize;
 pub extern "c" fn realpath(noalias file_name: [*:0]const u8, noalias resolved_name: [*]u8) ?[*:0]u8;
 pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
 pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
@@ -109,9 +118,14 @@ pub extern "c" fn setreuid(ruid: c_uint, euid: c_uint) c_int;
 pub extern "c" fn setregid(rgid: c_uint, egid: c_uint) c_int;
 pub extern "c" fn rmdir(path: [*:0]const u8) c_int;
 pub extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
+pub extern "c" fn getrusage(who: c_int, usage: *rusage) c_int;
 pub extern "c" fn sysctl(name: [*]const c_int, namelen: c_uint, oldp: ?*c_void, oldlenp: ?*usize, newp: ?*c_void, newlen: usize) c_int;
 pub extern "c" fn sysctlbyname(name: [*:0]const u8, oldp: ?*c_void, oldlenp: ?*usize, newp: ?*c_void, newlen: usize) c_int;
 pub extern "c" fn sysctlnametomib(name: [*:0]const u8, mibp: ?*c_int, sizep: ?*usize) c_int;
+pub extern "c" fn tcgetattr(fd: fd_t, termios_p: *termios) c_int;
+pub extern "c" fn tcsetattr(fd: fd_t, optional_action: TCSA, termios_p: *const termios) c_int;
+pub extern "c" fn fcntl(fd: fd_t, cmd: c_int, ...) c_int;
+pub extern "c" fn uname(buf: *utsname) c_int;
 
 pub extern "c" fn gethostname(name: [*]u8, len: usize) c_int;
 pub extern "c" fn bind(socket: fd_t, address: ?*const sockaddr, address_len: socklen_t) c_int;
@@ -184,7 +198,7 @@ pub extern "c" fn getaddrinfo(
     noalias service: [*:0]const u8,
     noalias hints: *const addrinfo,
     noalias res: **addrinfo,
-) c_int;
+) EAI;
 
 pub extern "c" fn freeaddrinfo(res: *addrinfo) void;
 
@@ -196,9 +210,9 @@ pub extern "c" fn getnameinfo(
     noalias serv: [*]u8,
     servlen: socklen_t,
     flags: u32,
-) c_int;
+) EAI;
 
-pub extern "c" fn gai_strerror(errcode: c_int) [*:0]const u8;
+pub extern "c" fn gai_strerror(errcode: EAI) [*:0]const u8;
 
 pub extern "c" fn poll(fds: [*]pollfd, nfds: nfds_t, timeout: c_int) c_int;
 

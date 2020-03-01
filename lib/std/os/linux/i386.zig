@@ -72,11 +72,17 @@ pub fn syscall6(
     arg5: usize,
     arg6: usize,
 ) usize {
+    // The 6th argument is passed via memory as we're out of registers if ebp is
+    // used as frame pointer. We push arg6 value on the stack before changing
+    // ebp or esp as the compiler may reference it as an offset relative to one
+    // of those two registers.
     return asm volatile (
-        \\  push %%ebp
-        \\  mov %[arg6], %%ebp
-        \\  int $0x80
-        \\  pop %%ebp
+        \\ push %[arg6]
+        \\ push %%ebp
+        \\ mov  4(%%esp), %%ebp
+        \\ int  $0x80
+        \\ pop  %%ebp
+        \\ add  $4, %%esp
         : [ret] "={eax}" (-> usize)
         : [number] "{eax}" (number),
           [arg1] "{ebx}" (arg1),
@@ -102,7 +108,7 @@ pub fn socketcall(call: usize, args: [*]usize) usize {
 /// This matches the libc clone function.
 pub extern fn clone(func: extern fn (arg: usize) u8, stack: usize, flags: u32, arg: usize, ptid: *i32, tls: usize, ctid: *i32) usize;
 
-pub nakedcc fn restore() void {
+pub fn restore() callconv(.Naked) void {
     return asm volatile ("int $0x80"
         :
         : [number] "{eax}" (@as(usize, SYS_sigreturn))
@@ -110,7 +116,7 @@ pub nakedcc fn restore() void {
     );
 }
 
-pub nakedcc fn restore_rt() void {
+pub fn restore_rt() callconv(.Naked) void {
     return asm volatile ("int $0x80"
         :
         : [number] "{eax}" (@as(usize, SYS_rt_sigreturn))

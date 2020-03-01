@@ -30,6 +30,7 @@ pub const Token = struct {
         Keyword.init("async", .Keyword_async),
         Keyword.init("await", .Keyword_await),
         Keyword.init("break", .Keyword_break),
+        Keyword.init("callconv", .Keyword_callconv),
         Keyword.init("catch", .Keyword_catch),
         Keyword.init("comptime", .Keyword_comptime),
         Keyword.init("const", .Keyword_const),
@@ -162,6 +163,7 @@ pub const Token = struct {
         Keyword_async,
         Keyword_await,
         Keyword_break,
+        Keyword_callconv,
         Keyword_catch,
         Keyword_comptime,
         Keyword_const,
@@ -286,6 +288,7 @@ pub const Token = struct {
                 .Keyword_async => "async",
                 .Keyword_await => "await",
                 .Keyword_break => "break",
+                .Keyword_callconv => "callconv",
                 .Keyword_catch => "catch",
                 .Keyword_comptime => "comptime",
                 .Keyword_const => "const",
@@ -411,10 +414,8 @@ pub const Tokenizer = struct {
 
     pub fn next(self: *Tokenizer) Token {
         if (self.pending_invalid_token) |token| {
-            // TODO: Audit this pattern once #2915 is closed
-            const copy = token;
             self.pending_invalid_token = null;
-            return copy;
+            return token;
         }
         const start_index = self.index;
         var state = State.Start;
@@ -1267,10 +1268,8 @@ pub const Tokenizer = struct {
 
         if (result.id == Token.Id.Eof) {
             if (self.pending_invalid_token) |token| {
-                // TODO: Audit this pattern once #2915 is closed
-                const copy = token;
                 self.pending_invalid_token = null;
-                return copy;
+                return token;
             }
         }
 

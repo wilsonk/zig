@@ -152,7 +152,7 @@ pub fn setThreadPointer(addr: usize) void {
                 : [addr] "r" (addr)
             );
         },
-        .arm => |arm| {
+        .arm => {
             const rc = std.os.linux.syscall1(std.os.linux.SYS_set_tls, addr);
             assert(rc == 0);
         },
@@ -211,7 +211,7 @@ pub fn initTLS() ?*elf.Phdr {
 
     if (tls_phdr) |phdr| {
         // If the cpu is arm-based, check if it supports the TLS register
-        if (builtin.arch == builtin.Arch.arm and at_hwcap & std.os.linux.HWCAP_TLS == 0) {
+        if (builtin.arch == .arm and at_hwcap & std.os.linux.HWCAP_TLS == 0) {
             // If the CPU does not support TLS via a coprocessor register,
             // a kernel helper function can be used instead on certain linux kernels.
             // See linux/arch/arm/include/asm/tls.h and musl/src/thread/arm/__set_thread_area.c.

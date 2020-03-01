@@ -1,4 +1,4 @@
-// Introspection and determination of system libraries needed by zig.
+//! Introspection and determination of system libraries needed by zig.
 
 const std = @import("std");
 const mem = std.mem;
@@ -14,7 +14,7 @@ pub fn testZigInstallPrefix(allocator: *mem.Allocator, test_path: []const u8) ![
     const test_index_file = try fs.path.join(allocator, &[_][]const u8{ test_zig_dir, "std", "std.zig" });
     defer allocator.free(test_index_file);
 
-    var file = try fs.File.openRead(test_index_file);
+    var file = try fs.cwd().openRead(test_index_file);
     file.close();
 
     return test_zig_dir;

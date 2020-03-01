@@ -58,8 +58,7 @@ pub fn main() !void {
     stderr = &stderr_file.outStream().stream;
 
     const args = try process.argsAlloc(allocator);
-    // TODO I'm getting unreachable code here, which shouldn't happen
-    //defer process.argsFree(allocator, args);
+    defer process.argsFree(allocator, args);
 
     if (args.len <= 1) {
         try stderr.write("expected command argument\n\n");
@@ -67,64 +66,35 @@ pub fn main() !void {
         process.exit(1);
     }
 
-    const commands = [_]Command{
-        Command{
-            .name = "build-exe",
-            .exec = cmdBuildExe,
-        },
-        Command{
-            .name = "build-lib",
-            .exec = cmdBuildLib,
-        },
-        Command{
-            .name = "build-obj",
-            .exec = cmdBuildObj,
-        },
-        Command{
-            .name = "fmt",
-            .exec = cmdFmt,
-        },
-        Command{
-            .name = "libc",
-            .exec = cmdLibC,
-        },
-        Command{
-            .name = "targets",
-            .exec = cmdTargets,
-        },
-        Command{
-            .name = "version",
-            .exec = cmdVersion,
-        },
-        Command{
-            .name = "zen",
-            .exec = cmdZen,
-        },
-
-        // undocumented commands
-        Command{
-            .name = "help",
-            .exec = cmdHelp,
-        },
-        Command{
-            .name = "internal",
-            .exec = cmdInternal,
-        },
-    };
-
-    inline for (commands) |command| {
-        if (mem.eql(u8, command.name, args[1])) {
-            var frame = try allocator.create(@Frame(command.exec));
-            defer allocator.destroy(frame);
-            frame.* = async command.exec(allocator, args[2..]);
-            return await frame;
-        }
+    const cmd = args[1];
+    const cmd_args = args[2..];
+    if (mem.eql(u8, cmd, "build-exe")) {
+        return buildOutputType(allocator, cmd_args, .Exe);
+    } else if (mem.eql(u8, cmd, "build-lib")) {
+        return buildOutputType(allocator, cmd_args, .Lib);
+    } else if (mem.eql(u8, cmd, "build-obj")) {
+        return buildOutputType(allocator, cmd_args, .Obj);
+    } else if (mem.eql(u8, cmd, "fmt")) {
+        return cmdFmt(allocator, cmd_args);
+    } else if (mem.eql(u8, cmd, "libc")) {
+        return cmdLibC(allocator, cmd_args);
+    } else if (mem.eql(u8, cmd, "targets")) {
+        const info = try std.zig.system.NativeTargetInfo.detect(allocator);
+        defer info.deinit(allocator);
+        return @import("print_targets.zig").cmdTargets(allocator, cmd_args, stdout, info.target);
+    } else if (mem.eql(u8, cmd, "version")) {
+        return cmdVersion(allocator, cmd_args);
+    } else if (mem.eql(u8, cmd, "zen")) {
+        return cmdZen(allocator, cmd_args);
+    } else if (mem.eql(u8, cmd, "help")) {
+        return cmdHelp(allocator, cmd_args);
+    } else if (mem.eql(u8, cmd, "internal")) {
+        return cmdInternal(allocator, cmd_args);
+    } else {
+        try stderr.print("unknown command: {}\n\n", .{args[1]});
+        try stderr.write(usage);
+        process.exit(1);
     }
-
-    try stderr.print("unknown command: {}\n\n", .{args[1]});
-    try stderr.write(usage);
-    process.argsFree(allocator, args);
-    process.exit(1);
 }
 
 const usage_build_generic =
@@ -154,6 +124,7 @@ const usage_build_generic =
     \\  --static                     Output will be statically linked
     \\  --strip                      Exclude debug symbols
     \\  -target [name]               <arch><sub>-<os>-<abi> see the targets command
+    \\  --eh-frame-hdr               enable C++ exception handling by passing --eh-frame-hdr to linker
     \\  --verbose-tokenize           Turn on compiler debug output for tokenization
     \\  --verbose-ast-tree           Turn on compiler debug output for parsing into an AST (tree view)
     \\  --verbose-ast-fmt            Turn on compiler debug output for parsing into an AST (render source)
@@ -207,6 +178,7 @@ fn buildOutputType(allocator: *Allocator, args: []const []const u8, out_type: Co
     var verbose_llvm_ir = false;
     var verbose_cimport = false;
     var linker_rdynamic = false;
+    var link_eh_frame_hdr = false;
     var macosx_version_min: ?[]const u8 = null;
     var ios_version_min: ?[]const u8 = null;
 
@@ -369,6 +341,8 @@ fn buildOutputType(allocator: *Allocator, args: []const []const u8, out_type: Co
                     verbose_ir = true;
                 } else if (mem.eql(u8, arg, "--verbose-llvm-ir")) {
                     verbose_llvm_ir = true;
+                } else if (mem.eql(u8, arg, "--eh-frame-hdr")) {
+                    link_eh_frame_hdr = true;
                 } else if (mem.eql(u8, arg, "--verbose-cimport")) {
                     verbose_cimport = true;
                 } else if (mem.eql(u8, arg, "-rdynamic")) {
@@ -498,6 +472,8 @@ fn buildOutputType(allocator: *Allocator, args: []const []const u8, out_type: Co
     comp.verbose_llvm_ir = verbose_llvm_ir;
     comp.verbose_cimport = verbose_cimport;
 
+    comp.link_eh_frame_hdr = link_eh_frame_hdr;
+
     comp.err_color = color;
 
     comp.linker_rdynamic = linker_rdynamic;
@@ -547,18 +523,6 @@ fn processBuildEvents(comp: *Compilation, color: errmsg.Color) void {
             },
         }
     }
-}
-
-fn cmdBuildExe(allocator: *Allocator, args: []const []const u8) !void {
-    return buildOutputType(allocator, args, Compilation.Kind.Exe);
-}
-
-fn cmdBuildLib(allocator: *Allocator, args: []const []const u8) !void {
-    return buildOutputType(allocator, args, Compilation.Kind.Lib);
-}
-
-fn cmdBuildObj(allocator: *Allocator, args: []const []const u8) !void {
-    return buildOutputType(allocator, args, Compilation.Kind.Obj);
 }
 
 pub const usage_fmt =
@@ -760,7 +724,7 @@ async fn fmtPath(fmt: *Fmt, file_path_ref: []const u8, check_mode: bool) FmtErro
         if (try held.value.put(file_path, {})) |_| return;
     }
 
-    const source_code = event.fs.readFile(
+    const source_code = fs.cwd().readFileAlloc(
         fmt.allocator,
         file_path,
         max_src_size,
@@ -827,50 +791,8 @@ async fn fmtPath(fmt: *Fmt, file_path_ref: []const u8, check_mode: bool) FmtErro
     }
 }
 
-// cmd:targets /////////////////////////////////////////////////////////////////////////////////////
-
-fn cmdTargets(allocator: *Allocator, args: []const []const u8) !void {
-    try stdout.write("Architectures:\n");
-    {
-        comptime var i: usize = 0;
-        inline while (i < @memberCount(builtin.Arch)) : (i += 1) {
-            comptime const arch_tag = @memberName(builtin.Arch, i);
-            // NOTE: Cannot use empty string, see #918.
-            comptime const native_str = if (comptime mem.eql(u8, arch_tag, @tagName(builtin.arch))) " (native)\n" else "\n";
-
-            try stdout.print("  {}{}", .{ arch_tag, native_str });
-        }
-    }
-    try stdout.write("\n");
-
-    try stdout.write("Operating Systems:\n");
-    {
-        comptime var i: usize = 0;
-        inline while (i < @memberCount(Target.Os)) : (i += 1) {
-            comptime const os_tag = @memberName(Target.Os, i);
-            // NOTE: Cannot use empty string, see #918.
-            comptime const native_str = if (comptime mem.eql(u8, os_tag, @tagName(builtin.os))) " (native)\n" else "\n";
-
-            try stdout.print("  {}{}", .{ os_tag, native_str });
-        }
-    }
-    try stdout.write("\n");
-
-    try stdout.write("C ABIs:\n");
-    {
-        comptime var i: usize = 0;
-        inline while (i < @memberCount(Target.Abi)) : (i += 1) {
-            comptime const abi_tag = @memberName(Target.Abi, i);
-            // NOTE: Cannot use empty string, see #918.
-            comptime const native_str = if (comptime mem.eql(u8, abi_tag, @tagName(builtin.abi))) " (native)\n" else "\n";
-
-            try stdout.print("  {}{}", .{ abi_tag, native_str });
-        }
-    }
-}
-
 fn cmdVersion(allocator: *Allocator, args: []const []const u8) !void {
-    try stdout.print("{}\n", .{std.mem.toSliceConst(u8, c.ZIG_VERSION_STRING)});
+    try stdout.print("{}\n", .{c.ZIG_VERSION_STRING});
 }
 
 fn cmdHelp(allocator: *Allocator, args: []const []const u8) !void {
@@ -941,12 +863,12 @@ fn cmdInternalBuildInfo(allocator: *Allocator, args: []const []const u8) !void {
         \\ZIG_DIA_GUIDS_LIB    {}
         \\
     , .{
-        std.mem.toSliceConst(u8, c.ZIG_CMAKE_BINARY_DIR),
-        std.mem.toSliceConst(u8, c.ZIG_CXX_COMPILER),
-        std.mem.toSliceConst(u8, c.ZIG_LLD_INCLUDE_PATH),
-        std.mem.toSliceConst(u8, c.ZIG_LLD_LIBRARIES),
-        std.mem.toSliceConst(u8, c.ZIG_LLVM_CONFIG_EXE),
-        std.mem.toSliceConst(u8, c.ZIG_DIA_GUIDS_LIB),
+        c.ZIG_CMAKE_BINARY_DIR,
+        c.ZIG_CXX_COMPILER,
+        c.ZIG_LLD_INCLUDE_PATH,
+        c.ZIG_LLD_LIBRARIES,
+        c.ZIG_LLVM_CONFIG_EXE,
+        c.ZIG_DIA_GUIDS_LIB,
     });
 }
 

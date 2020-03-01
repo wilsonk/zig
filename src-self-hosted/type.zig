@@ -162,7 +162,7 @@ pub const Type = struct {
     }
 
     pub fn dump(base: *const Type) void {
-        std.debug.warn("{}", @tagName(base.id));
+        std.debug.warn("{}", .{@tagName(base.id)});
     }
 
     fn init(base: *Type, comp: *Compilation, id: Id, name: []const u8) void {
@@ -337,7 +337,7 @@ pub const Type = struct {
             }
         };
 
-        const CallingConvention = builtin.TypeInfo.CallingConvention;
+        const CallingConvention = builtin.CallingConvention;
 
         pub const Param = struct {
             is_noalias: bool,
@@ -352,6 +352,7 @@ pub const Type = struct {
                 .Naked => "nakedcc ",
                 .Stdcall => "stdcallcc ",
                 .Async => "async ",
+                else => unreachable,
             };
         }
 
@@ -1041,7 +1042,7 @@ fn hashAny(x: var, comptime seed: u64) u32 {
     switch (@typeInfo(@TypeOf(x))) {
         .Int => |info| {
             comptime var rng = comptime std.rand.DefaultPrng.init(seed);
-            const unsigned_x = @bitCast(@IntType(false, info.bits), x);
+            const unsigned_x = @bitCast(std.meta.IntType(false, info.bits), x);
             if (info.bits <= 32) {
                 return @as(u32, unsigned_x) *% comptime rng.random.scalar(u32);
             } else {

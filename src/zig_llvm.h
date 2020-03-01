@@ -46,23 +46,64 @@ ZIG_EXTERN_C void ZigLLVMInitializeLowerIntrinsicsPass(LLVMPassRegistryRef R);
 ZIG_EXTERN_C char *ZigLLVMGetHostCPUName(void);
 ZIG_EXTERN_C char *ZigLLVMGetNativeFeatures(void);
 
-// We use a custom enum here since LLVM does not expose LLVMIr as an emit
-// output through the same mechanism as assembly/binary.
-enum ZigLLVM_EmitOutputType {
-    ZigLLVM_EmitAssembly,
-    ZigLLVM_EmitBinary,
-    ZigLLVM_EmitLLVMIr,
-};
-
 ZIG_EXTERN_C bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMModuleRef module_ref,
-        const char *filename, enum ZigLLVM_EmitOutputType output_type, char **error_message, bool is_debug,
-        bool is_small, bool time_report);
+        char **error_message, bool is_debug,
+        bool is_small, bool time_report,
+        const char *asm_filename, const char *bin_filename, const char *llvm_ir_filename);
 
 ZIG_EXTERN_C LLVMTargetMachineRef ZigLLVMCreateTargetMachine(LLVMTargetRef T, const char *Triple,
     const char *CPU, const char *Features, LLVMCodeGenOptLevel Level, LLVMRelocMode Reloc,
     LLVMCodeModel CodeModel, bool function_sections);
 
 ZIG_EXTERN_C LLVMTypeRef ZigLLVMTokenTypeInContext(LLVMContextRef context_ref);
+
+enum ZigLLVM_CallingConv {
+    ZigLLVM_C = 0,
+    ZigLLVM_Fast = 8,
+    ZigLLVM_Cold = 9,
+    ZigLLVM_GHC = 10,
+    ZigLLVM_HiPE = 11,
+    ZigLLVM_WebKit_JS = 12,
+    ZigLLVM_AnyReg = 13,
+    ZigLLVM_PreserveMost = 14,
+    ZigLLVM_PreserveAll = 15,
+    ZigLLVM_Swift = 16,
+    ZigLLVM_CXX_FAST_TLS = 17,
+    ZigLLVM_FirstTargetCC = 64,
+    ZigLLVM_X86_StdCall = 64,
+    ZigLLVM_X86_FastCall = 65,
+    ZigLLVM_ARM_APCS = 66,
+    ZigLLVM_ARM_AAPCS = 67,
+    ZigLLVM_ARM_AAPCS_VFP = 68,
+    ZigLLVM_MSP430_INTR = 69,
+    ZigLLVM_X86_ThisCall = 70,
+    ZigLLVM_PTX_Kernel = 71,
+    ZigLLVM_PTX_Device = 72,
+    ZigLLVM_SPIR_FUNC = 75,
+    ZigLLVM_SPIR_KERNEL = 76,
+    ZigLLVM_Intel_OCL_BI = 77,
+    ZigLLVM_X86_64_SysV = 78,
+    ZigLLVM_Win64 = 79,
+    ZigLLVM_X86_VectorCall = 80,
+    ZigLLVM_HHVM = 81,
+    ZigLLVM_HHVM_C = 82,
+    ZigLLVM_X86_INTR = 83,
+    ZigLLVM_AVR_INTR = 84,
+    ZigLLVM_AVR_SIGNAL = 85,
+    ZigLLVM_AVR_BUILTIN = 86,
+    ZigLLVM_AMDGPU_VS = 87,
+    ZigLLVM_AMDGPU_GS = 88,
+    ZigLLVM_AMDGPU_PS = 89,
+    ZigLLVM_AMDGPU_CS = 90,
+    ZigLLVM_AMDGPU_KERNEL = 91,
+    ZigLLVM_X86_RegCall = 92,
+    ZigLLVM_AMDGPU_HS = 93,
+    ZigLLVM_MSP430_BUILTIN = 94,
+    ZigLLVM_AMDGPU_LS = 95,
+    ZigLLVM_AMDGPU_ES = 96,
+    ZigLLVM_AArch64_VectorCall = 97,
+    ZigLLVM_MaxID = 1023,
+};
 
 enum ZigLLVM_CallAttr {
     ZigLLVM_CallAttrAuto,
@@ -72,7 +113,7 @@ enum ZigLLVM_CallAttr {
     ZigLLVM_CallAttrAlwaysInline,
 };
 ZIG_EXTERN_C LLVMValueRef ZigLLVMBuildCall(LLVMBuilderRef B, LLVMValueRef Fn, LLVMValueRef *Args,
-        unsigned NumArgs, unsigned CC, enum ZigLLVM_CallAttr attr, const char *Name);
+        unsigned NumArgs, enum ZigLLVM_CallingConv CC, enum ZigLLVM_CallAttr attr, const char *Name);
 
 ZIG_EXTERN_C LLVMValueRef ZigLLVMBuildMemCpy(LLVMBuilderRef B, LLVMValueRef Dst, unsigned DstAlign,
         LLVMValueRef Src, unsigned SrcAlign, LLVMValueRef Size, bool isVolatile);
@@ -215,6 +256,7 @@ ZIG_EXTERN_C struct ZigLLVMDILocation *ZigLLVMGetDebugLoc(unsigned line, unsigne
 ZIG_EXTERN_C void ZigLLVMSetFastMath(LLVMBuilderRef builder_wrapped, bool on_state);
 ZIG_EXTERN_C void ZigLLVMSetTailCall(LLVMValueRef Call);
 ZIG_EXTERN_C void ZigLLVMFunctionSetPrefixData(LLVMValueRef fn, LLVMValueRef data);
+ZIG_EXTERN_C void ZigLLVMFunctionSetCallingConv(LLVMValueRef function, enum ZigLLVM_CallingConv cc);
 
 ZIG_EXTERN_C void ZigLLVMAddFunctionAttr(LLVMValueRef fn, const char *attr_name, const char *attr_value);
 ZIG_EXTERN_C void ZigLLVMAddByValAttr(LLVMValueRef fn_ref, unsigned ArgNo, LLVMTypeRef type_val);
@@ -280,41 +322,6 @@ enum ZigLLVM_ArchType {
     ZigLLVM_renderscript64, // 64-bit RenderScript
 
     ZigLLVM_LastArchType = ZigLLVM_renderscript64
-};
-
-// synchronize with lists in target.cpp
-enum ZigLLVM_SubArchType {
-    ZigLLVM_NoSubArch,
-
-    ZigLLVM_ARMSubArch_v8_5a,
-    ZigLLVM_ARMSubArch_v8_4a,
-    ZigLLVM_ARMSubArch_v8_3a,
-    ZigLLVM_ARMSubArch_v8_2a,
-    ZigLLVM_ARMSubArch_v8_1a,
-    ZigLLVM_ARMSubArch_v8,
-    ZigLLVM_ARMSubArch_v8r,
-    ZigLLVM_ARMSubArch_v8m_baseline,
-    ZigLLVM_ARMSubArch_v8m_mainline,
-    ZigLLVM_ARMSubArch_v8_1m_mainline,
-    ZigLLVM_ARMSubArch_v7,
-    ZigLLVM_ARMSubArch_v7em,
-    ZigLLVM_ARMSubArch_v7m,
-    ZigLLVM_ARMSubArch_v7s,
-    ZigLLVM_ARMSubArch_v7k,
-    ZigLLVM_ARMSubArch_v7ve,
-    ZigLLVM_ARMSubArch_v6,
-    ZigLLVM_ARMSubArch_v6m,
-    ZigLLVM_ARMSubArch_v6k,
-    ZigLLVM_ARMSubArch_v6t2,
-    ZigLLVM_ARMSubArch_v5,
-    ZigLLVM_ARMSubArch_v5te,
-    ZigLLVM_ARMSubArch_v4t,
-
-    ZigLLVM_KalimbaSubArch_v3,
-    ZigLLVM_KalimbaSubArch_v4,
-    ZigLLVM_KalimbaSubArch_v5,
-
-    ZigLLVM_MipsSubArch_r6,
 };
 
 enum ZigLLVM_VendorType {
@@ -476,7 +483,6 @@ LLVMValueRef ZigLLVMBuildAtomicRMW(LLVMBuilderRef B, enum ZigLLVM_AtomicRMWBinOp
 #define ZigLLVM_DIFlags_AllCallsDescribed (1U << 29)
 
 ZIG_EXTERN_C const char *ZigLLVMGetArchTypeName(enum ZigLLVM_ArchType arch);
-ZIG_EXTERN_C const char *ZigLLVMGetSubArchTypeName(enum ZigLLVM_SubArchType sub_arch);
 ZIG_EXTERN_C const char *ZigLLVMGetVendorTypeName(enum ZigLLVM_VendorType vendor);
 ZIG_EXTERN_C const char *ZigLLVMGetOSTypeName(enum ZigLLVM_OSType os);
 ZIG_EXTERN_C const char *ZigLLVMGetEnvironmentTypeName(enum ZigLLVM_EnvironmentType abi);
@@ -490,7 +496,7 @@ ZIG_EXTERN_C bool ZigLLVMWriteArchive(const char *archive_name, const char **fil
 bool ZigLLVMWriteImportLibrary(const char *def_path, const enum ZigLLVM_ArchType arch,
                                const char *output_lib_path, const bool kill_at);
 
-ZIG_EXTERN_C void ZigLLVMGetNativeTarget(enum ZigLLVM_ArchType *arch_type, enum ZigLLVM_SubArchType *sub_arch_type,
+ZIG_EXTERN_C void ZigLLVMGetNativeTarget(enum ZigLLVM_ArchType *arch_type,
         enum ZigLLVM_VendorType *vendor_type, enum ZigLLVM_OSType *os_type, enum ZigLLVM_EnvironmentType *environ_type,
         enum ZigLLVM_ObjectFormatType *oformat);
 

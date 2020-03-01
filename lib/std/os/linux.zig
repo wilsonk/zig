@@ -512,7 +512,7 @@ pub fn clock_gettime(clk_id: i32, tp: *timespec) usize {
     return syscall2(SYS_clock_gettime, @bitCast(usize, @as(isize, clk_id)), @ptrToInt(tp));
 }
 
-extern fn init_vdso_clock_gettime(clk: i32, ts: *timespec) usize {
+fn init_vdso_clock_gettime(clk: i32, ts: *timespec) callconv(.C) usize {
     const ptr = @intToPtr(?*const c_void, vdso.lookup(VDSO_CGT_VER, VDSO_CGT_SYM));
     // Note that we may not have a VDSO at all, update the stub address anyway
     // so that clock_gettime will fall back on the good old (and slow) syscall
@@ -1041,63 +1041,6 @@ pub fn uname(uts: *utsname) usize {
     return syscall1(SYS_uname, @ptrToInt(uts));
 }
 
-// XXX: This should be weak
-extern const __ehdr_start: elf.Ehdr = undefined;
-
-pub fn dl_iterate_phdr(comptime T: type, callback: extern fn (info: *dl_phdr_info, size: usize, data: ?*T) i32, data: ?*T) isize {
-    if (builtin.link_libc) {
-        return std.c.dl_iterate_phdr(@ptrCast(std.c.dl_iterate_phdr_callback, callback), @ptrCast(?*c_void, data));
-    }
-
-    const elf_base = @ptrToInt(&__ehdr_start);
-    const n_phdr = __ehdr_start.e_phnum;
-    const phdrs = (@intToPtr([*]elf.Phdr, elf_base + __ehdr_start.e_phoff))[0..n_phdr];
-
-    var it = dl.linkmap_iterator(phdrs) catch return 0;
-
-    // The executable has no dynamic link segment, create a single entry for
-    // the whole ELF image
-    if (it.end()) {
-        var info = dl_phdr_info{
-            .dlpi_addr = elf_base,
-            .dlpi_name = "/proc/self/exe",
-            .dlpi_phdr = @intToPtr([*]elf.Phdr, elf_base + __ehdr_start.e_phoff),
-            .dlpi_phnum = __ehdr_start.e_phnum,
-        };
-
-        return callback(&info, @sizeOf(dl_phdr_info), data);
-    }
-
-    // Last return value from the callback function
-    var last_r: isize = 0;
-    while (it.next()) |entry| {
-        var dlpi_phdr: usize = undefined;
-        var dlpi_phnum: u16 = undefined;
-
-        if (entry.l_addr != 0) {
-            const elf_header = @intToPtr(*elf.Ehdr, entry.l_addr);
-            dlpi_phdr = entry.l_addr + elf_header.e_phoff;
-            dlpi_phnum = elf_header.e_phnum;
-        } else {
-            // This is the running ELF image
-            dlpi_phdr = elf_base + __ehdr_start.e_phoff;
-            dlpi_phnum = __ehdr_start.e_phnum;
-        }
-
-        var info = dl_phdr_info{
-            .dlpi_addr = entry.l_addr,
-            .dlpi_name = entry.l_name,
-            .dlpi_phdr = @intToPtr([*]elf.Phdr, dlpi_phdr),
-            .dlpi_phnum = dlpi_phnum,
-        };
-
-        last_r = callback(&info, @sizeOf(dl_phdr_info), data);
-        if (last_r != 0) break;
-    }
-
-    return last_r;
-}
-
 pub fn io_uring_setup(entries: u32, p: *io_uring_params) usize {
     return syscall2(SYS_io_uring_setup, entries, @ptrToInt(p));
 }
@@ -1114,8 +1057,20 @@ pub fn memfd_create(name: [*:0]const u8, flags: u32) usize {
     return syscall2(SYS_memfd_create, @ptrToInt(name), flags);
 }
 
+pub fn getrusage(who: i32, usage: *rusage) usize {
+    return syscall2(SYS_getrusage, @bitCast(usize, @as(isize, who)), @ptrToInt(usage));
+}
+
+pub fn tcgetattr(fd: fd_t, termios_p: *termios) usize {
+    return syscall3(SYS_ioctl, @bitCast(usize, @as(isize, fd)), TCGETS, @ptrToInt(termios_p));
+}
+
+pub fn tcsetattr(fd: fd_t, optional_action: TCSA, termios_p: *const termios) usize {
+    return syscall3(SYS_ioctl, @bitCast(usize, @as(isize, fd)), TCSETS + @enumToInt(optional_action), @ptrToInt(termios_p));
+}
+
 test "" {
-    if (builtin.os == .linux) {
+    if (builtin.os.tag == .linux) {
         _ = @import("linux/test.zig");
     }
 }

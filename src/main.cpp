@@ -11,12 +11,13 @@
 #include "compiler.hpp"
 #include "config.h"
 #include "error.hpp"
+#include "heap.hpp"
 #include "os.hpp"
 #include "target.hpp"
-#include "libc_installation.hpp"
-#include "userland.h"
+#include "stage2.h"
 #include "glibc.hpp"
 #include "dump_analysis.hpp"
+#include "mem_profile.hpp"
 
 #include <stdio.h>
 
@@ -43,7 +44,6 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  libc [paths_file]            Display native libc paths file or validate one\n"
         "  run [source] [-- [args]]     create executable and run immediately\n"
         "  translate-c [source]         convert c code to zig code\n"
-        "  translate-c-2 [source]       experimental self-hosted translate-c\n"
         "  targets                      list available compilation targets\n"
         "  test [source]                create and run a test build\n"
         "  version                      print version number and exit\n"
@@ -56,22 +56,27 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --color [auto|off|on]        enable or disable colored error messages\n"
         "  --disable-gen-h              do not generate a C header file (.h)\n"
         "  --disable-valgrind           omit valgrind client requests in debug builds\n"
+        "  --eh-frame-hdr               enable C++ exception handling by passing --eh-frame-hdr to linker\n"
         "  --enable-valgrind            include valgrind client requests release builds\n"
         "  -fstack-check                enable stack probing in unsafe builds\n"
         "  -fno-stack-check             disable stack probing in safe builds\n"
         "  -fsanitize-c                 enable C undefined behavior detection in unsafe builds\n"
         "  -fno-sanitize-c              disable C undefined behavior detection in safe builds\n"
-        "  --emit [asm|bin|llvm-ir]     emit a specific file format as compilation output\n"
+        "  --emit [asm|bin|llvm-ir]     (deprecated) emit a specific file format as compilation output\n"
         "  -fPIC                        enable Position Independent Code\n"
         "  -fno-PIC                     disable Position Independent Code\n"
         "  -ftime-report                print timing diagnostics\n"
         "  -fstack-report               print stack size diagnostics\n"
-#ifdef ZIG_ENABLE_MEM_PROFILE
         "  -fmem-report                 print memory usage diagnostics\n"
-#endif
         "  -fdump-analysis              write analysis.json file with type information\n"
         "  -femit-docs                  create a docs/ dir with html documentation\n"
-        "  -fno-emit-bin                skip emitting machine code\n"
+        "  -fno-emit-docs               do not produce docs/ dir with html documentation\n"
+        "  -femit-bin                   (default) output machine code\n"
+        "  -fno-emit-bin                do not output machine code\n"
+        "  -femit-asm                   output .s (assembly code)\n"
+        "  -fno-emit-asm                (default) do not output .s (assembly code)\n"
+        "  -femit-llvm-ir               produce a .ll file with LLVM IR\n"
+        "  -fno-emit-llvm-ir            (default) do not produce a .ll file with LLVM IR\n"
         "  --libc [file]                Provide a file which specifies libc paths\n"
         "  --name [name]                override output name\n"
         "  --output-dir [dir]           override output directory (defaults to cwd)\n"
@@ -84,8 +89,7 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --single-threaded            source may assume it is only used single-threaded\n"
         "  -dynamic                     create a shared library (.so; .dll; .dylib)\n"
         "  --strip                      exclude debug symbols\n"
-        "  -target [name]               <arch><sub>-<os>-<abi> see the targets command\n"
-        "  -target-glibc [version]      target a specific glibc version (default: 2.17)\n"
+        "  -target [name]               <arch>-<os>-<abi> see the targets command\n"
         "  --verbose-tokenize           enable compiler debug output for tokenization\n"
         "  --verbose-ast                enable compiler debug output for AST parsing\n"
         "  --verbose-link               enable compiler debug output for linking\n"
@@ -93,6 +97,7 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --verbose-llvm-ir            enable compiler debug output for LLVM IR\n"
         "  --verbose-cimport            enable compiler debug output for C imports\n"
         "  --verbose-cc                 enable compiler debug output for C compilation\n"
+        "  --verbose-llvm-cpu-features  enable compiler debug output for LLVM CPU features\n"
         "  -dirafter [dir]              add directory to AFTER include search path\n"
         "  -isystem [dir]               add directory to SYSTEM include search path\n"
         "  -I[dir]                      add directory to include search path\n"
@@ -100,6 +105,10 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --override-lib-dir [arg]     override path to Zig lib directory\n"
         "  -ffunction-sections          places each function in a separate section\n"
         "  -D[macro]=[value]            define C [macro] to [value] (1 if [value] omitted)\n"
+        "  -mcpu [cpu]                  specify target CPU and feature set\n"
+        "  -code-model [default|tiny|   set target code model\n"
+        "               small|kernel|\n"
+        "               medium|large]\n"
         "\n"
         "Link Options:\n"
         "  --bundle-compiler-rt         for static libraries, include compiler-rt symbols\n"
@@ -118,8 +127,6 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --subsystem [subsystem]      (windows) /SUBSYSTEM:<subsystem> to the linker\n"
         "  -F[dir]                      (darwin) add search path for frameworks\n"
         "  -framework [name]            (darwin) link against framework\n"
-        "  -mios-version-min [ver]      (darwin) set iOS deployment target\n"
-        "  -mmacosx-version-min [ver]   (darwin) set Mac OS X deployment target\n"
         "  --ver-major [ver]            dynamic library semver major version\n"
         "  --ver-minor [ver]            dynamic library semver minor version\n"
         "  --ver-patch [ver]            dynamic library semver patch version\n"
@@ -129,6 +136,7 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --test-name-prefix [text]    add prefix to all tests\n"
         "  --test-cmd [arg]             specify test execution command one arg at a time\n"
         "  --test-cmd-bin               appends test binary path to test cmd args\n"
+        "  --test-evented-io            runs the test in evented I/O mode\n"
     , arg0);
     return return_code;
 }
@@ -141,98 +149,16 @@ static int print_libc_usage(const char *arg0, FILE *file, int return_code) {
         "You can save this into a file and then edit the paths to create a cross\n"
         "compilation libc kit. Then you can pass `--libc [file]` for Zig to use it.\n"
         "\n"
-        "When compiling natively and no `--libc` argument provided, Zig automatically\n"
-        "creates zig-cache/native_libc.txt so that it does not have to detect libc\n"
-        "on every invocation. You can remove this file to have Zig re-detect the\n"
-        "native libc.\n"
+        "When compiling natively and no `--libc` argument provided, Zig will create\n"
+        "`%s/native_libc.txt`\n"
+        "so that it does not have to detect libc on every invocation. You can remove\n"
+        "this file to have Zig re-detect the native libc.\n"
         "\n\n"
         "Usage: %s libc [file]\n"
         "\n"
         "Parse a libc installation text file and validate it.\n"
-    , arg0, arg0);
+    , arg0, buf_ptr(get_global_cache_dir()), arg0);
     return return_code;
-}
-
-static bool arch_available_in_llvm(ZigLLVM_ArchType arch) {
-    LLVMTargetRef target_ref;
-    char *err_msg = nullptr;
-    char triple_string[128];
-    sprintf(triple_string, "%s-unknown-unknown-unknown", ZigLLVMGetArchTypeName(arch));
-    return !LLVMGetTargetFromTriple(triple_string, &target_ref, &err_msg);
-}
-
-static int print_target_list(FILE *f) {
-    ZigTarget native;
-    get_native_target(&native);
-
-    fprintf(f, "Architectures:\n");
-    size_t arch_count = target_arch_count();
-    for (size_t arch_i = 0; arch_i < arch_count; arch_i += 1) {
-        ZigLLVM_ArchType arch = target_arch_enum(arch_i);
-        if (!arch_available_in_llvm(arch))
-            continue;
-        const char *arch_name = target_arch_name(arch);
-        SubArchList sub_arch_list = target_subarch_list(arch);
-        size_t sub_count = target_subarch_count(sub_arch_list);
-        const char *arch_native_str = (native.arch == arch) ? " (native)" : "";
-        fprintf(f, "  %s%s\n", arch_name, arch_native_str);
-        for (size_t sub_i = 0; sub_i < sub_count; sub_i += 1) {
-            ZigLLVM_SubArchType sub = target_subarch_enum(sub_arch_list, sub_i);
-            const char *sub_name = target_subarch_name(sub);
-            const char *sub_native_str = (native.arch == arch && native.sub_arch == sub) ? " (native)" : "";
-            fprintf(f, "    %s%s\n", sub_name, sub_native_str);
-        }
-    }
-
-    fprintf(f, "\nOperating Systems:\n");
-    size_t os_count = target_os_count();
-    for (size_t i = 0; i < os_count; i += 1) {
-        Os os_type = target_os_enum(i);
-        const char *native_str = (native.os == os_type) ? " (native)" : "";
-        fprintf(f, "  %s%s\n", target_os_name(os_type), native_str);
-    }
-
-    fprintf(f, "\nC ABIs:\n");
-    size_t abi_count = target_abi_count();
-    for (size_t i = 0; i < abi_count; i += 1) {
-        ZigLLVM_EnvironmentType abi = target_abi_enum(i);
-        const char *native_str = (native.abi == abi) ? " (native)" : "";
-        fprintf(f, "  %s%s\n", target_abi_name(abi), native_str);
-    }
-
-    fprintf(f, "\nAvailable libcs:\n");
-    size_t libc_count = target_libc_count();
-    for (size_t i = 0; i < libc_count; i += 1) {
-        ZigTarget libc_target;
-        target_libc_enum(i, &libc_target);
-        bool is_native = native.arch == libc_target.arch &&
-            native.os == libc_target.os &&
-            native.abi == libc_target.abi;
-        const char *native_str = is_native ? " (native)" : "";
-        fprintf(f, "  %s-%s-%s%s\n", target_arch_name(libc_target.arch),
-                target_os_name(libc_target.os), target_abi_name(libc_target.abi), native_str);
-    }
-
-    fprintf(f, "\nAvailable glibc versions:\n");
-    ZigGLibCAbi *glibc_abi;
-    Error err;
-    if ((err = glibc_load_metadata(&glibc_abi, get_zig_lib_dir(), true))) {
-        return EXIT_FAILURE;
-    }
-    for (size_t i = 0; i < glibc_abi->all_versions.length; i += 1) {
-        ZigGLibCVersion *this_ver = &glibc_abi->all_versions.at(i);
-        bool is_native = native.glibc_version != nullptr &&
-            native.glibc_version->major == this_ver->major &&
-            native.glibc_version->minor == this_ver->minor &&
-            native.glibc_version->patch == this_ver->patch;
-        const char *native_str = is_native ? " (native)" : "";
-        if (this_ver->patch == 0) {
-            fprintf(f, "  %d.%d%s\n", this_ver->major, this_ver->minor, native_str);
-        } else {
-            fprintf(f, "  %d.%d.%d%s\n", this_ver->major, this_ver->minor, this_ver->patch, native_str);
-        }
-    }
-    return EXIT_SUCCESS;
 }
 
 enum Cmd {
@@ -308,6 +234,14 @@ static int zig_error_no_build_file(void) {
     return EXIT_FAILURE;
 }
 
+static bool str_starts_with(const char *s1, const char *s2) {
+    size_t s2_len = strlen(s2);
+    if (strlen(s1) < s2_len) {
+        return false;
+    }
+    return memcmp(s1, s2, s2_len) == 0;
+}
+
 extern "C" int ZigClang_main(int argc, char **argv);
 
 #ifdef ZIG_ENABLE_MEM_PROFILE
@@ -318,21 +252,10 @@ int main_exit(Stage2ProgressNode *root_progress_node, int exit_code) {
     if (root_progress_node != nullptr) {
         stage2_progress_end(root_progress_node);
     }
-#ifdef ZIG_ENABLE_MEM_PROFILE
-    if (mem_report) {
-        memprof_dump_stats(stderr);
-    }
-#endif
     return exit_code;
 }
 
-int main(int argc, char **argv) {
-    stage2_attach_segfault_handler();
-
-#ifdef ZIG_ENABLE_MEM_PROFILE
-    memprof_init();
-#endif
-
+static int main0(int argc, char **argv) {
     char *arg0 = argv[0];
     Error err;
 
@@ -352,9 +275,6 @@ int main(int argc, char **argv) {
     {
         return ZigClang_main(argc, argv);
     }
-
-    // Must be before all os.hpp function calls.
-    os_init();
 
     if (argc == 2 && strcmp(argv[1], "id") == 0) {
         Buf *compiler_id;
@@ -464,7 +384,6 @@ int main(int argc, char **argv) {
     }
 
     Cmd cmd = CmdNone;
-    EmitFileType emit_file_type = EmitFileTypeBinary;
     const char *in_file = nullptr;
     Buf *output_dir = nullptr;
     bool strip = false;
@@ -478,9 +397,11 @@ int main(int argc, char **argv) {
     bool verbose_llvm_ir = false;
     bool verbose_cimport = false;
     bool verbose_cc = false;
+    bool verbose_llvm_cpu_features = false;
+    bool link_eh_frame_hdr = false;
     ErrColor color = ErrColorAuto;
     CacheOpt enable_cache = CacheOptAuto;
-    Buf *dynamic_linker = nullptr;
+    const char *dynamic_linker = nullptr;
     const char *libc_txt = nullptr;
     ZigList<const char *> clang_argv = {0};
     ZigList<const char *> lib_dirs = {0};
@@ -491,17 +412,15 @@ int main(int argc, char **argv) {
     bool have_libc = false;
     const char *target_string = nullptr;
     bool rdynamic = false;
-    const char *mmacosx_version_min = nullptr;
-    const char *mios_version_min = nullptr;
     const char *linker_script = nullptr;
     Buf *version_script = nullptr;
-    const char *target_glibc = nullptr;
     ZigList<const char *> rpath_list = {0};
     bool each_lib_rpath = false;
     ZigList<const char *> objects = {0};
     ZigList<CFile *> c_source_files = {0};
     const char *test_filter = nullptr;
     const char *test_name_prefix = nullptr;
+    bool test_evented_io = false;
     size_t ver_major = 0;
     size_t ver_minor = 0;
     size_t ver_patch = 0;
@@ -509,9 +428,11 @@ int main(int argc, char **argv) {
     bool stack_report = false;
     bool enable_dump_analysis = false;
     bool enable_doc_generation = false;
-    bool disable_bin_generation = false;
+    bool emit_bin = true;
+    bool emit_asm = false;
+    bool emit_llvm_ir = false;
     const char *cache_dir = nullptr;
-    CliPkg *cur_pkg = allocate<CliPkg>(1);
+    CliPkg *cur_pkg = heap::c_allocator.create<CliPkg>();
     BuildMode build_mode = BuildModeDebug;
     ZigList<const char *> test_exec_args = {0};
     int runtime_args_start = -1;
@@ -527,6 +448,8 @@ int main(int argc, char **argv) {
     WantStackCheck want_stack_check = WantStackCheckAuto;
     WantCSanitize want_sanitize_c = WantCSanitizeAuto;
     bool function_sections = false;
+    const char *mcpu = nullptr;
+    CodeModel code_model = CodeModelDefault;
 
     ZigList<const char *> llvm_argv = {0};
     llvm_argv.append("zig (LLVM option parsing)");
@@ -573,7 +496,10 @@ int main(int argc, char **argv) {
         os_path_join(get_zig_special_dir(zig_lib_dir), buf_create_from_str("build_runner.zig"), build_runner_path);
 
         ZigTarget target;
-        get_native_target(&target);
+        if ((err = target_parse_triple(&target, "native", nullptr, nullptr))) {
+            fprintf(stderr, "Unable to get native target: %s\n", err_str(err));
+            return EXIT_FAILURE;
+        }
 
         Buf *build_file_buf = buf_create_from_str((build_file != nullptr) ? build_file : "build.zig");
         Buf build_file_abs = os_path_resolve(&build_file_buf, 1);
@@ -634,7 +560,7 @@ int main(int argc, char **argv) {
         }
 
         Termination term;
-        args.items[0] = buf_ptr(&g->output_file_path);
+        args.items[0] = buf_ptr(&g->bin_file_output_path);
         os_spawn_process(args, &term);
         if (term.how != TerminationIdClean || term.code != 0) {
             fprintf(stderr, "\nBuild failed. The following command failed:\n");
@@ -691,6 +617,8 @@ int main(int argc, char **argv) {
                 verbose_cimport = true;
             } else if (strcmp(arg, "--verbose-cc") == 0) {
                 verbose_cc = true;
+            } else if (strcmp(arg, "--verbose-llvm-cpu-features") == 0) {
+                verbose_llvm_cpu_features = true;
             } else if (strcmp(arg, "-rdynamic") == 0) {
                 rdynamic = true;
             } else if (strcmp(arg, "--each-lib-rpath") == 0) {
@@ -702,6 +630,7 @@ int main(int argc, char **argv) {
             } else if (strcmp(arg, "-fmem-report") == 0) {
 #ifdef ZIG_ENABLE_MEM_PROFILE
                 mem_report = true;
+                mem::report_print = true;
 #else
                 fprintf(stderr, "-fmem-report requires configuring with -DZIG_ENABLE_MEM_PROFILE=ON\n");
                 return print_error_usage(arg0);
@@ -710,12 +639,12 @@ int main(int argc, char **argv) {
                 enable_dump_analysis = true;
             } else if (strcmp(arg, "-femit-docs") == 0) {
                 enable_doc_generation = true;
-            } else if (strcmp(arg, "-fno-emit-bin") == 0) {
-                disable_bin_generation = true;
             } else if (strcmp(arg, "--enable-valgrind") == 0) {
                 valgrind_support = ValgrindSupportEnabled;
             } else if (strcmp(arg, "--disable-valgrind") == 0) {
                 valgrind_support = ValgrindSupportDisabled;
+            } else if (strcmp(arg, "--eh-frame-hdr") == 0) {
+                link_eh_frame_hdr = true;
             } else if (strcmp(arg, "-fPIC") == 0) {
                 want_pic = WantPICEnabled;
             } else if (strcmp(arg, "-fno-PIC") == 0) {
@@ -760,7 +689,7 @@ int main(int argc, char **argv) {
                     fprintf(stderr, "Expected 2 arguments after --pkg-begin\n");
                     return print_error_usage(arg0);
                 }
-                CliPkg *new_cur_pkg = allocate<CliPkg>(1);
+                CliPkg *new_cur_pkg = heap::c_allocator.create<CliPkg>();
                 i += 1;
                 new_cur_pkg->name = argv[i];
                 i += 1;
@@ -776,6 +705,22 @@ int main(int argc, char **argv) {
                 cur_pkg = cur_pkg->parent;
             } else if (strcmp(arg, "-ffunction-sections") == 0) {
                 function_sections = true;
+            } else if (strcmp(arg, "--test-evented-io") == 0) {
+                test_evented_io = true;
+            } else if (strcmp(arg, "-femit-bin") == 0) {
+                emit_bin = true;
+            } else if (strcmp(arg, "-fno-emit-bin") == 0) {
+                emit_bin = false;
+            } else if (strcmp(arg, "-femit-asm") == 0) {
+                emit_asm = true;
+            } else if (strcmp(arg, "-fno-emit-asm") == 0) {
+                emit_asm = false;
+            } else if (strcmp(arg, "-femit-llvm-ir") == 0) {
+                emit_llvm_ir = true;
+            } else if (strcmp(arg, "-fno-emit-llvm-ir") == 0) {
+                emit_llvm_ir = false;
+            } else if (str_starts_with(arg, "-mcpu=")) {
+                mcpu = arg + strlen("-mcpu=");
             } else if (i + 1 >= argc) {
                 fprintf(stderr, "Expected another argument after %s\n", arg);
                 return print_error_usage(arg0);
@@ -807,11 +752,13 @@ int main(int argc, char **argv) {
                     }
                 } else if (strcmp(arg, "--emit") == 0) {
                     if (strcmp(argv[i], "asm") == 0) {
-                        emit_file_type = EmitFileTypeAssembly;
+                        emit_asm = true;
+                        emit_bin = false;
                     } else if (strcmp(argv[i], "bin") == 0) {
-                        emit_file_type = EmitFileTypeBinary;
+                        emit_bin = true;
                     } else if (strcmp(argv[i], "llvm-ir") == 0) {
-                        emit_file_type = EmitFileTypeLLVMIr;
+                        emit_llvm_ir = true;
+                        emit_bin = false;
                     } else {
                         fprintf(stderr, "--emit options are 'asm', 'bin', or 'llvm-ir'\n");
                         return print_error_usage(arg0);
@@ -819,7 +766,7 @@ int main(int argc, char **argv) {
                 } else if (strcmp(arg, "--name") == 0) {
                     out_name = argv[i];
                 } else if (strcmp(arg, "--dynamic-linker") == 0) {
-                    dynamic_linker = buf_create_from_str(argv[i]);
+                    dynamic_linker = argv[i];
                 } else if (strcmp(arg, "--libc") == 0) {
                     libc_txt = argv[i];
                 } else if (strcmp(arg, "-D") == 0) {
@@ -839,6 +786,23 @@ int main(int argc, char **argv) {
                     clang_argv.append(argv[i]);
 
                     llvm_argv.append(argv[i]);
+                } else if (strcmp(arg, "-code-model") == 0) {
+                    if (strcmp(argv[i], "default") == 0) {
+                        code_model = CodeModelDefault;
+                    } else if (strcmp(argv[i], "tiny") == 0) {
+                        code_model = CodeModelTiny;
+                    } else if (strcmp(argv[i], "small") == 0) {
+                        code_model = CodeModelSmall;
+                    } else if (strcmp(argv[i], "kernel") == 0) {
+                        code_model = CodeModelKernel;
+                    } else if (strcmp(argv[i], "medium") == 0) {
+                        code_model = CodeModelMedium;
+                    } else if (strcmp(argv[i], "large") == 0) {
+                        code_model = CodeModelLarge;
+                    } else {
+                        fprintf(stderr, "-code-model options are 'default', 'tiny', 'small', 'kernel', 'medium', or 'large'\n");
+                        return print_error_usage(arg0);
+                    }
                 } else if (strcmp(arg, "--override-lib-dir") == 0) {
                     override_lib_dir = buf_create_from_str(argv[i]);
                 } else if (strcmp(arg, "--main-pkg-path") == 0) {
@@ -856,7 +820,7 @@ int main(int argc, char **argv) {
                 } else if (strcmp(arg, "--object") == 0) {
                     objects.append(argv[i]);
                 } else if (strcmp(arg, "--c-source") == 0) {
-                    CFile *c_file = allocate<CFile>(1);
+                    CFile *c_file = heap::c_allocator.create<CFile>();
                     for (;;) {
                         if (argv[i][0] == '-') {
                             c_file->args.append(argv[i]);
@@ -876,18 +840,12 @@ int main(int argc, char **argv) {
                     cache_dir = argv[i];
                 } else if (strcmp(arg, "-target") == 0) {
                     target_string = argv[i];
-                } else if (strcmp(arg, "-mmacosx-version-min") == 0) {
-                    mmacosx_version_min = argv[i];
-                } else if (strcmp(arg, "-mios-version-min") == 0) {
-                    mios_version_min = argv[i];
                 } else if (strcmp(arg, "-framework") == 0) {
                     frameworks.append(argv[i]);
                 } else if (strcmp(arg, "--linker-script") == 0) {
                     linker_script = argv[i];
                 } else if (strcmp(arg, "--version-script") == 0) {
                     version_script = buf_create_from_str(argv[i]); 
-                } else if (strcmp(arg, "-target-glibc") == 0) {
-                    target_glibc = argv[i];
                 } else if (strcmp(arg, "-rpath") == 0) {
                     rpath_list.append(argv[i]);
                 } else if (strcmp(arg, "--test-filter") == 0) {
@@ -933,6 +891,8 @@ int main(int argc, char **argv) {
                             , argv[i]);
                         return EXIT_FAILURE;
                     }
+                } else if (strcmp(arg, "-mcpu") == 0) {
+                    mcpu = argv[i];
                 } else {
                     fprintf(stderr, "Invalid argument: %s\n", arg);
                     return print_error_usage(arg0);
@@ -1008,60 +968,40 @@ int main(int argc, char **argv) {
     init_all_targets();
 
     ZigTarget target;
-    if (target_string == nullptr) {
-        get_native_target(&target);
-        if (target_glibc != nullptr) {
-            fprintf(stderr, "-target-glibc provided but no -target parameter\n");
-            return print_error_usage(arg0);
-        }
-    } else {
-        if ((err = target_parse_triple(&target, target_string))) {
-            if (err == ErrorUnknownArchitecture && target.arch != ZigLLVM_UnknownArch) {
-                fprintf(stderr, "'%s' requires a sub-architecture. Try one of these:\n",
-                        target_arch_name(target.arch));
-                SubArchList sub_arch_list = target_subarch_list(target.arch);
-                size_t subarch_count = target_subarch_count(sub_arch_list);
-                for (size_t sub_i = 0; sub_i < subarch_count; sub_i += 1) {
-                    ZigLLVM_SubArchType sub = target_subarch_enum(sub_arch_list, sub_i);
-                    fprintf(stderr, "  %s%s\n", target_arch_name(target.arch), target_subarch_name(sub));
-                }
-                return print_error_usage(arg0);
-            } else {
-                fprintf(stderr, "invalid target: %s\n", err_str(err));
-                return print_error_usage(arg0);
-            }
-        }
-        if (target_is_glibc(&target)) {
-            target.glibc_version = allocate<ZigGLibCVersion>(1);
-
-            if (target_glibc != nullptr) {
-                if ((err = target_parse_glibc_version(target.glibc_version, target_glibc))) {
-                    fprintf(stderr, "invalid glibc version '%s': %s\n", target_glibc, err_str(err));
-                    return print_error_usage(arg0);
-                }
-            } else {
-                target_init_default_glibc_version(&target);
-            }
-        } else if (target_glibc != nullptr) {
-            fprintf(stderr, "'%s' is not a glibc-compatible target", target_string);
-            return print_error_usage(arg0);
-        }
+    if ((err = target_parse_triple(&target, target_string, mcpu, dynamic_linker))) {
+        fprintf(stderr, "invalid target: %s\n"
+                "See `%s targets` to display valid targets.\n", err_str(err), arg0);
+        return print_error_usage(arg0);
     }
 
+    Buf zig_triple_buf = BUF_INIT;
+    target_triple_zig(&zig_triple_buf, &target);
+
+    // If both output_dir and enable_cache are provided, and doing build-lib, we
+    // will just do a file copy at the end. This helps when bootstrapping zig from zig0
+    // because we want to pass something like this:
+    // zig0 build-lib --cache on --output-dir ${CMAKE_BINARY_DIR}
+    // And we don't have access to `zig0 build` because that would require detecting native libc
+    // on systems where we are not able to build a libc from source for them.
+    // But that's the only reason this works, so otherwise we give an error here.
+    Buf *final_output_dir_step = nullptr;
     if (output_dir != nullptr && enable_cache == CacheOptOn) {
-        fprintf(stderr, "`--output-dir` is incompatible with --cache on.\n");
-        return print_error_usage(arg0);
+        if (cmd == CmdBuild && out_type == OutTypeLib) {
+            final_output_dir_step = output_dir;
+            output_dir = nullptr;
+        } else {
+            fprintf(stderr, "`--output-dir` is incompatible with --cache on.\n");
+            return print_error_usage(arg0);
+        }
     }
 
     if (target_requires_pic(&target, have_libc) && want_pic == WantPICDisabled) {
-        Buf triple_buf = BUF_INIT;
-        target_triple_zig(&triple_buf, &target);
-        fprintf(stderr, "`--disable-pic` is incompatible with target '%s'\n", buf_ptr(&triple_buf));
+        fprintf(stderr, "`--disable-pic` is incompatible with target '%s'\n", buf_ptr(&zig_triple_buf));
         return print_error_usage(arg0);
     }
 
-    if (emit_file_type != EmitFileTypeBinary && in_file == nullptr) {
-        fprintf(stderr, "A root source file is required when using `--emit asm` or `--emit llvm-ir`\n");
+    if ((emit_asm || emit_llvm_ir) && in_file == nullptr) {
+        fprintf(stderr, "A root source file is required when using `-femit-asm` or `-femit-llvm-ir`\n");
         return print_error_usage(arg0);
     }
 
@@ -1073,15 +1013,22 @@ int main(int argc, char **argv) {
     switch (cmd) {
     case CmdLibC: {
         if (in_file) {
-            ZigLibCInstallation libc;
-            if ((err = zig_libc_parse(&libc, buf_create_from_str(in_file), &target, true)))
+            Stage2LibCInstallation libc;
+            if ((err = stage2_libc_parse(&libc, in_file))) {
+                fprintf(stderr, "unable to parse libc file: %s\n", err_str(err));
                 return main_exit(root_progress_node, EXIT_FAILURE);
+            }
             return main_exit(root_progress_node, EXIT_SUCCESS);
         }
-        ZigLibCInstallation libc;
-        if ((err = zig_libc_find_native(&libc, true)))
+        Stage2LibCInstallation libc;
+        if ((err = stage2_libc_find_native(&libc))) {
+            fprintf(stderr, "unable to find native libc file: %s\n", err_str(err));
             return main_exit(root_progress_node, EXIT_FAILURE);
-        zig_libc_render(&libc, stdout);
+        }
+        if ((err = stage2_libc_render(&libc, stdout))) {
+            fprintf(stderr, "unable to print libc file: %s\n", err_str(err));
+            return main_exit(root_progress_node, EXIT_FAILURE);
+        }
         return main_exit(root_progress_node, EXIT_SUCCESS);
     }
     case CmdBuiltin: {
@@ -1098,6 +1045,7 @@ int main(int argc, char **argv) {
         g->want_stack_check = want_stack_check;
         g->want_sanitize_c = want_sanitize_c;
         g->want_single_threaded = want_single_threaded;
+        g->test_is_evented = test_evented_io;
         Buf *builtin_source = codegen_generate_builtin_source(g);
         if (fwrite(buf_ptr(builtin_source), 1, buf_len(builtin_source), stdout) != buf_len(builtin_source)) {
             fprintf(stderr, "unable to write to stdout: %s\n", strerror(ferror(stdout)));
@@ -1124,10 +1072,37 @@ int main(int argc, char **argv) {
             {
                 fprintf(stderr, "Expected source file argument.\n");
                 return print_error_usage(arg0);
-            } else if (cmd == CmdRun && emit_file_type != EmitFileTypeBinary) {
-                fprintf(stderr, "Cannot run non-executable file.\n");
+            } else if (cmd == CmdRun && !emit_bin) {
+                fprintf(stderr, "Cannot run without emitting a binary file.\n");
                 return print_error_usage(arg0);
             }
+
+            if (target.is_native && link_libs.length != 0) {
+                Error err;
+                Stage2NativePaths paths;
+                if ((err = stage2_detect_native_paths(&paths))) {
+                    fprintf(stderr, "unable to detect native system paths: %s\n", err_str(err));
+                    exit(1);
+                }
+                for (size_t i = 0; i < paths.warnings_len; i += 1) {
+                    const char *warning = paths.warnings_ptr[i];
+                    fprintf(stderr, "warning: %s\n", warning);
+                }
+                for (size_t i = 0; i < paths.include_dirs_len; i += 1) {
+                    const char *include_dir = paths.include_dirs_ptr[i];
+                    clang_argv.append("-I");
+                    clang_argv.append(include_dir);
+                }
+                for (size_t i = 0; i < paths.lib_dirs_len; i += 1) {
+                    const char *lib_dir = paths.lib_dirs_ptr[i];
+                    lib_dirs.append(lib_dir);
+                }
+                for (size_t i = 0; i < paths.rpaths_len; i += 1) {
+                    const char *rpath = paths.rpaths_ptr[i];
+                    rpath_list.append(rpath);
+                }
+            }
+
 
             assert(cmd != CmdBuild || out_type != OutTypeUnknown);
 
@@ -1165,15 +1140,15 @@ int main(int argc, char **argv) {
                 return print_error_usage(arg0);
             }
 
-            Buf *zig_root_source_file = cmd == CmdTranslateC ? nullptr : in_file_buf;
+            Buf *zig_root_source_file = (cmd == CmdTranslateC) ? nullptr : in_file_buf;
 
             if (cmd == CmdRun && buf_out_name == nullptr) {
                 buf_out_name = buf_create_from_str("run");
             }
-            ZigLibCInstallation *libc = nullptr;
+            Stage2LibCInstallation *libc = nullptr;
             if (libc_txt != nullptr) {
-                libc = allocate<ZigLibCInstallation>(1);
-                if ((err = zig_libc_parse(libc, buf_create_from_str(libc_txt), &target, true))) {
+                libc = heap::c_allocator.create<Stage2LibCInstallation>();
+                if ((err = stage2_libc_parse(libc, libc_txt))) {
                     fprintf(stderr, "Unable to parse --libc text file: %s\n", err_str(err));
                     return main_exit(root_progress_node, EXIT_FAILURE);
                 }
@@ -1181,7 +1156,7 @@ int main(int argc, char **argv) {
             Buf *cache_dir_buf;
             if (cache_dir == nullptr) {
                 if (cmd == CmdRun) {
-                    cache_dir_buf = get_stage1_cache_path();
+                    cache_dir_buf = get_global_cache_dir();
                 } else {
                     cache_dir_buf = buf_create_from_str(default_zig_cache_name);
                 }
@@ -1192,6 +1167,7 @@ int main(int argc, char **argv) {
                     override_lib_dir, libc, cache_dir_buf, cmd == CmdTest, root_progress_node);
             if (llvm_argv.length >= 2) codegen_set_llvm_argv(g, llvm_argv.items + 1, llvm_argv.length - 2);
             g->valgrind_support = valgrind_support;
+            g->link_eh_frame_hdr = link_eh_frame_hdr;
             g->want_pic = want_pic;
             g->want_stack_check = want_stack_check;
             g->want_sanitize_c = want_sanitize_c;
@@ -1201,7 +1177,10 @@ int main(int argc, char **argv) {
             g->enable_stack_report = stack_report;
             g->enable_dump_analysis = enable_dump_analysis;
             g->enable_doc_generation = enable_doc_generation;
-            g->disable_bin_generation = disable_bin_generation;
+            g->emit_bin = emit_bin;
+            g->emit_asm = emit_asm;
+            g->emit_llvm_ir = emit_llvm_ir;
+
             codegen_set_out_name(g, buf_out_name);
             codegen_set_lib_version(g, ver_major, ver_minor, ver_patch);
             g->want_single_threaded = want_single_threaded;
@@ -1214,7 +1193,6 @@ int main(int argc, char **argv) {
 
             codegen_set_strip(g, strip);
             g->is_dynamic = is_dynamic;
-            g->dynamic_linker_path = dynamic_linker;
             g->verbose_tokenize = verbose_tokenize;
             g->verbose_ast = verbose_ast;
             g->verbose_link = verbose_link;
@@ -1222,12 +1200,14 @@ int main(int argc, char **argv) {
             g->verbose_llvm_ir = verbose_llvm_ir;
             g->verbose_cimport = verbose_cimport;
             g->verbose_cc = verbose_cc;
+            g->verbose_llvm_cpu_features = verbose_llvm_cpu_features;
             g->output_dir = output_dir;
             g->disable_gen_h = disable_gen_h;
             g->bundle_compiler_rt = bundle_compiler_rt;
             codegen_set_errmsg_color(g, color);
             g->system_linker_hack = system_linker_hack;
             g->function_sections = function_sections;
+            g->code_model = code_model;
 
             for (size_t i = 0; i < lib_dirs.length; i += 1) {
                 codegen_add_lib_dir(g, lib_dirs.at(i));
@@ -1251,22 +1231,11 @@ int main(int argc, char **argv) {
             }
 
             codegen_set_rdynamic(g, rdynamic);
-            if (mmacosx_version_min && mios_version_min) {
-                fprintf(stderr, "-mmacosx-version-min and -mios-version-min options not allowed together\n");
-                return main_exit(root_progress_node, EXIT_FAILURE);
-            }
-
-            if (mmacosx_version_min) {
-                codegen_set_mmacosx_version_min(g, buf_create_from_str(mmacosx_version_min));
-            }
-
-            if (mios_version_min) {
-                codegen_set_mios_version_min(g, buf_create_from_str(mios_version_min));
-            }
 
             if (test_filter) {
                 codegen_set_test_filter(g, buf_create_from_str(test_filter));
             }
+            g->test_is_evented = test_evented_io;
 
             if (test_name_prefix) {
                 codegen_set_test_name_prefix(g, buf_create_from_str(test_name_prefix));
@@ -1283,8 +1252,6 @@ int main(int argc, char **argv) {
 
 
             if (cmd == CmdBuild || cmd == CmdRun) {
-                codegen_set_emit_file_type(g, emit_file_type);
-
                 g->enable_cache = get_cache_opt(enable_cache, cmd == CmdRun);
                 codegen_build_and_link(g);
                 if (root_progress_node != nullptr) {
@@ -1298,10 +1265,11 @@ int main(int argc, char **argv) {
 
                 if (cmd == CmdRun) {
 #ifdef ZIG_ENABLE_MEM_PROFILE
-                    memprof_dump_stats(stderr);
+                    if (mem::report_print)
+                        mem::print_report();
 #endif
 
-                    const char *exec_path = buf_ptr(&g->output_file_path);
+                    const char *exec_path = buf_ptr(&g->bin_file_output_path);
                     ZigList<const char*> args = {0};
 
                     args.append(exec_path);
@@ -1321,25 +1289,40 @@ int main(int argc, char **argv) {
                 } else if (cmd == CmdBuild) {
                     if (g->enable_cache) {
 #if defined(ZIG_OS_WINDOWS)
-                        buf_replace(&g->output_file_path, '/', '\\');
+                        buf_replace(&g->bin_file_output_path, '/', '\\');
 #endif
-                        if (printf("%s\n", buf_ptr(&g->output_file_path)) < 0)
-                            return main_exit(root_progress_node, EXIT_FAILURE);
+                        if (final_output_dir_step != nullptr) {
+                            Buf *dest_basename = buf_alloc();
+                            os_path_split(&g->bin_file_output_path, nullptr, dest_basename);
+                            Buf *dest_path = buf_alloc();
+                            os_path_join(final_output_dir_step, dest_basename, dest_path);
+
+                            if ((err = os_update_file(&g->bin_file_output_path, dest_path))) {
+                                fprintf(stderr, "unable to copy %s to %s: %s\n", buf_ptr(&g->bin_file_output_path),
+                                        buf_ptr(dest_path), err_str(err));
+                                return main_exit(root_progress_node, EXIT_FAILURE);
+                            }
+                        } else {
+                            if (printf("%s\n", buf_ptr(&g->bin_file_output_path)) < 0)
+                                return main_exit(root_progress_node, EXIT_FAILURE);
+                        }
                     }
                     return main_exit(root_progress_node, EXIT_SUCCESS);
                 } else {
                     zig_unreachable();
                 }
             } else if (cmd == CmdTranslateC) {
-                codegen_translate_c(g, in_file_buf, stdout);
+                g->enable_cache = get_cache_opt(enable_cache, false);
+                codegen_translate_c(g, in_file_buf);
                 if (timing_info)
                     codegen_print_timing_report(g, stderr);
                 return main_exit(root_progress_node, EXIT_SUCCESS);
             } else if (cmd == CmdTest) {
-                codegen_set_emit_file_type(g, emit_file_type);
-
                 ZigTarget native;
-                get_native_target(&native);
+                if ((err = target_parse_triple(&native, "native", nullptr, nullptr))) {
+                    fprintf(stderr, "Unable to get native target: %s\n", err_str(err));
+                    return EXIT_FAILURE;
+                }
 
                 g->enable_cache = get_cache_opt(enable_cache, output_dir == nullptr);
                 codegen_build_and_link(g);
@@ -1356,17 +1339,17 @@ int main(int argc, char **argv) {
                     zig_print_stack_report(g, stdout);
                 }
 
-                if (g->disable_bin_generation) {
+                if (!g->emit_bin) {
                     fprintf(stderr, "Semantic analysis complete. No binary produced due to -fno-emit-bin.\n");
                     return main_exit(root_progress_node, EXIT_SUCCESS);
                 }
 
-                Buf *test_exe_path_unresolved = &g->output_file_path;
+                Buf *test_exe_path_unresolved = &g->bin_file_output_path;
                 Buf *test_exe_path = buf_alloc();
                 *test_exe_path = os_path_resolve(&test_exe_path_unresolved, 1);
 
-                if (emit_file_type != EmitFileTypeBinary) {
-                    fprintf(stderr, "Created %s but skipping execution because it is non executable.\n",
+                if (!g->emit_bin) {
+                    fprintf(stderr, "Created %s but skipping execution because no binary generated.\n",
                             buf_ptr(test_exe_path));
                     return main_exit(root_progress_node, EXIT_SUCCESS);
                 }
@@ -1408,8 +1391,24 @@ int main(int argc, char **argv) {
         return main_exit(root_progress_node, EXIT_SUCCESS);
     }
     case CmdTargets:
-        return print_target_list(stdout);
+        return stage2_cmd_targets(buf_ptr(&zig_triple_buf));
     case CmdNone:
         return print_full_usage(arg0, stderr, EXIT_FAILURE);
     }
+    zig_unreachable();
+}
+
+int main(int argc, char **argv) {
+    stage2_attach_segfault_handler();
+    os_init();
+    mem::init();
+
+    auto result = main0(argc, argv);
+
+#ifdef ZIG_ENABLE_MEM_PROFILE
+    if (mem::report_print)
+        mem::intern_counters.print_report();
+#endif
+    mem::deinit();
+    return result;
 }

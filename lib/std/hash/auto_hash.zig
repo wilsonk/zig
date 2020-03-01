@@ -25,13 +25,13 @@ pub fn hashPointer(hasher: var, key: var, comptime strat: HashStrategy) void {
     const info = @typeInfo(@TypeOf(key));
 
     switch (info.Pointer.size) {
-        builtin.TypeInfo.Pointer.Size.One => switch (strat) {
+        .One => switch (strat) {
             .Shallow => hash(hasher, @ptrToInt(key), .Shallow),
             .Deep => hash(hasher, key.*, .Shallow),
             .DeepRecursive => hash(hasher, key.*, .DeepRecursive),
         },
 
-        builtin.TypeInfo.Pointer.Size.Slice => switch (strat) {
+        .Slice => switch (strat) {
             .Shallow => {
                 hashPointer(hasher, key.ptr, .Shallow);
                 hash(hasher, key.len, .Shallow);
@@ -40,9 +40,7 @@ pub fn hashPointer(hasher: var, key: var, comptime strat: HashStrategy) void {
             .DeepRecursive => hashArray(hasher, key, .DeepRecursive),
         },
 
-        builtin.TypeInfo.Pointer.Size.Many,
-        builtin.TypeInfo.Pointer.Size.C,
-        => switch (strat) {
+        .Many, .C, => switch (strat) {
             .Shallow => hash(hasher, @ptrToInt(key), .Shallow),
             else => @compileError(
                 \\ unknown-length pointers and C pointers cannot be hashed deeply.
@@ -93,7 +91,7 @@ pub fn hash(hasher: var, key: var, comptime strat: HashStrategy) void {
         // TODO Check if the situation is better after #561 is resolved.
         .Int => @call(.{ .modifier = .always_inline }, hasher.update, .{std.mem.asBytes(&key)}),
 
-        .Float => |info| hash(hasher, @bitCast(@IntType(false, info.bits), key), strat),
+        .Float => |info| hash(hasher, @bitCast(std.meta.IntType(false, info.bits), key), strat),
 
         .Bool => hash(hasher, @boolToInt(key), strat),
         .Enum => hash(hasher, @enumToInt(key), strat),
@@ -234,8 +232,8 @@ test "hash pointer" {
 test "hash slice shallow" {
     // Allocate one array dynamically so that we're assured it is not merged
     // with the other by the optimization passes.
-    const array1 = try std.heap.page_allocator.create([6]u32);
-    defer std.heap.page_allocator.destroy(array1);
+    const array1 = try std.testing.allocator.create([6]u32);
+    defer std.testing.allocator.destroy(array1);
     array1.* = [_]u32{ 1, 2, 3, 4, 5, 6 };
     const array2 = [_]u32{ 1, 2, 3, 4, 5, 6 };
     const a = array1[0..];
@@ -250,8 +248,8 @@ test "hash slice shallow" {
 test "hash slice deep" {
     // Allocate one array dynamically so that we're assured it is not merged
     // with the other by the optimization passes.
-    const array1 = try std.heap.page_allocator.create([6]u32);
-    defer std.heap.page_allocator.destroy(array1);
+    const array1 = try std.testing.allocator.create([6]u32);
+    defer std.testing.allocator.destroy(array1);
     array1.* = [_]u32{ 1, 2, 3, 4, 5, 6 };
     const array2 = [_]u32{ 1, 2, 3, 4, 5, 6 };
     const a = array1[0..];
@@ -278,7 +276,7 @@ test "hash struct deep" {
         }
     };
 
-    const allocator = std.heap.page_allocator;
+    const allocator = std.testing.allocator;
     const foo = try Foo.init(allocator, 123, 1.0, true);
     const bar = try Foo.init(allocator, 123, 1.0, true);
     const baz = try Foo.init(allocator, 123, 1.0, false);

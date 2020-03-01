@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const compiler_rt = @import("../compiler_rt.zig");
 
-pub extern fn __ashrti3(a: i128, b: i32) i128 {
+pub fn __ashrti3(a: i128, b: i32) callconv(.C) i128 {
     var input = twords{ .all = a };
     var result: twords = undefined;
 
@@ -25,7 +25,7 @@ const twords = extern union {
     all: i128,
     s: S,
 
-    const S = if (builtin.endian == builtin.Endian.Little)
+    const S = if (builtin.endian == .Little)
         struct {
             low: i64,
             high: i64,
