@@ -5910,10 +5910,18 @@ static IrInstSrc *ir_gen_array_access(IrBuilderSrc *irb, Scope *scope, AstNode *
     if (array_ref_instruction == irb->codegen->invalid_inst_src)
         return array_ref_instruction;
 
+    // Create an usize-typed result location to hold the subscript value, this
+    // makes it possible for the compiler to infer the subscript expression type
+    // if needed
+    IrInstSrc *usize_type_inst = ir_build_const_type(irb, scope, node, irb->codegen->builtin_types.entry_usize);
+    ResultLocCast *result_loc_cast = ir_build_cast_result_loc(irb, usize_type_inst, no_result_loc());
+
     AstNode *subscript_node = node->data.array_access_expr.subscript;
-    IrInstSrc *subscript_instruction = ir_gen_node(irb, subscript_node, scope);
-    if (subscript_instruction == irb->codegen->invalid_inst_src)
-        return subscript_instruction;
+    IrInstSrc *subscript_value = ir_gen_node_extra(irb, subscript_node, scope, LValNone, &result_loc_cast->base);
+    if (subscript_value == irb->codegen->invalid_inst_src)
+        return irb->codegen->invalid_inst_src;
+
+    IrInstSrc *subscript_instruction = ir_build_implicit_cast(irb, scope, subscript_node, subscript_value, result_loc_cast);
 
     IrInstSrc *ptr_instruction = ir_build_elem_ptr(irb, scope, node, array_ref_instruction,
             subscript_instruction, true, PtrLenSingle, nullptr);
@@ -9014,7 +9022,7 @@ static IrInstSrc *ir_gen_switch_expr(IrBuilderSrc *irb, Scope *scope, AstNode *n
                     return irb->codegen->invalid_inst_src;
                 }
                 else_prong = prong_node;
-            } else if (prong_item_count == 1 && 
+            } else if (prong_item_count == 1 &&
                     prong_node->data.switch_prong.items.at(0)->type == NodeTypeSymbol &&
                     buf_eql_str(prong_node->data.switch_prong.items.at(0)->data.symbol_expr.symbol, "_")) {
                 if (underscore_prong) {
@@ -24339,7 +24347,8 @@ static Error ir_make_type_info_value(IrAnalyze *ira, IrInst* source_instr, ZigTy
 
                     // default_value: var
                     inner_fields[3]->special = ConstValSpecialStatic;
-                    inner_fields[3]->type = get_optional_type(ira->codegen, struct_field->type_entry);
+                    inner_fields[3]->type = get_optional_type2(ira->codegen, struct_field->type_entry);
+                    if (inner_fields[3]->type == nullptr) return ErrorSemanticAnalyzeFail;
                     memoize_field_init_val(ira->codegen, type_entry, struct_field);
                     set_optional_payload(inner_fields[3], struct_field->init_val);
 
@@ -26067,7 +26076,7 @@ static IrInstGen *ir_analyze_instruction_slice(IrAnalyze *ira, IrInstSrcSlice *i
             if (array_type->data.pointer.ptr_len == PtrLenC) {
                 array_type = adjust_ptr_len(ira->codegen, array_type, PtrLenUnknown);
 
-                // C pointers are allowzero by default.  
+                // C pointers are allowzero by default.
                 // However, we want to be able to slice them without generating an allowzero slice (see issue #4401).
                 // To achieve this, we generate a runtime safety check and make the slice type non-allowzero.
                 if (array_type->data.pointer.allow_zero) {
@@ -26362,7 +26371,7 @@ static IrInstGen *ir_analyze_instruction_slice(IrAnalyze *ira, IrInstSrcSlice *i
 
         if (type_is_invalid(ptr_val->value->type))
             return ira->codegen->invalid_inst_gen;
-    
+
         ir_build_assert_non_null(ira, &instruction->base.base, ptr_val);
     }
 
@@ -30245,7 +30254,7 @@ static Error ir_resolve_lazy_raw(AstNode *source_node, ZigValue *val) {
                     return ErrorSemanticAnalyzeFail;
                 } else if (elem_type->id == ZigTypeIdOpaque) {
                     ir_add_error(ira, &lazy_ptr_type->elem_type->base,
-                            buf_sprintf("C pointers cannot point opaque types"));
+                            buf_sprintf("C pointers cannot point to opaque types"));
                     return ErrorSemanticAnalyzeFail;
                 } else if (lazy_ptr_type->is_allowzero) {
                     ir_add_error(ira, &lazy_ptr_type->elem_type->base,

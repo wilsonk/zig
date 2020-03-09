@@ -649,11 +649,22 @@ ZigType *get_pointer_to_type(CodeGen *g, ZigType *child_type, bool is_const) {
 }
 
 ZigType *get_optional_type(CodeGen *g, ZigType *child_type) {
+    ZigType *result = get_optional_type2(g, child_type);
+    if (result == nullptr) {
+        codegen_report_errors_and_exit(g);
+    }
+    return result;
+}
+
+ZigType *get_optional_type2(CodeGen *g, ZigType *child_type) {
     if (child_type->optional_parent != nullptr) {
         return child_type->optional_parent;
     }
 
-    assert(type_is_resolved(child_type, ResolveStatusSizeKnown));
+    Error err;
+    if ((err = type_resolve(g, child_type, ResolveStatusSizeKnown))) {
+        return nullptr;
+    }
 
     ZigType *entry = new_type_table_entry(ZigTypeIdOptional);
 
@@ -2882,7 +2893,7 @@ static Error resolve_struct_zero_bits(CodeGen *g, ZigType *struct_type) {
             return ErrorSemanticAnalyzeFail;
         }
         if (field_is_opaque_type) {
-            add_node_error(g, field_node->data.struct_field.type,
+            add_node_error(g, field_node,
                 buf_sprintf("opaque types have unknown size and therefore cannot be directly embedded in structs"));
             struct_type->data.structure.resolve_status = ResolveStatusInvalid;
             return ErrorSemanticAnalyzeFail;
@@ -3174,7 +3185,7 @@ static Error resolve_union_zero_bits(CodeGen *g, ZigType *union_type) {
                 return ErrorSemanticAnalyzeFail;
             }
             if (field_is_opaque_type) {
-                add_node_error(g, field_node->data.struct_field.type,
+                add_node_error(g, field_node,
                     buf_create_from_str(
                         "opaque types have unknown size and therefore cannot be directly embedded in unions"));
                 union_type->data.unionation.resolve_status = ResolveStatusInvalid;

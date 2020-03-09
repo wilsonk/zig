@@ -1592,7 +1592,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var y: [*c]c_void = x;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:16: error: C pointers cannot point opaque types",
+        "tmp.zig:3:16: error: C pointers cannot point to opaque types",
     });
 
     cases.add("directly embedding opaque type in struct and union",
@@ -1610,9 +1610,14 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn b() void {
         \\    var bar: Bar = undefined;
         \\}
+        \\export fn c() void {
+        \\    var baz: *@OpaqueType() = undefined;
+        \\    const qux = .{baz.*};
+        \\}
     , &[_][]const u8{
-        "tmp.zig:3:8: error: opaque types have unknown size and therefore cannot be directly embedded in structs",
-        "tmp.zig:7:10: error: opaque types have unknown size and therefore cannot be directly embedded in unions",
+        "tmp.zig:3:5: error: opaque types have unknown size and therefore cannot be directly embedded in structs",
+        "tmp.zig:7:5: error: opaque types have unknown size and therefore cannot be directly embedded in unions",
+        "tmp.zig:17:22: error: opaque types have unknown size and therefore cannot be directly embedded in structs",
     });
 
     cases.add("implicit cast between C pointer and Zig pointer - bad const/align/child",
@@ -3605,11 +3610,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add("array access of non array",
         \\export fn f() void {
         \\    var bad : bool = undefined;
-        \\    bad[bad] = bad[bad];
+        \\    bad[0] = bad[0];
         \\}
         \\export fn g() void {
         \\    var bad : bool = undefined;
-        \\    _ = bad[bad];
+        \\    _ = bad[0];
         \\}
     , &[_][]const u8{
         "tmp.zig:3:8: error: array access of non-array type 'bool'",
