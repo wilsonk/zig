@@ -231,6 +231,7 @@ enum ConstPtrSpecial {
     // The pointer is a reference to a single object.
     ConstPtrSpecialRef,
     // The pointer points to an element in an underlying array.
+    // Not to be confused with ConstPtrSpecialSubArray.
     ConstPtrSpecialBaseArray,
     // The pointer points to a field in an underlying struct.
     ConstPtrSpecialBaseStruct,
@@ -257,6 +258,10 @@ enum ConstPtrSpecial {
     // types to be the same, so all optionals of pointer types use x_ptr
     // instead of x_optional.
     ConstPtrSpecialNull,
+    // The pointer points to a sub-array (not an individual element).
+    // Not to be confused with ConstPtrSpecialBaseArray. However, it uses the same
+    // union payload struct (base_array).
+    ConstPtrSpecialSubArray,
 };
 
 enum ConstPtrMut {
@@ -651,6 +656,7 @@ enum NodeType {
     NodeTypeSwitchProng,
     NodeTypeSwitchRange,
     NodeTypeCompTime,
+    NodeTypeNoAsync,
     NodeTypeBreak,
     NodeTypeContinue,
     NodeTypeAsmExpr,
@@ -991,6 +997,10 @@ struct AstNodeCompTime {
     AstNode *expr;
 };
 
+struct AstNodeNoAsync {
+    AstNode *expr;
+};
+
 struct AsmOutput {
     Buf *asm_symbolic_name;
     Buf *constraint;
@@ -1148,7 +1158,6 @@ struct AstNodeErrorType {
 };
 
 struct AstNodeAwaitExpr {
-    Token *noasync_token;
     AstNode *expr;
 };
 
@@ -1199,6 +1208,7 @@ struct AstNode {
         AstNodeSwitchProng switch_prong;
         AstNodeSwitchRange switch_range;
         AstNodeCompTime comptime_expr;
+        AstNodeNoAsync noasync_expr;
         AstNodeAsmExpr asm_expr;
         AstNodeFieldAccessExpr field_access_expr;
         AstNodePtrDerefExpr ptr_deref_expr;
@@ -1829,6 +1839,7 @@ enum PanicMsgId {
     PanicMsgIdBadNoAsyncCall,
     PanicMsgIdResumeNotSuspendedFn,
     PanicMsgIdBadSentinel,
+    PanicMsgIdShxTooBigRhs,
 
     PanicMsgIdCount,
 };
@@ -2256,6 +2267,7 @@ struct CodeGen {
     Buf *zig_lib_dir;
     Buf *zig_std_dir;
     Buf *version_script_path;
+    Buf *override_soname;
 
     const char **llvm_argv;
     size_t llvm_argv_len;
@@ -2325,6 +2337,7 @@ enum ScopeId {
     ScopeIdRuntime,
     ScopeIdTypeOf,
     ScopeIdExpr,
+    ScopeIdNoAsync,
 };
 
 struct Scope {
@@ -2457,6 +2470,11 @@ struct ScopeCompTime {
     Scope base;
 };
 
+// This scope is created for a noasync expression.
+// NodeTypeNoAsync
+struct ScopeNoAsync {
+    Scope base;
+};
 
 // This scope is created for a function definition.
 // NodeTypeFnDef
@@ -3694,6 +3712,7 @@ struct IrInstGenSlice {
     IrInstGen *start;
     IrInstGen *end;
     IrInstGen *result_loc;
+    ZigValue *sentinel;
     bool safety_check_on;
 };
 

@@ -225,6 +225,10 @@ pub const FILE_POSITION_INFORMATION = extern struct {
     CurrentByteOffset: LARGE_INTEGER,
 };
 
+pub const FILE_END_OF_FILE_INFORMATION = extern struct {
+    EndOfFile: LARGE_INTEGER,
+};
+
 pub const FILE_MODE_INFORMATION = extern struct {
     Mode: ULONG,
 };
@@ -234,6 +238,13 @@ pub const FILE_ALIGNMENT_INFORMATION = extern struct {
 };
 
 pub const FILE_NAME_INFORMATION = extern struct {
+    FileNameLength: ULONG,
+    FileName: [1]WCHAR,
+};
+
+pub const FILE_RENAME_INFORMATION = extern struct {
+    ReplaceIfExists: BOOLEAN,
+    RootDirectory: ?HANDLE,
     FileNameLength: ULONG,
     FileName: [1]WCHAR,
 };

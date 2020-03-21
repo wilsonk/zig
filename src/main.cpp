@@ -54,7 +54,6 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  --cache-dir [path]           override the local cache directory\n"
         "  --cache [auto|off|on]        build in cache, print output path to stdout\n"
         "  --color [auto|off|on]        enable or disable colored error messages\n"
-        "  --disable-gen-h              do not generate a C header file (.h)\n"
         "  --disable-valgrind           omit valgrind client requests in debug builds\n"
         "  --eh-frame-hdr               enable C++ exception handling by passing --eh-frame-hdr to linker\n"
         "  --enable-valgrind            include valgrind client requests release builds\n"
@@ -77,6 +76,8 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  -fno-emit-asm                (default) do not output .s (assembly code)\n"
         "  -femit-llvm-ir               produce a .ll file with LLVM IR\n"
         "  -fno-emit-llvm-ir            (default) do not produce a .ll file with LLVM IR\n"
+        "  -femit-h                      generate a C header file (.h)\n"
+        "  -fno-emit-h                  (default) do not generate a C header file (.h)\n"
         "  --libc [file]                Provide a file which specifies libc paths\n"
         "  --name [name]                override output name\n"
         "  --output-dir [dir]           override output directory (defaults to cwd)\n"
@@ -431,6 +432,7 @@ static int main0(int argc, char **argv) {
     bool emit_bin = true;
     bool emit_asm = false;
     bool emit_llvm_ir = false;
+    bool emit_h = false;
     const char *cache_dir = nullptr;
     CliPkg *cur_pkg = heap::c_allocator.create<CliPkg>();
     BuildMode build_mode = BuildModeDebug;
@@ -439,7 +441,6 @@ static int main0(int argc, char **argv) {
     bool system_linker_hack = false;
     TargetSubsystem subsystem = TargetSubsystemAuto;
     bool want_single_threaded = false;
-    bool disable_gen_h = false;
     bool bundle_compiler_rt = false;
     Buf *override_lib_dir = nullptr;
     Buf *main_pkg_path = nullptr;
@@ -660,9 +661,7 @@ static int main0(int argc, char **argv) {
             } else if (strcmp(arg, "--system-linker-hack") == 0) {
                 system_linker_hack = true;
             } else if (strcmp(arg, "--single-threaded") == 0) {
-                want_single_threaded = true;
-            } else if (strcmp(arg, "--disable-gen-h") == 0) {
-                disable_gen_h = true;
+                want_single_threaded = true;;
             } else if (strcmp(arg, "--bundle-compiler-rt") == 0) {
                 bundle_compiler_rt = true;
             } else if (strcmp(arg, "--test-cmd-bin") == 0) {
@@ -719,6 +718,11 @@ static int main0(int argc, char **argv) {
                 emit_llvm_ir = true;
             } else if (strcmp(arg, "-fno-emit-llvm-ir") == 0) {
                 emit_llvm_ir = false;
+            } else if (strcmp(arg, "-femit-h") == 0) {
+                emit_h = true;
+            } else if (strcmp(arg, "-fno-emit-h") == 0 || strcmp(arg, "--disable-gen-h") == 0) {
+                // the --disable-gen-h is there to support godbolt. once they upgrade to -fno-emit-h then we can remove this
+                emit_h = false;
             } else if (str_starts_with(arg, "-mcpu=")) {
                 mcpu = arg + strlen("-mcpu=");
             } else if (i + 1 >= argc) {
@@ -1202,7 +1206,7 @@ static int main0(int argc, char **argv) {
             g->verbose_cc = verbose_cc;
             g->verbose_llvm_cpu_features = verbose_llvm_cpu_features;
             g->output_dir = output_dir;
-            g->disable_gen_h = disable_gen_h;
+            g->disable_gen_h = !emit_h;
             g->bundle_compiler_rt = bundle_compiler_rt;
             codegen_set_errmsg_color(g, color);
             g->system_linker_hack = system_linker_hack;
@@ -1290,6 +1294,7 @@ static int main0(int argc, char **argv) {
                     if (g->enable_cache) {
 #if defined(ZIG_OS_WINDOWS)
                         buf_replace(&g->bin_file_output_path, '/', '\\');
+                        buf_replace(g->output_dir, '/', '\\');
 #endif
                         if (final_output_dir_step != nullptr) {
                             Buf *dest_basename = buf_alloc();
@@ -1303,7 +1308,7 @@ static int main0(int argc, char **argv) {
                                 return main_exit(root_progress_node, EXIT_FAILURE);
                             }
                         } else {
-                            if (printf("%s\n", buf_ptr(&g->bin_file_output_path)) < 0)
+                            if (printf("%s\n", buf_ptr(g->output_dir)) < 0)
                                 return main_exit(root_progress_node, EXIT_FAILURE);
                         }
                     }
@@ -1391,7 +1396,7 @@ static int main0(int argc, char **argv) {
         return main_exit(root_progress_node, EXIT_SUCCESS);
     }
     case CmdTargets:
-        return stage2_cmd_targets(buf_ptr(&zig_triple_buf));
+        return stage2_cmd_targets(target_string, mcpu, dynamic_linker);
     case CmdNone:
         return print_full_usage(arg0, stderr, EXIT_FAILURE);
     }

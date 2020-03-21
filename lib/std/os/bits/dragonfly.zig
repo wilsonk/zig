@@ -138,8 +138,10 @@ pub const MAP_SIZEALIGN = 262144;
 
 pub const PATH_MAX = 1024;
 
+pub const ino_t = c_ulong;
+
 pub const Stat = extern struct {
-    ino: c_ulong,
+    ino: ino_t,
     nlink: c_uint,
     dev: c_uint,
     mode: c_ushort,
@@ -280,6 +282,8 @@ pub const F_ULOCK = 0;
 pub const F_LOCK = 1;
 pub const F_TLOCK = 2;
 pub const F_TEST = 3;
+
+pub const FD_CLOEXEC = 1;
 
 pub const AT_FDCWD = -328243;
 pub const AT_SYMLINK_NOFOLLOW = 1;
