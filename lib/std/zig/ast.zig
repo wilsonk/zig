@@ -15,6 +15,9 @@ pub const Tree = struct {
     root_node: *Node.Root,
     arena_allocator: std.heap.ArenaAllocator,
     errors: ErrorList,
+
+    /// translate-c uses this to avoid having to emit correct newlines
+    /// TODO get rid of this hack
     generated: bool = false,
 
     pub const TokenList = SegmentedList(Token, 64);
@@ -1032,6 +1035,7 @@ pub const Node = struct {
     pub const Defer = struct {
         base: Node = Node{ .id = .Defer },
         defer_token: TokenIndex,
+        payload: ?*Node,
         expr: *Node,
 
         pub fn iterate(self: *Defer, index: usize) ?*Node {
@@ -1833,8 +1837,7 @@ pub const Node = struct {
             var i = index;
 
             switch (self.kind) {
-                .Break,
-                .Continue => |maybe_label| {
+                .Break, .Continue => |maybe_label| {
                     if (maybe_label) |label| {
                         if (i < 1) return label;
                         i -= 1;
@@ -1861,8 +1864,7 @@ pub const Node = struct {
             }
 
             switch (self.kind) {
-                .Break,
-                .Continue => |maybe_label| {
+                .Break, .Continue => |maybe_label| {
                     if (maybe_label) |label| {
                         return label.lastToken();
                     }
