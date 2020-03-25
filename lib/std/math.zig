@@ -61,11 +61,17 @@ pub const f16_toint = 1.0 / f16_epsilon;
 pub const nan_u16 = @as(u16, 0x7C01);
 pub const nan_f16 = @bitCast(f16, nan_u16);
 
+pub const qnan_u16 = @as(u16, 0x7E00);
+pub const qnan_f16 = @bitCast(f16, qnan_u16);
+
 pub const inf_u16 = @as(u16, 0x7C00);
 pub const inf_f16 = @bitCast(f16, inf_u16);
 
 pub const nan_u32 = @as(u32, 0x7F800001);
 pub const nan_f32 = @bitCast(f32, nan_u32);
+
+pub const qnan_u32 = @as(u32, 0x7FC00000);
+pub const qnan_f32 = @bitCast(f32, qnan_u32);
 
 pub const inf_u32 = @as(u32, 0x7F800000);
 pub const inf_f32 = @bitCast(f32, inf_u32);
@@ -73,11 +79,17 @@ pub const inf_f32 = @bitCast(f32, inf_u32);
 pub const nan_u64 = @as(u64, 0x7FF << 52) | 1;
 pub const nan_f64 = @bitCast(f64, nan_u64);
 
+pub const qnan_u64 = @as(u64, 0x7ff8000000000000);
+pub const qnan_f64 = @bitCast(f64, qnan_u64);
+
 pub const inf_u64 = @as(u64, 0x7FF << 52);
 pub const inf_f64 = @bitCast(f64, inf_u64);
 
 pub const nan_u128 = @as(u128, 0x7fff0000000000000000000000000001);
 pub const nan_f128 = @bitCast(f128, nan_u128);
+
+pub const qnan_u128 = @as(u128, 0x7fff8000000000000000000000000000);
+pub const qnan_f128 = @bitCast(f128, qnan_u128);
 
 pub const inf_u128 = @as(u128, 0x7fff0000000000000000000000000000);
 pub const inf_f128 = @bitCast(f128, inf_u128);
@@ -293,7 +305,7 @@ test "math.min" {
     }
 }
 
-pub fn max(x: var, y: var) @TypeOf(x + y) {
+pub fn max(x: var, y: var) @TypeOf(x, y) {
     return if (x > y) x else y;
 }
 
@@ -670,33 +682,37 @@ fn testRem() void {
 
 /// Returns the absolute value of the integer parameter.
 /// Result is an unsigned integer.
-pub fn absCast(x: var) t: {
-    if (@TypeOf(x) == comptime_int) {
-        break :t comptime_int;
-    } else {
-        break :t std.meta.IntType(false, @TypeOf(x).bit_count);
-    }
+pub fn absCast(x: var) switch (@typeInfo(@TypeOf(x))) {
+    .ComptimeInt => comptime_int,
+    .Int => |intInfo| std.meta.IntType(false, intInfo.bits),
+    else => @compileError("absCast only accepts integers"),
 } {
-    if (@TypeOf(x) == comptime_int) {
-        return if (x < 0) -x else x;
+    switch (@typeInfo(@TypeOf(x))) {
+        .ComptimeInt => {
+            if (x < 0) {
+                return -x;
+            } else {
+                return x;
+            }
+        },
+        .Int => |intInfo| {
+            const Uint = std.meta.IntType(false, intInfo.bits);
+            if (x < 0) {
+                return ~@bitCast(Uint, x +% -1);
+            } else {
+                return @intCast(Uint, x);
+            }
+        },
+        else => unreachable,
     }
-    const uint = std.meta.IntType(false, @TypeOf(x).bit_count);
-    if (x >= 0) return @intCast(uint, x);
-
-    return @intCast(uint, -(x + 1)) + 1;
 }
 
 test "math.absCast" {
-    testing.expect(absCast(@as(i32, -999)) == 999);
-    testing.expect(@TypeOf(absCast(@as(i32, -999))) == u32);
-
-    testing.expect(absCast(@as(i32, 999)) == 999);
-    testing.expect(@TypeOf(absCast(@as(i32, 999))) == u32);
-
-    testing.expect(absCast(@as(i32, minInt(i32))) == -minInt(i32));
-    testing.expect(@TypeOf(absCast(@as(i32, minInt(i32)))) == u32);
-
-    testing.expect(absCast(-999) == 999);
+    testing.expectEqual(@as(u1, 1), absCast(@as(i1, -1)));
+    testing.expectEqual(@as(u32, 999), absCast(@as(i32, -999)));
+    testing.expectEqual(@as(u32, 999), absCast(@as(i32, 999)));
+    testing.expectEqual(@as(u32, -minInt(i32)), absCast(@as(i32, minInt(i32))));
+    testing.expectEqual(999, absCast(-999));
 }
 
 /// Returns the negation of the integer parameter.

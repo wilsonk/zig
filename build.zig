@@ -6,7 +6,6 @@ const BufMap = std.BufMap;
 const warn = std.debug.warn;
 const mem = std.mem;
 const ArrayList = std.ArrayList;
-const Buffer = std.Buffer;
 const io = std.io;
 const fs = std.fs;
 const InstallDirectoryOptions = std.build.InstallDirectoryOptions;
@@ -47,6 +46,7 @@ pub fn build(b: *Builder) !void {
         .llvm_config_exe = nextValue(&index, build_info),
         .lld_include_dir = nextValue(&index, build_info),
         .lld_libraries = nextValue(&index, build_info),
+        .clang_libraries = nextValue(&index, build_info),
         .dia_guids_lib = nextValue(&index, build_info),
         .llvm = undefined,
     };
@@ -135,7 +135,8 @@ pub fn build(b: *Builder) !void {
     test_step.dependOn(tests.addRuntimeSafetyTests(b, test_filter, modes));
     test_step.dependOn(tests.addTranslateCTests(b, test_filter));
     test_step.dependOn(tests.addRunTranslatedCTests(b, test_filter));
-    test_step.dependOn(tests.addGenHTests(b, test_filter));
+    // tests for this feature are disabled until we have the self-hosted compiler available
+    //test_step.dependOn(tests.addGenHTests(b, test_filter));
     test_step.dependOn(tests.addCompileErrorTests(b, test_filter, modes));
     test_step.dependOn(docs_step);
 }
@@ -296,13 +297,23 @@ fn configureStage2(b: *Builder, exe: var, ctx: Context) !void {
         addCppLib(b, exe, ctx.cmake_binary_dir, "embedded_lld_coff");
         addCppLib(b, exe, ctx.cmake_binary_dir, "embedded_lld_lib");
     }
+    {
+        var it = mem.tokenize(ctx.clang_libraries, ";");
+        while (it.next()) |lib| {
+            exe.addObjectFile(lib);
+        }
+    }
     dependOnLib(b, exe, ctx.llvm);
 
     if (exe.target.getOsTag() == .linux) {
-        try addCxxKnownPath(b, ctx, exe, "libstdc++.a",
-            \\Unable to determine path to libstdc++.a
-            \\On Fedora, install libstdc++-static and try again.
-        );
+        // First we try to static link against gcc libstdc++. If that doesn't work,
+        // we fall back to -lc++ and cross our fingers.
+        addCxxKnownPath(b, ctx, exe, "libstdc++.a", "") catch |err| switch (err) {
+            error.RequiredLibraryNotFound => {
+                exe.linkSystemLibrary("c++");
+            },
+            else => |e| return e,
+        };
 
         exe.linkSystemLibrary("pthread");
     } else if (exe.target.isFreeBSD()) {
@@ -321,7 +332,7 @@ fn configureStage2(b: *Builder, exe: var, ctx: Context) !void {
                 // System compiler, not gcc.
                 exe.linkSystemLibrary("c++");
             },
-            else => return err,
+            else => |e| return e,
         }
     }
 
@@ -361,6 +372,7 @@ const Context = struct {
     llvm_config_exe: []const u8,
     lld_include_dir: []const u8,
     lld_libraries: []const u8,
+    clang_libraries: []const u8,
     dia_guids_lib: []const u8,
     llvm: LibraryDep,
 };

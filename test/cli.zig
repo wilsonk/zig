@@ -36,8 +36,8 @@ pub fn main() !void {
         testMissingOutputPath,
     };
     for (test_fns) |testFn| {
-        try fs.deleteTree(dir_path);
-        try fs.makeDir(dir_path);
+        try fs.cwd().deleteTree(dir_path);
+        try fs.cwd().makeDir(dir_path);
         try testFn(zig_exe, dir_path);
     }
 }

@@ -1,7 +1,8 @@
 const std = @import("../std.zig");
 const os = std.os;
 const testing = std.testing;
-const expect = std.testing.expect;
+const expect = testing.expect;
+const expectEqual = testing.expectEqual;
 const io = std.io;
 const fs = std.fs;
 const mem = std.mem;
@@ -16,11 +17,11 @@ const AtomicRmwOp = builtin.AtomicRmwOp;
 const AtomicOrder = builtin.AtomicOrder;
 
 test "makePath, put some files in it, deleteTree" {
-    try fs.makePath(a, "os_test_tmp" ++ fs.path.sep_str ++ "b" ++ fs.path.sep_str ++ "c");
+    try fs.cwd().makePath("os_test_tmp" ++ fs.path.sep_str ++ "b" ++ fs.path.sep_str ++ "c");
     try io.writeFile("os_test_tmp" ++ fs.path.sep_str ++ "b" ++ fs.path.sep_str ++ "c" ++ fs.path.sep_str ++ "file.txt", "nonsense");
     try io.writeFile("os_test_tmp" ++ fs.path.sep_str ++ "b" ++ fs.path.sep_str ++ "file2.txt", "blah");
-    try fs.deleteTree("os_test_tmp");
-    if (fs.cwd().openDirTraverse("os_test_tmp")) |dir| {
+    try fs.cwd().deleteTree("os_test_tmp");
+    if (fs.cwd().openDir("os_test_tmp", .{})) |dir| {
         @panic("expected error");
     } else |err| {
         expect(err == error.FileNotFound);
@@ -28,7 +29,7 @@ test "makePath, put some files in it, deleteTree" {
 }
 
 test "access file" {
-    try fs.makePath(a, "os_test_tmp");
+    try fs.cwd().makePath("os_test_tmp");
     if (fs.cwd().access("os_test_tmp" ++ fs.path.sep_str ++ "file.txt", .{})) |ok| {
         @panic("expected error");
     } else |err| {
@@ -37,11 +38,101 @@ test "access file" {
 
     try io.writeFile("os_test_tmp" ++ fs.path.sep_str ++ "file.txt", "");
     try os.access("os_test_tmp" ++ fs.path.sep_str ++ "file.txt", os.F_OK);
-    try fs.deleteTree("os_test_tmp");
+    try fs.cwd().deleteTree("os_test_tmp");
 }
 
 fn testThreadIdFn(thread_id: *Thread.Id) void {
     thread_id.* = Thread.getCurrentId();
+}
+
+test "sendfile" {
+    try fs.cwd().makePath("os_test_tmp");
+    defer fs.cwd().deleteTree("os_test_tmp") catch {};
+
+    var dir = try fs.cwd().openDir("os_test_tmp", .{});
+    defer dir.close();
+
+    const line1 = "line1\n";
+    const line2 = "second line\n";
+    var vecs = [_]os.iovec_const{
+        .{
+            .iov_base = line1,
+            .iov_len = line1.len,
+        },
+        .{
+            .iov_base = line2,
+            .iov_len = line2.len,
+        },
+    };
+
+    var src_file = try dir.createFileC("sendfile1.txt", .{ .read = true });
+    defer src_file.close();
+
+    try src_file.writevAll(&vecs);
+
+    var dest_file = try dir.createFileC("sendfile2.txt", .{ .read = true });
+    defer dest_file.close();
+
+    const header1 = "header1\n";
+    const header2 = "second header\n";
+    const trailer1 = "trailer1\n";
+    const trailer2 = "second trailer\n";
+    var hdtr = [_]os.iovec_const{
+        .{
+            .iov_base = header1,
+            .iov_len = header1.len,
+        },
+        .{
+            .iov_base = header2,
+            .iov_len = header2.len,
+        },
+        .{
+            .iov_base = trailer1,
+            .iov_len = trailer1.len,
+        },
+        .{
+            .iov_base = trailer2,
+            .iov_len = trailer2.len,
+        },
+    };
+
+    var written_buf: [100]u8 = undefined;
+    try dest_file.writeFileAll(src_file, .{
+        .in_offset = 1,
+        .in_len = 10,
+        .headers_and_trailers = &hdtr,
+        .header_count = 2,
+    });
+    const amt = try dest_file.preadAll(&written_buf, 0);
+    expect(mem.eql(u8, written_buf[0..amt], "header1\nsecond header\nine1\nsecontrailer1\nsecond trailer\n"));
+}
+
+test "fs.copyFile" {
+    const data = "u6wj+JmdF3qHsFPE BUlH2g4gJCmEz0PP";
+    const src_file = "tmp_test_copy_file.txt";
+    const dest_file = "tmp_test_copy_file2.txt";
+    const dest_file2 = "tmp_test_copy_file3.txt";
+
+    const cwd = fs.cwd();
+
+    try cwd.writeFile(src_file, data);
+    defer cwd.deleteFile(src_file) catch {};
+
+    try cwd.copyFile(src_file, cwd, dest_file, .{});
+    defer cwd.deleteFile(dest_file) catch {};
+
+    try cwd.copyFile(src_file, cwd, dest_file2, .{ .override_mode = File.default_mode });
+    defer cwd.deleteFile(dest_file2) catch {};
+
+    try expectFileContents(dest_file, data);
+    try expectFileContents(dest_file2, data);
+}
+
+fn expectFileContents(file_path: []const u8, data: []const u8) !void {
+    const contents = try fs.cwd().readFileAlloc(testing.allocator, file_path, 1000);
+    defer testing.allocator.free(contents);
+
+    testing.expectEqualSlices(u8, data, contents);
 }
 
 test "std.Thread.getCurrentId" {
@@ -103,7 +194,7 @@ test "AtomicFile" {
     {
         var af = try fs.AtomicFile.init(test_out_file, File.default_mode);
         defer af.deinit();
-        try af.file.write(test_content);
+        try af.file.writeAll(test_content);
         try af.finish();
     }
     const content = try io.readFileAlloc(testing.allocator, test_out_file);
@@ -226,7 +317,7 @@ test "pipe" {
         return error.SkipZigTest;
 
     var fds = try os.pipe();
-    try os.write(fds[1], "hello");
+    expect((try os.write(fds[1], "hello")) == 5);
     var buf: [16]u8 = undefined;
     expect((try os.read(fds[0], buf[0..])) == 5);
     testing.expectEqualSlices(u8, buf[0..5], "hello");
@@ -248,7 +339,7 @@ test "memfd_create" {
         else => |e| return e,
     };
     defer std.os.close(fd);
-    try std.os.write(fd, "test");
+    expect((try std.os.write(fd, "test")) == 4);
     try std.os.lseek_SET(fd, 0);
 
     var buf: [10]u8 = undefined;
@@ -292,8 +383,7 @@ test "mmap" {
         const file = try fs.cwd().createFile(test_out_file, .{});
         defer file.close();
 
-        var out_stream = file.outStream();
-        const stream = &out_stream.stream;
+        const stream = file.outStream();
 
         var i: u32 = 0;
         while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
@@ -316,8 +406,8 @@ test "mmap" {
         );
         defer os.munmap(data);
 
-        var mem_stream = io.SliceInStream.init(data);
-        const stream = &mem_stream.stream;
+        var mem_stream = io.fixedBufferStream(data);
+        const stream = mem_stream.inStream();
 
         var i: u32 = 0;
         while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
@@ -340,8 +430,8 @@ test "mmap" {
         );
         defer os.munmap(data);
 
-        var mem_stream = io.SliceInStream.init(data);
-        const stream = &mem_stream.stream;
+        var mem_stream = io.fixedBufferStream(data);
+        const stream = mem_stream.inStream();
 
         var i: u32 = alloc_size / 2 / @sizeOf(u32);
         while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
@@ -357,5 +447,34 @@ test "getenv" {
         expect(os.getenvW(&[_:0]u16{ 'B', 'O', 'G', 'U', 'S', 0x11, 0x22, 0x33, 0x44, 0x55 }) == null);
     } else {
         expect(os.getenvZ("BOGUSDOESNOTEXISTENVVAR") == null);
+    }
+}
+
+test "fcntl" {
+    if (builtin.os.tag == .windows)
+        return error.SkipZigTest;
+
+    const test_out_file = "os_tmp_test";
+
+    const file = try fs.cwd().createFile(test_out_file, .{});
+    defer {
+        file.close();
+        fs.cwd().deleteFile(test_out_file) catch {};
+    }
+
+    // Note: The test assumes createFile opens the file with O_CLOEXEC
+    {
+        const flags = try os.fcntl(file.handle, os.F_GETFD, 0);
+        expect((flags & os.FD_CLOEXEC) != 0);
+    }
+    {
+        _ = try os.fcntl(file.handle, os.F_SETFD, 0);
+        const flags = try os.fcntl(file.handle, os.F_GETFD, 0);
+        expect((flags & os.FD_CLOEXEC) == 0);
+    }
+    {
+        _ = try os.fcntl(file.handle, os.F_SETFD, os.FD_CLOEXEC);
+        const flags = try os.fcntl(file.handle, os.F_GETFD, 0);
+        expect((flags & os.FD_CLOEXEC) != 0);
     }
 }

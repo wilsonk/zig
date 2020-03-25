@@ -2,6 +2,103 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.addTest("unused variable error on errdefer",
+        \\fn foo() !void {
+        \\    errdefer |a| unreachable;
+        \\    return error.A;
+        \\}
+        \\export fn entry() void {
+        \\    foo() catch unreachable;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:15: error: unused variable: 'a'",
+    });
+
+    cases.addTest("comparison of non-tagged union and enum literal",
+        \\export fn entry() void {
+        \\    const U = union { A: u32, B: u64 };
+        \\    var u = U{ .A = 42 };
+        \\    var ok = u == .A;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:4:16: error: comparison of union and enum literal is only valid for tagged union types",
+        "tmp.zig:2:15: note: type U is not a tagged union",
+    });
+
+    cases.addTest("shift on type with non-power-of-two size",
+        \\export fn entry() void {
+        \\    const S = struct {
+        \\        fn a() void {
+        \\            var x: u24 = 42;
+        \\            _ = x >> 24;
+        \\        }
+        \\        fn b() void {
+        \\            var x: u24 = 42;
+        \\            _ = x << 24;
+        \\        }
+        \\        fn c() void {
+        \\            var x: u24 = 42;
+        \\            _ = @shlExact(x, 24);
+        \\        }
+        \\        fn d() void {
+        \\            var x: u24 = 42;
+        \\            _ = @shrExact(x, 24);
+        \\        }
+        \\    };
+        \\    S.a();
+        \\    S.b();
+        \\    S.c();
+        \\    S.d();
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:5:19: error: RHS of shift is too large for LHS type",
+        "tmp.zig:9:19: error: RHS of shift is too large for LHS type",
+        "tmp.zig:13:17: error: RHS of shift is too large for LHS type",
+        "tmp.zig:17:17: error: RHS of shift is too large for LHS type",
+    });
+
+    cases.addTest("combination of noasync and async",
+        \\export fn entry() void {
+        \\    noasync {
+        \\        const bar = async foo();
+        \\        suspend;
+        \\        resume bar;
+        \\    }
+        \\}
+        \\fn foo() void {}
+    , &[_][]const u8{
+        "tmp.zig:3:21: error: async call in noasync scope",
+        "tmp.zig:4:9: error: suspend in noasync scope",
+        "tmp.zig:5:9: error: resume in noasync scope",
+    });
+
+    cases.add("atomicrmw with bool op not .Xchg",
+        \\export fn entry() void {
+        \\    var x = false;
+        \\    _ = @atomicRmw(bool, &x, .Add, true, .SeqCst);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:30: error: @atomicRmw with bool only allowed with .Xchg",
+    });
+
+    cases.addTest("@TypeOf with no arguments",
+        \\export fn entry() void {
+        \\    _ = @TypeOf();
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:9: error: expected at least 1 argument, found 0",
+    });
+
+    cases.addTest("@TypeOf with incompatible arguments",
+        \\export fn entry() void {
+        \\    var var_1: f32 = undefined;
+        \\    var var_2: u32 = undefined;
+        \\    _ = @TypeOf(var_1, var_2);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:4:9: error: incompatible types: 'f32' and 'u32'",
+    });
+
     cases.addTest("type mismatch with tuple concatenation",
         \\export fn entry() void {
         \\    var x = .{};
@@ -27,18 +124,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
     , &[_][]const u8{
         "tmp.zig:3:23: error: pointer to size 0 type has no address",
-    });
-
-    cases.addTest("slice to pointer conversion mismatch",
-        \\pub fn bytesAsSlice(bytes: var) [*]align(1) const u16 {
-        \\    return @ptrCast([*]align(1) const u16, bytes.ptr)[0..1];
-        \\}
-        \\test "bytesAsSlice" {
-        \\    const bytes = [_]u8{ 0xDE, 0xAD, 0xBE, 0xEF };
-        \\    const slice = bytesAsSlice(bytes[0..]);
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:2:54: error: expected type '[*]align(1) const u16', found '[]align(1) const u16'",
     });
 
     cases.addTest("access invalid @typeInfo decl",
@@ -292,7 +377,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    _ = @atomicRmw(f32, &x, .And, 2, .SeqCst);
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:29: error: @atomicRmw with float only works with .Xchg, .Add and .Sub",
+        "tmp.zig:3:29: error: @atomicRmw with float only allowed with .Xchg, .Add and .Sub",
     });
 
     cases.add("intToPtr with misaligned address",
@@ -310,9 +395,161 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var bad_float :f32 = 0.0;
         \\    bad_float = bad_float + .20;
         \\    std.debug.assert(bad_float < 1.0);
-        \\})
+        \\}
     , &[_][]const u8{
         "tmp.zig:5:29: error: invalid token: '.'",
+    });
+
+    cases.add("invalid exponent in float literal - 1",
+        \\fn main() void {
+        \\    var bad: f128 = 0x1.0p1ab1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:28: error: invalid character: 'a'",
+    });
+
+    cases.add("invalid exponent in float literal - 2",
+        \\fn main() void {
+        \\    var bad: f128 = 0x1.0p50F;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:29: error: invalid character: 'F'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 1",
+        \\fn main() void {
+        \\    var bad: f128 = 0._0;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:23: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 2",
+        \\fn main() void {
+        \\    var bad: f128 = 0_.0;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:23: error: invalid character: '.'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 3",
+        \\fn main() void {
+        \\    var bad: f128 = 0.0_;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:25: error: invalid character: ';'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 4",
+        \\fn main() void {
+        \\    var bad: f128 = 1.0e_1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:25: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 5",
+        \\fn main() void {
+        \\    var bad: f128 = 1.0e+_1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:26: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 6",
+        \\fn main() void {
+        \\    var bad: f128 = 1.0e-_1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:26: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 7",
+        \\fn main() void {
+        \\    var bad: f128 = 1.0e-1_;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:28: error: invalid character: ';'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 9",
+        \\fn main() void {
+        \\    var bad: f128 = 1__0.0e-1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:23: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 10",
+        \\fn main() void {
+        \\    var bad: f128 = 1.0__0e-1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:25: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 11",
+        \\fn main() void {
+        \\    var bad: f128 = 1.0e-1__0;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:28: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 12",
+        \\fn main() void {
+        \\    var bad: f128 = 0_x0.0;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:23: error: invalid character: 'x'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 13",
+        \\fn main() void {
+        \\    var bad: f128 = 0x_0.0;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:23: error: invalid character: '_'",
+    });
+
+    cases.add("invalid underscore placement in float literal - 14",
+        \\fn main() void {
+        \\    var bad: f128 = 0x0.0_p1;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:27: error: invalid character: 'p'",
+    });
+
+    cases.add("invalid underscore placement in int literal - 1",
+        \\fn main() void {
+        \\    var bad: u128 = 0010_;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:26: error: invalid character: ';'",
+    });
+
+    cases.add("invalid underscore placement in int literal - 2",
+        \\fn main() void {
+        \\    var bad: u128 = 0b0010_;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:28: error: invalid character: ';'",
+    });
+
+    cases.add("invalid underscore placement in int literal - 3",
+        \\fn main() void {
+        \\    var bad: u128 = 0o0010_;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:28: error: invalid character: ';'",
+    });
+
+    cases.add("invalid underscore placement in int literal - 4",
+        \\fn main() void {
+        \\    var bad: u128 = 0x0010_;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:28: error: invalid character: ';'",
     });
 
     cases.add("var args without c calling conv",
@@ -509,7 +746,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    _ = @atomicRmw(E, &x, .Add, .b, .SeqCst);
         \\}
     , &[_][]const u8{
-        "tmp.zig:9:27: error: @atomicRmw on enum only works with .Xchg",
+        "tmp.zig:9:27: error: @atomicRmw with enum only allowed with .Xchg",
     });
 
     cases.add("disallow coercion from non-null-terminated pointer to null-terminated pointer",
@@ -1574,7 +1811,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var y: [*c]c_void = x;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:16: error: C pointers cannot point opaque types",
+        "tmp.zig:3:16: error: C pointers cannot point to opaque types",
     });
 
     cases.add("directly embedding opaque type in struct and union",
@@ -1592,9 +1829,14 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn b() void {
         \\    var bar: Bar = undefined;
         \\}
+        \\export fn c() void {
+        \\    var baz: *@OpaqueType() = undefined;
+        \\    const qux = .{baz.*};
+        \\}
     , &[_][]const u8{
-        "tmp.zig:3:8: error: opaque types have unknown size and therefore cannot be directly embedded in structs",
-        "tmp.zig:7:10: error: opaque types have unknown size and therefore cannot be directly embedded in unions",
+        "tmp.zig:3:5: error: opaque types have unknown size and therefore cannot be directly embedded in structs",
+        "tmp.zig:7:5: error: opaque types have unknown size and therefore cannot be directly embedded in unions",
+        "tmp.zig:17:22: error: opaque types have unknown size and therefore cannot be directly embedded in structs",
     });
 
     cases.add("implicit cast between C pointer and Zig pointer - bad const/align/child",
@@ -1839,8 +2081,8 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add("reading past end of pointer casted array",
         \\comptime {
         \\    const array: [4]u8 = "aoeu".*;
-        \\    const slice = array[1..];
-        \\    const int_ptr = @ptrCast(*const u24, slice.ptr);
+        \\    const sub_array = array[1..];
+        \\    const int_ptr = @ptrCast(*const u24, sub_array);
         \\    const deref = int_ptr.*;
         \\}
     , &[_][]const u8{
@@ -3587,11 +3829,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     cases.add("array access of non array",
         \\export fn f() void {
         \\    var bad : bool = undefined;
-        \\    bad[bad] = bad[bad];
+        \\    bad[0] = bad[0];
         \\}
         \\export fn g() void {
         \\    var bad : bool = undefined;
-        \\    _ = bad[bad];
+        \\    _ = bad[0];
         \\}
     , &[_][]const u8{
         "tmp.zig:3:8: error: array access of non-array type 'bool'",
@@ -3991,8 +4233,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
         \\export fn entry() u16 { return f(); }
     , &[_][]const u8{
-        "tmp.zig:3:14: error: RHS of shift is too large for LHS type",
-        "tmp.zig:3:17: note: value 8 cannot fit into type u3",
+        "tmp.zig:3:17: error: integer value 8 cannot be coerced to type 'u3'",
     });
 
     cases.add("missing function call param",
@@ -6520,9 +6761,41 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn bar() !FooType {
         \\    return error.InvalidValue;
         \\}
+        \\export fn bav() !@TypeOf(null) {
+        \\    return error.InvalidValue;
+        \\}
+        \\export fn baz() !@TypeOf(undefined) {
+        \\    return error.InvalidValue;
+        \\}
     , &[_][]const u8{
-        "tmp.zig:2:18: error: opaque return type 'FooType' not allowed",
-        "tmp.zig:1:1: note: declared here",
+        "tmp.zig:2:18: error: Opaque return type 'FooType' not allowed",
+        "tmp.zig:1:1: note: type declared here",
+        "tmp.zig:5:18: error: Null return type '(null)' not allowed",
+        "tmp.zig:8:18: error: Undefined return type '(undefined)' not allowed",
+    });
+
+    cases.add("generic function returning opaque type",
+        \\const FooType = @OpaqueType();
+        \\fn generic(comptime T: type) !T {
+        \\    return undefined;
+        \\}
+        \\export fn bar() void {
+        \\    _ = generic(FooType);
+        \\}
+        \\export fn bav() void {
+        \\    _ = generic(@TypeOf(null));
+        \\}
+        \\export fn baz() void {
+        \\    _ = generic(@TypeOf(undefined));
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:6:16: error: call to generic function with Opaque return type 'FooType' not allowed",
+        "tmp.zig:2:1: note: function declared here",
+        "tmp.zig:1:1: note: type declared here",
+        "tmp.zig:9:16: error: call to generic function with Null return type '(null)' not allowed",
+        "tmp.zig:2:1: note: function declared here",
+        "tmp.zig:12:16: error: call to generic function with Undefined return type '(undefined)' not allowed",
+        "tmp.zig:2:1: note: function declared here",
     });
 
     cases.add( // fixed bug #2032

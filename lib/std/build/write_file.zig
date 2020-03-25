@@ -74,11 +74,11 @@ pub const WriteFileStep = struct {
             &hash_basename,
         });
         // TODO replace with something like fs.makePathAndOpenDir
-        fs.makePath(self.builder.allocator, self.output_dir) catch |err| {
+        fs.cwd().makePath(self.output_dir) catch |err| {
             warn("unable to make path {}: {}\n", .{ self.output_dir, @errorName(err) });
             return err;
         };
-        var dir = try fs.cwd().openDirTraverse(self.output_dir);
+        var dir = try fs.cwd().openDir(self.output_dir, .{});
         defer dir.close();
         for (self.files.toSliceConst()) |file| {
             dir.writeFile(file.basename, file.bytes) catch |err| {
