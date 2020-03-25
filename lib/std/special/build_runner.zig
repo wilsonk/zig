@@ -42,8 +42,8 @@ pub fn main() !void {
 
     var targets = ArrayList([]const u8).init(allocator);
 
-    const stderr_stream = &io.getStdErr().outStream().stream;
-    const stdout_stream = &io.getStdOut().outStream().stream;
+    const stderr_stream = io.getStdErr().outStream();
+    const stdout_stream = io.getStdOut().outStream();
 
     while (nextArg(args, &arg_idx)) |arg| {
         if (mem.startsWith(u8, arg, "-D")) {
@@ -96,6 +96,8 @@ pub fn main() !void {
                 builder.verbose_cimport = true;
             } else if (mem.eql(u8, arg, "--verbose-cc")) {
                 builder.verbose_cc = true;
+            } else if (mem.eql(u8, arg, "--verbose-llvm-cpu-features")) {
+                builder.verbose_llvm_cpu_features = true;
             } else if (mem.eql(u8, arg, "--")) {
                 builder.args = argsRest(args, arg_idx);
                 break;
@@ -126,7 +128,7 @@ pub fn main() !void {
 }
 
 fn runBuild(builder: *Builder) anyerror!void {
-    switch (@typeId(@TypeOf(root.build).ReturnType)) {
+    switch (@typeInfo(@TypeOf(root.build).ReturnType)) {
         .Void => root.build(builder),
         .ErrorUnion => try root.build(builder),
         else => @compileError("expected return type of build to be 'void' or '!void'"),
@@ -157,7 +159,7 @@ fn usage(builder: *Builder, already_ran_build: bool, out_stream: var) !void {
         try out_stream.print("  {s:22} {}\n", .{ name, top_level_step.description });
     }
 
-    try out_stream.write(
+    try out_stream.writeAll(
         \\
         \\General Options:
         \\  --help                 Print this help and exit
@@ -182,19 +184,20 @@ fn usage(builder: *Builder, already_ran_build: bool, out_stream: var) !void {
         }
     }
 
-    try out_stream.write(
+    try out_stream.writeAll(
         \\
         \\Advanced Options:
-        \\  --build-file [file]      Override path to build.zig
-        \\  --cache-dir [path]       Override path to zig cache directory
-        \\  --override-lib-dir [arg] Override path to Zig lib directory
-        \\  --verbose-tokenize       Enable compiler debug output for tokenization
-        \\  --verbose-ast            Enable compiler debug output for parsing into an AST
-        \\  --verbose-link           Enable compiler debug output for linking
-        \\  --verbose-ir             Enable compiler debug output for Zig IR
-        \\  --verbose-llvm-ir        Enable compiler debug output for LLVM IR
-        \\  --verbose-cimport        Enable compiler debug output for C imports
-        \\  --verbose-cc             Enable compiler debug output for C compilation
+        \\  --build-file [file]         Override path to build.zig
+        \\  --cache-dir [path]          Override path to zig cache directory
+        \\  --override-lib-dir [arg]    Override path to Zig lib directory
+        \\  --verbose-tokenize          Enable compiler debug output for tokenization
+        \\  --verbose-ast               Enable compiler debug output for parsing into an AST
+        \\  --verbose-link              Enable compiler debug output for linking
+        \\  --verbose-ir                Enable compiler debug output for Zig IR
+        \\  --verbose-llvm-ir           Enable compiler debug output for LLVM IR
+        \\  --verbose-cimport           Enable compiler debug output for C imports
+        \\  --verbose-cc                Enable compiler debug output for C compilation
+        \\  --verbose-llvm-cpu-features Enable compiler debug output for LLVM CPU features
         \\
     );
 }

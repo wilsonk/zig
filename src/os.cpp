@@ -81,11 +81,7 @@ static clock_serv_t macos_monotonic_clock;
 #include <errno.h>
 #include <time.h>
 
-// Apple doesn't provide the environ global variable
-#if defined(__APPLE__) && !defined(environ)
-#include <crt_externs.h>
-#define environ (*_NSGetEnviron())
-#elif defined(ZIG_OS_FREEBSD) || defined(ZIG_OS_NETBSD) || defined(ZIG_OS_DRAGONFLY)
+#if !defined(environ)
 extern char **environ;
 #endif
 
@@ -1055,6 +1051,30 @@ static Error copy_open_files(FILE *src_f, FILE *dest_f) {
     }
 }
 
+Error os_dump_file(Buf *src_path, FILE *dest_file) {
+    Error err;
+
+    FILE *src_f = fopen(buf_ptr(src_path), "rb");
+    if (!src_f) {
+        int err = errno;
+        if (err == ENOENT) {
+            return ErrorFileNotFound;
+        } else if (err == EACCES || err == EPERM) {
+            return ErrorAccess;
+        } else {
+            return ErrorFileSystem;
+        }
+    }
+    copy_open_files(src_f, dest_file);
+    if ((err = copy_open_files(src_f, dest_file))) {
+        fclose(src_f);
+        return err;
+    }
+
+    fclose(src_f);
+    return ErrorNone;
+}
+
 #if defined(ZIG_OS_WINDOWS)
 static void windows_filetime_to_os_timestamp(FILETIME *ft, OsTimeStamp *mtime) {
     mtime->sec = (((ULONGLONG) ft->dwHighDateTime) << 32) + ft->dwLowDateTime;
@@ -1077,8 +1097,8 @@ static Error set_file_times(OsFile file, OsTimeStamp ts) {
     return ErrorNone;
 #else
     struct timespec times[2] = {
-        { ts.sec, ts.nsec },
-        { ts.sec, ts.nsec },
+        { (time_t)ts.sec, (time_t)ts.nsec },
+        { (time_t)ts.sec, (time_t)ts.nsec },
     };
     if (futimens(file, times) == -1) {
         switch (errno) {

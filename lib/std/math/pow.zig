@@ -32,7 +32,7 @@ const expect = std.testing.expect;
 ///  - pow(-inf, y)   = pow(-0, -y)
 ///  - pow(x, y)      = nan for finite x < 0 and finite non-integer y
 pub fn pow(comptime T: type, x: T, y: T) T {
-    if (@typeInfo(T) == builtin.TypeId.Int) {
+    if (@typeInfo(T) == .Int) {
         return math.powi(T, x, y) catch unreachable;
     }
 
@@ -145,7 +145,7 @@ pub fn pow(comptime T: type, x: T, y: T) T {
     var xe = r2.exponent;
     var x1 = r2.significand;
 
-    var i = @floatToInt(@IntType(true, T.bit_count), yi);
+    var i = @floatToInt(std.meta.IntType(true, T.bit_count), yi);
     while (i != 0) : (i >>= 1) {
         const overflow_shift = math.floatExponentBits(T) + 1;
         if (xe < -(1 << overflow_shift) or (1 << overflow_shift) < xe) {

@@ -116,7 +116,7 @@ fn Sha2_32(comptime params: Sha2Params32) type {
             var off: usize = 0;
 
             // Partial buffer exists from previous update. Copy into buffer then hash.
-            if (d.buf_len != 0 and d.buf_len + b.len > 64) {
+            if (d.buf_len != 0 and d.buf_len + b.len >= 64) {
                 off += 64 - d.buf_len;
                 mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
 
@@ -167,8 +167,7 @@ fn Sha2_32(comptime params: Sha2Params32) type {
             const rr = d.s[0 .. params.out_len / 32];
 
             for (rr) |s, j| {
-                // TODO https://github.com/ziglang/zig/issues/863
-                mem.writeIntSliceBig(u32, out[4 * j .. 4 * j + 4], s);
+                mem.writeIntBig(u32, out[4 * j ..][0..4], s);
             }
         }
 
@@ -458,7 +457,7 @@ fn Sha2_64(comptime params: Sha2Params64) type {
             var off: usize = 0;
 
             // Partial buffer exists from previous update. Copy into buffer then hash.
-            if (d.buf_len != 0 and d.buf_len + b.len > 128) {
+            if (d.buf_len != 0 and d.buf_len + b.len >= 128) {
                 off += 128 - d.buf_len;
                 mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
 
@@ -509,8 +508,7 @@ fn Sha2_64(comptime params: Sha2Params64) type {
             const rr = d.s[0 .. params.out_len / 64];
 
             for (rr) |s, j| {
-                // TODO https://github.com/ziglang/zig/issues/863
-                mem.writeIntSliceBig(u64, out[8 * j .. 8 * j + 8], s);
+                mem.writeIntBig(u64, out[8 * j ..][0..8], s);
             }
         }
 

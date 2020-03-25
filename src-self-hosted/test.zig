@@ -56,12 +56,12 @@ pub const TestContext = struct {
         self.zig_lib_dir = try introspect.resolveZigLibDir(allocator);
         errdefer allocator.free(self.zig_lib_dir);
 
-        try std.fs.makePath(allocator, tmp_dir_name);
-        errdefer std.fs.deleteTree(tmp_dir_name) catch {};
+        try std.fs.cwd().makePath(tmp_dir_name);
+        errdefer std.fs.cwd().deleteTree(tmp_dir_name) catch {};
     }
 
     fn deinit(self: *TestContext) void {
-        std.fs.deleteTree(tmp_dir_name) catch {};
+        std.fs.cwd().deleteTree(tmp_dir_name) catch {};
         allocator.free(self.zig_lib_dir);
         self.zig_compiler.deinit();
     }
@@ -85,7 +85,7 @@ pub const TestContext = struct {
         const file1_path = try std.fs.path.join(allocator, [_][]const u8{ tmp_dir_name, file_index, file1 });
 
         if (std.fs.path.dirname(file1_path)) |dirname| {
-            try std.fs.makePath(allocator, dirname);
+            try std.fs.cwd().makePath(dirname);
         }
 
         // TODO async I/O
@@ -119,7 +119,7 @@ pub const TestContext = struct {
 
         const output_file = try std.fmt.allocPrint(allocator, "{}-out{}", .{ file1_path, (Target{ .Native = {} }).exeFileExt() });
         if (std.fs.path.dirname(file1_path)) |dirname| {
-            try std.fs.makePath(allocator, dirname);
+            try std.fs.cwd().makePath(dirname);
         }
 
         // TODO async I/O

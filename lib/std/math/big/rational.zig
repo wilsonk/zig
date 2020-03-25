@@ -1,13 +1,10 @@
 const std = @import("../../std.zig");
-const builtin = @import("builtin");
 const debug = std.debug;
 const math = std.math;
 const mem = std.mem;
 const testing = std.testing;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
-
-const TypeId = builtin.TypeId;
 
 const bn = @import("int.zig");
 const Limb = bn.Limb;
@@ -129,9 +126,9 @@ pub const Rational = struct {
     /// completely represent the provided float.
     pub fn setFloat(self: *Rational, comptime T: type, f: T) !void {
         // Translated from golang.go/src/math/big/rat.go.
-        debug.assert(@typeId(T) == builtin.TypeId.Float);
+        debug.assert(@typeInfo(T) == .Float);
 
-        const UnsignedIntType = @IntType(false, T.bit_count);
+        const UnsignedIntType = std.meta.IntType(false, T.bit_count);
         const f_bits = @bitCast(UnsignedIntType, f);
 
         const exponent_bits = math.floatExponentBits(T);
@@ -187,10 +184,10 @@ pub const Rational = struct {
     pub fn toFloat(self: Rational, comptime T: type) !T {
         // Translated from golang.go/src/math/big/rat.go.
         // TODO: Indicate whether the result is not exact.
-        debug.assert(@typeId(T) == builtin.TypeId.Float);
+        debug.assert(@typeInfo(T) == .Float);
 
         const fsize = T.bit_count;
-        const BitReprType = @IntType(false, T.bit_count);
+        const BitReprType = std.meta.IntType(false, T.bit_count);
 
         const msize = math.floatMantissaBits(T);
         const msize1 = msize + 1;
@@ -329,18 +326,20 @@ pub const Rational = struct {
         r.q.swap(&other.q);
     }
 
-    /// Returns -1, 0, 1 if a < b, a == b or a > b respectively.
-    pub fn cmp(a: Rational, b: Rational) !i8 {
+    /// Returns math.Order.lt, math.Order.eq, math.Order.gt if a < b, a == b or a
+    /// > b respectively.
+    pub fn cmp(a: Rational, b: Rational) !math.Order {
         return cmpInternal(a, b, true);
     }
 
-    /// Returns -1, 0, 1 if |a| < |b|, |a| == |b| or |a| > |b| respectively.
-    pub fn cmpAbs(a: Rational, b: Rational) !i8 {
+    /// Returns math.Order.lt, math.Order.eq, math.Order.gt if |a| < |b|, |a| ==
+    /// |b| or |a| > |b| respectively.
+    pub fn cmpAbs(a: Rational, b: Rational) !math.Order {
         return cmpInternal(a, b, false);
     }
 
     // p/q > x/y iff p*y > x*q
-    fn cmpInternal(a: Rational, b: Rational, is_abs: bool) !i8 {
+    fn cmpInternal(a: Rational, b: Rational, is_abs: bool) !math.Order {
         // TODO: Would a div compare algorithm of sorts be viable and quicker? Can we avoid
         // the memory allocations here?
         var q = try Int.init(a.p.allocator.?);
@@ -453,7 +452,7 @@ pub const Rational = struct {
         r.p.setSign(sign);
 
         const one = Int.initFixed(([_]Limb{1})[0..]);
-        if (a.cmp(one) != 0) {
+        if (a.cmp(one) != .eq) {
             var unused = try Int.init(r.p.allocator.?);
             defer unused.deinit();
 
@@ -465,7 +464,7 @@ pub const Rational = struct {
     }
 };
 
-const SignedDoubleLimb = @IntType(true, DoubleLimb.bit_count);
+const SignedDoubleLimb = std.meta.IntType(true, DoubleLimb.bit_count);
 
 fn gcd(rma: *Int, x: Int, y: Int) !void {
     rma.assertWritable();
@@ -508,7 +507,7 @@ fn gcdLehmer(r: *Int, xa: Int, ya: Int) !void {
     y.abs();
     defer y.deinit();
 
-    if (x.cmp(y) < 0) {
+    if (x.cmp(y) == .lt) {
         x.swap(&y);
     }
 
@@ -576,7 +575,7 @@ fn gcdLehmer(r: *Int, xa: Int, ya: Int) !void {
     }
 
     // euclidean algorithm
-    debug.assert(x.cmp(y) >= 0);
+    debug.assert(x.cmp(y) != .lt);
 
     while (!y.eqZero()) {
         try Int.divTrunc(&T, r, x, y);
@@ -653,7 +652,7 @@ test "big.rational gcd one large" {
 }
 
 fn extractLowBits(a: Int, comptime T: type) T {
-    testing.expect(@typeId(T) == builtin.TypeId.Int);
+    testing.expect(@typeInfo(T) == .Int);
 
     if (T.bit_count <= Limb.bit_count) {
         return @truncate(T, a.limbs[0]);
@@ -877,11 +876,11 @@ test "big.rational cmp" {
 
     try a.setRatio(500, 231);
     try b.setRatio(18903, 8584);
-    testing.expect((try a.cmp(b)) < 0);
+    testing.expect((try a.cmp(b)) == .lt);
 
     try a.setRatio(890, 10);
     try b.setRatio(89, 1);
-    testing.expect((try a.cmp(b)) == 0);
+    testing.expect((try a.cmp(b)) == .eq);
 }
 
 test "big.rational add single-limb" {
@@ -892,11 +891,11 @@ test "big.rational add single-limb" {
 
     try a.setRatio(500, 231);
     try b.setRatio(18903, 8584);
-    testing.expect((try a.cmp(b)) < 0);
+    testing.expect((try a.cmp(b)) == .lt);
 
     try a.setRatio(890, 10);
     try b.setRatio(89, 1);
-    testing.expect((try a.cmp(b)) == 0);
+    testing.expect((try a.cmp(b)) == .eq);
 }
 
 test "big.rational add" {
@@ -912,7 +911,7 @@ test "big.rational add" {
     try a.add(a, b);
 
     try r.setRatio(984786924199, 290395044174);
-    testing.expect((try a.cmp(r)) == 0);
+    testing.expect((try a.cmp(r)) == .eq);
 }
 
 test "big.rational sub" {
@@ -928,7 +927,7 @@ test "big.rational sub" {
     try a.sub(a, b);
 
     try r.setRatio(979040510045, 290395044174);
-    testing.expect((try a.cmp(r)) == 0);
+    testing.expect((try a.cmp(r)) == .eq);
 }
 
 test "big.rational mul" {
@@ -944,7 +943,7 @@ test "big.rational mul" {
     try a.mul(a, b);
 
     try r.setRatio(571481443, 17082061422);
-    testing.expect((try a.cmp(r)) == 0);
+    testing.expect((try a.cmp(r)) == .eq);
 }
 
 test "big.rational div" {
@@ -960,7 +959,7 @@ test "big.rational div" {
     try a.div(a, b);
 
     try r.setRatio(75531824394, 221015929);
-    testing.expect((try a.cmp(r)) == 0);
+    testing.expect((try a.cmp(r)) == .eq);
 }
 
 test "big.rational div" {
@@ -973,11 +972,11 @@ test "big.rational div" {
     a.invert();
 
     try r.setRatio(23341, 78923);
-    testing.expect((try a.cmp(r)) == 0);
+    testing.expect((try a.cmp(r)) == .eq);
 
     try a.setRatio(-78923, 23341);
     a.invert();
 
     try r.setRatio(-23341, 78923);
-    testing.expect((try a.cmp(r)) == 0);
+    testing.expect((try a.cmp(r)) == .eq);
 }

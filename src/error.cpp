@@ -59,7 +59,6 @@ const char *err_str(Error err) {
         case ErrorIsAsync: return "is async";
         case ErrorImportOutsidePkgPath: return "import of file outside package path";
         case ErrorUnknownCpu: return "unknown CPU";
-        case ErrorUnknownSubArchitecture: return "unknown sub-architecture";
         case ErrorUnknownCpuFeature: return "unknown CPU feature";
         case ErrorInvalidCpuFeatures: return "invalid CPU features";
         case ErrorInvalidLlvmCpuFeaturesFormat: return "invalid LLVM CPU features format";
@@ -82,6 +81,9 @@ const char *err_str(Error err) {
         case ErrorWindowsSdkNotFound: return "Windows SDK not found";
         case ErrorUnknownDynamicLinkerPath: return "unknown dynamic linker path";
         case ErrorTargetHasNoDynamicLinker: return "target has no dynamic linker";
+        case ErrorInvalidAbiVersion: return "invalid C ABI version";
+        case ErrorInvalidOperatingSystemVersion: return "invalid operating system version";
+        case ErrorUnknownClangOption: return "unknown Clang option";
     }
     return "(invalid error)";
 }

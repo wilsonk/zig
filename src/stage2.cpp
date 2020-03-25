@@ -4,6 +4,7 @@
 #include "stage2.h"
 #include "util.hpp"
 #include "zig_llvm.h"
+#include "target.hpp"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,57 +91,176 @@ void stage2_progress_complete_one(Stage2ProgressNode *node) {}
 void stage2_progress_disable_tty(Stage2Progress *progress) {}
 void stage2_progress_update_node(Stage2ProgressNode *node, size_t completed_count, size_t estimated_total_items){}
 
-struct Stage2CpuFeatures {
-    const char *llvm_cpu_name;
-    const char *llvm_cpu_features;
-    const char *builtin_str;
-    const char *cache_hash;
-};
+static Os get_zig_os_type(ZigLLVM_OSType os_type) {
+    switch (os_type) {
+        case ZigLLVM_UnknownOS:
+            return OsFreestanding;
+        case ZigLLVM_Ananas:
+            return OsAnanas;
+        case ZigLLVM_CloudABI:
+            return OsCloudABI;
+        case ZigLLVM_DragonFly:
+            return OsDragonFly;
+        case ZigLLVM_FreeBSD:
+            return OsFreeBSD;
+        case ZigLLVM_Fuchsia:
+            return OsFuchsia;
+        case ZigLLVM_IOS:
+            return OsIOS;
+        case ZigLLVM_KFreeBSD:
+            return OsKFreeBSD;
+        case ZigLLVM_Linux:
+            return OsLinux;
+        case ZigLLVM_Lv2:
+            return OsLv2;
+        case ZigLLVM_Darwin:
+        case ZigLLVM_MacOSX:
+            return OsMacOSX;
+        case ZigLLVM_NetBSD:
+            return OsNetBSD;
+        case ZigLLVM_OpenBSD:
+            return OsOpenBSD;
+        case ZigLLVM_Solaris:
+            return OsSolaris;
+        case ZigLLVM_Win32:
+            return OsWindows;
+        case ZigLLVM_Haiku:
+            return OsHaiku;
+        case ZigLLVM_Minix:
+            return OsMinix;
+        case ZigLLVM_RTEMS:
+            return OsRTEMS;
+        case ZigLLVM_NaCl:
+            return OsNaCl;
+        case ZigLLVM_CNK:
+            return OsCNK;
+        case ZigLLVM_AIX:
+            return OsAIX;
+        case ZigLLVM_CUDA:
+            return OsCUDA;
+        case ZigLLVM_NVCL:
+            return OsNVCL;
+        case ZigLLVM_AMDHSA:
+            return OsAMDHSA;
+        case ZigLLVM_PS4:
+            return OsPS4;
+        case ZigLLVM_ELFIAMCU:
+            return OsELFIAMCU;
+        case ZigLLVM_TvOS:
+            return OsTvOS;
+        case ZigLLVM_WatchOS:
+            return OsWatchOS;
+        case ZigLLVM_Mesa3D:
+            return OsMesa3D;
+        case ZigLLVM_Contiki:
+            return OsContiki;
+        case ZigLLVM_AMDPAL:
+            return OsAMDPAL;
+        case ZigLLVM_HermitCore:
+            return OsHermitCore;
+        case ZigLLVM_Hurd:
+            return OsHurd;
+        case ZigLLVM_WASI:
+            return OsWASI;
+        case ZigLLVM_Emscripten:
+            return OsEmscripten;
+    }
+    zig_unreachable();
+}
 
-Error stage2_cpu_features_parse(struct Stage2CpuFeatures **out, const char *zig_triple,
-        const char *cpu_name, const char *cpu_features)
+static void get_native_target(ZigTarget *target) {
+    // first zero initialize
+    *target = {};
+
+    ZigLLVM_OSType os_type;
+    ZigLLVM_ObjectFormatType oformat; // ignored; based on arch/os
+    ZigLLVMGetNativeTarget(
+            &target->arch,
+            &target->vendor,
+            &os_type,
+            &target->abi,
+            &oformat);
+    target->os = get_zig_os_type(os_type);
+    target->is_native = true;
+    if (target->abi == ZigLLVM_UnknownEnvironment) {
+        target->abi = target_default_abi(target->arch, target->os);
+    }
+    if (target_is_glibc(target)) {
+        target->glibc_or_darwin_version = heap::c_allocator.create<Stage2SemVer>();
+        target_init_default_glibc_version(target);
+    }
+}
+
+Error stage2_target_parse(struct ZigTarget *target, const char *zig_triple, const char *mcpu,
+        const char *dynamic_linker)
 {
+    Error err;
+
     if (zig_triple == nullptr) {
-        Stage2CpuFeatures *result = heap::c_allocator.create<Stage2CpuFeatures>();
-        result->llvm_cpu_name = ZigLLVMGetHostCPUName();
-        result->llvm_cpu_features = ZigLLVMGetNativeFeatures();
-        result->builtin_str = "arch.getBaselineCpuFeatures();\n";
-        result->cache_hash = "native\n\n";
-        *out = result;
-        return ErrorNone;
+        get_native_target(target);
+
+        if (mcpu == nullptr) {
+            target->llvm_cpu_name = ZigLLVMGetHostCPUName();
+            target->llvm_cpu_features = ZigLLVMGetNativeFeatures();
+            target->cache_hash = "native\n\n";
+        } else if (strcmp(mcpu, "baseline") == 0) {
+            target->is_native = false;
+            target->llvm_cpu_name = "";
+            target->llvm_cpu_features = "";
+            target->cache_hash = "baseline\n\n";
+        } else {
+            const char *msg = "stage0 can't handle CPU/features in the target";
+            stage2_panic(msg, strlen(msg));
+        }
+    } else {
+        // first initialize all to zero
+        *target = {};
+
+        SplitIterator it = memSplit(str(zig_triple), str("-"));
+
+        Optional<Slice<uint8_t>> opt_archsub = SplitIterator_next(&it);
+        Optional<Slice<uint8_t>> opt_os = SplitIterator_next(&it);
+        Optional<Slice<uint8_t>> opt_abi = SplitIterator_next(&it);
+
+        if (!opt_archsub.is_some)
+            return ErrorMissingArchitecture;
+
+        if ((err = target_parse_arch(&target->arch, (char*)opt_archsub.value.ptr, opt_archsub.value.len))) {
+            return err;
+        }
+
+        if (!opt_os.is_some)
+            return ErrorMissingOperatingSystem;
+
+        if ((err = target_parse_os(&target->os, (char*)opt_os.value.ptr, opt_os.value.len))) {
+            return err;
+        }
+
+        if (opt_abi.is_some) {
+            if ((err = target_parse_abi(&target->abi, (char*)opt_abi.value.ptr, opt_abi.value.len))) {
+                return err;
+            }
+        } else {
+            target->abi = target_default_abi(target->arch, target->os);
+        }
+
+        if (mcpu != nullptr && strcmp(mcpu, "baseline") != 0) {
+            const char *msg = "stage0 can't handle CPU/features in the target";
+            stage2_panic(msg, strlen(msg));
+        }
+        target->cache_hash = "\n\n";
     }
-    if (cpu_name == nullptr && cpu_features == nullptr) {
-        Stage2CpuFeatures *result = heap::c_allocator.create<Stage2CpuFeatures>();
-        result->builtin_str = "arch.getBaselineCpuFeatures();\n";
-        result->cache_hash = "\n\n";
-        *out = result;
-        return ErrorNone;
+
+    target->cache_hash_len = strlen(target->cache_hash);
+
+    if (dynamic_linker != nullptr) {
+        target->dynamic_linker = dynamic_linker;
     }
 
-    const char *msg = "stage0 called stage2_cpu_features_parse with non-null cpu name or features";
-    stage2_panic(msg, strlen(msg));
+    return ErrorNone;
 }
 
-void stage2_cpu_features_get_cache_hash(const Stage2CpuFeatures *cpu_features,
-        const char **ptr, size_t *len)
-{
-    *ptr = cpu_features->cache_hash;
-    *len = strlen(cpu_features->cache_hash);
-}
-const char *stage2_cpu_features_get_llvm_cpu(const Stage2CpuFeatures *cpu_features) {
-    return cpu_features->llvm_cpu_name;
-}
-const char *stage2_cpu_features_get_llvm_features(const Stage2CpuFeatures *cpu_features) {
-    return cpu_features->llvm_cpu_features;
-}
-void stage2_cpu_features_get_builtin_str(const Stage2CpuFeatures *cpu_features, 
-        const char **ptr, size_t *len)
-{
-    *ptr = cpu_features->builtin_str;
-    *len = strlen(cpu_features->builtin_str);
-}
-
-int stage2_cmd_targets(const char *zig_triple) {
+int stage2_cmd_targets(const char *zig_triple, const char *mcpu, const char *dynamic_linker) {
     const char *msg = "stage0 called stage2_cmd_targets";
     stage2_panic(msg, strlen(msg));
 }
@@ -152,8 +272,6 @@ enum Error stage2_libc_parse(struct Stage2LibCInstallation *libc, const char *li
     libc->sys_include_dir_len = strlen(libc->sys_include_dir);
     libc->crt_dir = "";
     libc->crt_dir_len = strlen(libc->crt_dir);
-    libc->static_crt_dir = "";
-    libc->static_crt_dir_len = strlen(libc->static_crt_dir);
     libc->msvc_lib_dir = "";
     libc->msvc_lib_dir_len = strlen(libc->msvc_lib_dir);
     libc->kernel32_lib_dir = "";
@@ -171,7 +289,30 @@ enum Error stage2_libc_find_native(struct Stage2LibCInstallation *libc) {
     stage2_panic(msg, strlen(msg));
 }
 
-enum Error stage2_detect_dynamic_linker(const struct ZigTarget *target, char **out_ptr, size_t *out_len) {
-    const char *msg = "stage0 called stage2_detect_dynamic_linker";
+enum Error stage2_detect_native_paths(struct Stage2NativePaths *native_paths) {
+    native_paths->include_dirs_ptr = nullptr;
+    native_paths->include_dirs_len = 0;
+
+    native_paths->lib_dirs_ptr = nullptr;
+    native_paths->lib_dirs_len = 0;
+
+    native_paths->rpaths_ptr = nullptr;
+    native_paths->rpaths_len = 0;
+
+    native_paths->warnings_ptr = nullptr;
+    native_paths->warnings_len = 0;
+
+    return ErrorNone;
+}
+
+void stage2_clang_arg_iterator(struct Stage2ClangArgIterator *it,
+        size_t argc, char **argv)
+{
+    const char *msg = "stage0 called stage2_clang_arg_iterator";
+    stage2_panic(msg, strlen(msg));
+}
+
+enum Error stage2_clang_arg_next(struct Stage2ClangArgIterator *it) {
+    const char *msg = "stage0 called stage2_clang_arg_next";
     stage2_panic(msg, strlen(msg));
 }

@@ -26,7 +26,6 @@ void codegen_set_clang_argv(CodeGen *codegen, const char **args, size_t len);
 void codegen_set_llvm_argv(CodeGen *codegen, const char **args, size_t len);
 void codegen_set_each_lib_rpath(CodeGen *codegen, bool each_lib_rpath);
 
-void codegen_set_emit_file_type(CodeGen *g, EmitFileType emit_file_type);
 void codegen_set_strip(CodeGen *codegen, bool strip);
 void codegen_set_errmsg_color(CodeGen *codegen, ErrColor err_color);
 void codegen_set_out_name(CodeGen *codegen, Buf *out_name);
@@ -36,8 +35,6 @@ LinkLib *codegen_add_link_lib(CodeGen *codegen, Buf *lib);
 void codegen_add_framework(CodeGen *codegen, const char *name);
 void codegen_add_rpath(CodeGen *codegen, const char *name);
 void codegen_set_rdynamic(CodeGen *g, bool rdynamic);
-void codegen_set_mmacosx_version_min(CodeGen *g, Buf *mmacosx_version_min);
-void codegen_set_mios_version_min(CodeGen *g, Buf *mios_version_min);
 void codegen_set_linker_script(CodeGen *g, const char *linker_script);
 void codegen_set_test_filter(CodeGen *g, Buf *filter);
 void codegen_set_test_name_prefix(CodeGen *g, Buf *prefix);

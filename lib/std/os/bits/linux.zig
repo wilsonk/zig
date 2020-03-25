@@ -18,6 +18,8 @@ pub usingnamespace switch (builtin.arch) {
     else => struct {},
 };
 
+pub usingnamespace @import("linux/netlink.zig");
+
 const is_mips = builtin.arch.isMIPS();
 
 pub const pid_t = i32;
@@ -29,6 +31,10 @@ pub const clock_t = isize;
 pub const NAME_MAX = 255;
 pub const PATH_MAX = 4096;
 pub const IOV_MAX = 1024;
+
+/// Largest hardware address length
+/// e.g. a mac address is a type of hardware address
+pub const MAX_ADDR_LEN = 32;
 
 pub const STDIN_FILENO = 0;
 pub const STDOUT_FILENO = 1;
@@ -129,6 +135,8 @@ pub const MAP_FIXED_NOREPLACE = 0x100000;
 
 /// For anonymous mmap, memory could be uninitialized
 pub const MAP_UNINITIALIZED = 0x4000000;
+
+pub const FD_CLOEXEC = 1;
 
 pub const F_OK = 0;
 pub const X_OK = 1;
@@ -1004,7 +1012,7 @@ pub const dl_phdr_info = extern struct {
 
 pub const CPU_SETSIZE = 128;
 pub const cpu_set_t = [CPU_SETSIZE / @sizeOf(usize)]usize;
-pub const cpu_count_t = @IntType(false, std.math.log2(CPU_SETSIZE * 8));
+pub const cpu_count_t = std.meta.IntType(false, std.math.log2(CPU_SETSIZE * 8));
 
 pub fn CPU_COUNT(set: cpu_set_t) cpu_count_t {
     var sum: cpu_count_t = 0;
@@ -1290,12 +1298,12 @@ pub const io_uring_files_update = struct {
 };
 
 pub const utsname = extern struct {
-    sysname: [65]u8,
-    nodename: [65]u8,
-    release: [65]u8,
-    version: [65]u8,
-    machine: [65]u8,
-    domainname: [65]u8,
+    sysname: [64:0]u8,
+    nodename: [64:0]u8,
+    release: [64:0]u8,
+    version: [64:0]u8,
+    machine: [64:0]u8,
+    domainname: [64:0]u8,
 };
 pub const HOST_NAME_MAX = 64;
 

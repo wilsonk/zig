@@ -76,20 +76,18 @@ pub const Inst = struct {
     }
 
     pub fn typeToId(comptime T: type) Id {
-        comptime var i = 0;
-        inline while (i < @memberCount(Id)) : (i += 1) {
-            if (T == @field(Inst, @memberName(Id, i))) {
-                return @field(Id, @memberName(Id, i));
+        inline for (@typeInfo(Id).Enum.fields) |f| {
+            if (T == @field(Inst, f.name)) {
+                return @field(Id, f.name);
             }
         }
         unreachable;
     }
 
     pub fn dump(base: *const Inst) void {
-        comptime var i = 0;
-        inline while (i < @memberCount(Id)) : (i += 1) {
-            if (base.id == @field(Id, @memberName(Id, i))) {
-                const T = @field(Inst, @memberName(Id, i));
+        inline for (@typeInfo(Id).Enum.fields) |f| {
+            if (base.id == @field(Id, f.name)) {
+                const T = @field(Inst, f.name);
                 std.debug.warn("#{} = {}(", .{ base.debug_id, @tagName(base.id) });
                 @fieldParentPtr(T, "base", base).dump();
                 std.debug.warn(")", .{});
@@ -100,10 +98,9 @@ pub const Inst = struct {
     }
 
     pub fn hasSideEffects(base: *const Inst) bool {
-        comptime var i = 0;
-        inline while (i < @memberCount(Id)) : (i += 1) {
-            if (base.id == @field(Id, @memberName(Id, i))) {
-                const T = @field(Inst, @memberName(Id, i));
+        inline for (@typeInfo(Id).Enum.fields) |f| {
+            if (base.id == @field(Id, f.name)) {
+                const T = @field(Inst, f.name);
                 return @fieldParentPtr(T, "base", base).hasSideEffects();
             }
         }
@@ -1102,7 +1099,6 @@ pub const Builder = struct {
                     .Await => return error.Unimplemented,
                     .BitNot => return error.Unimplemented,
                     .BoolNot => return error.Unimplemented,
-                    .Cancel => return error.Unimplemented,
                     .OptionalType => return error.Unimplemented,
                     .Negation => return error.Unimplemented,
                     .NegationWrap => return error.Unimplemented,
@@ -1191,6 +1187,7 @@ pub const Builder = struct {
             .ParamDecl => return error.Unimplemented,
             .FieldInitializer => return error.Unimplemented,
             .EnumLiteral => return error.Unimplemented,
+            .Noasync => return error.Unimplemented,
         }
     }
 
@@ -1314,13 +1311,16 @@ pub const Builder = struct {
         var base: u8 = undefined;
         var rest: []const u8 = undefined;
         if (int_token.len >= 3 and int_token[0] == '0') {
-            base = switch (int_token[1]) {
-                'b' => 2,
-                'o' => 8,
-                'x' => 16,
-                else => unreachable,
-            };
             rest = int_token[2..];
+            switch (int_token[1]) {
+                'b' => base = 2,
+                'o' => base = 8,
+                'x' => base = 16,
+                else => {
+                    base = 10;
+                    rest = int_token;
+                },
+            }
         } else {
             base = 10;
             rest = int_token;
@@ -1805,21 +1805,19 @@ pub const Builder = struct {
         };
 
         // Look at the params and ref() other instructions
-        comptime var i = 0;
-        inline while (i < @memberCount(I.Params)) : (i += 1) {
-            const FieldType = comptime @TypeOf(@field(@as(I.Params, undefined), @memberName(I.Params, i)));
-            switch (FieldType) {
-                *Inst => @field(inst.params, @memberName(I.Params, i)).ref(self),
-                *BasicBlock => @field(inst.params, @memberName(I.Params, i)).ref(self),
-                ?*Inst => if (@field(inst.params, @memberName(I.Params, i))) |other| other.ref(self),
+        inline for (@typeInfo(I.Params).Struct.fields) |f| {
+            switch (f.field_type) {
+                *Inst => @field(inst.params, f.name).ref(self),
+                *BasicBlock => @field(inst.params, f.name).ref(self),
+                ?*Inst => if (@field(inst.params, f.name)) |other| other.ref(self),
                 []*Inst => {
                     // TODO https://github.com/ziglang/zig/issues/1269
-                    for (@field(inst.params, @memberName(I.Params, i))) |other|
+                    for (@field(inst.params, f.name)) |other|
                         other.ref(self);
                 },
                 []*BasicBlock => {
                     // TODO https://github.com/ziglang/zig/issues/1269
-                    for (@field(inst.params, @memberName(I.Params, i))) |other|
+                    for (@field(inst.params, f.name)) |other|
                         other.ref(self);
                 },
                 Type.Pointer.Mut,
@@ -1831,7 +1829,7 @@ pub const Builder = struct {
                 => {},
                 // it's ok to add more types here, just make sure that
                 // any instructions and basic blocks are ref'd appropriately
-                else => @compileError("unrecognized type in Params: " ++ @typeName(FieldType)),
+                else => @compileError("unrecognized type in Params: " ++ @typeName(f.field_type)),
             }
         }
 

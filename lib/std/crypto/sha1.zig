@@ -61,7 +61,7 @@ pub const Sha1 = struct {
         var off: usize = 0;
 
         // Partial buffer exists from previous update. Copy into buffer then hash.
-        if (d.buf_len != 0 and d.buf_len + b.len > 64) {
+        if (d.buf_len != 0 and d.buf_len + b.len >= 64) {
             off += 64 - d.buf_len;
             mem.copy(u8, d.buf[d.buf_len..], b[0..off]);
 
@@ -109,8 +109,7 @@ pub const Sha1 = struct {
         d.round(d.buf[0..]);
 
         for (d.s) |s, j| {
-            // TODO https://github.com/ziglang/zig/issues/863
-            mem.writeIntSliceBig(u32, out[4 * j .. 4 * j + 4], s);
+            mem.writeIntBig(u32, out[4 * j ..][0..4], s);
         }
     }
 

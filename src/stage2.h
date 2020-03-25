@@ -81,7 +81,6 @@ enum Error {
     ErrorIsAsync,
     ErrorImportOutsidePkgPath,
     ErrorUnknownCpu,
-    ErrorUnknownSubArchitecture,
     ErrorUnknownCpuFeature,
     ErrorInvalidCpuFeatures,
     ErrorInvalidLlvmCpuFeaturesFormat,
@@ -104,6 +103,9 @@ enum Error {
     ErrorWindowsSdkNotFound,
     ErrorUnknownDynamicLinkerPath,
     ErrorTargetHasNoDynamicLinker,
+    ErrorInvalidAbiVersion,
+    ErrorInvalidOperatingSystemVersion,
+    ErrorUnknownClangOption,
 };
 
 // ABI warning
@@ -201,30 +203,6 @@ ZIG_EXTERN_C void stage2_progress_update_node(Stage2ProgressNode *node,
         size_t completed_count, size_t estimated_total_items);
 
 // ABI warning
-struct Stage2CpuFeatures;
-
-// ABI warning
-ZIG_EXTERN_C enum Error stage2_cpu_features_parse(struct Stage2CpuFeatures **result,
-        const char *zig_triple, const char *cpu_name, const char *cpu_features);
-
-// ABI warning
-ZIG_EXTERN_C const char *stage2_cpu_features_get_llvm_cpu(const struct Stage2CpuFeatures *cpu_features);
-
-// ABI warning
-ZIG_EXTERN_C const char *stage2_cpu_features_get_llvm_features(const struct Stage2CpuFeatures *cpu_features);
-
-// ABI warning
-ZIG_EXTERN_C void stage2_cpu_features_get_builtin_str(const struct Stage2CpuFeatures *cpu_features,
-        const char **ptr, size_t *len);
-
-// ABI warning
-ZIG_EXTERN_C void stage2_cpu_features_get_cache_hash(const struct Stage2CpuFeatures *cpu_features,
-        const char **ptr, size_t *len);
-
-// ABI warning
-ZIG_EXTERN_C int stage2_cmd_targets(const char *zig_triple);
-
-// ABI warning
 struct Stage2LibCInstallation {
     const char *include_dir;
     size_t include_dir_len;
@@ -232,8 +210,6 @@ struct Stage2LibCInstallation {
     size_t sys_include_dir_len;
     const char *crt_dir;
     size_t crt_dir_len;
-    const char *static_crt_dir;
-    size_t static_crt_dir_len;
     const char *msvc_lib_dir;
     size_t msvc_lib_dir_len;
     const char *kernel32_lib_dir;
@@ -290,8 +266,8 @@ enum Os {
 };
 
 // ABI warning
-struct ZigGLibCVersion {
-    uint32_t major; // always 2
+struct Stage2SemVer {
+    uint32_t major;
     uint32_t minor;
     uint32_t patch;
 };
@@ -299,17 +275,91 @@ struct ZigGLibCVersion {
 // ABI warning
 struct ZigTarget {
     enum ZigLLVM_ArchType arch;
-    enum ZigLLVM_SubArchType sub_arch;
     enum ZigLLVM_VendorType vendor;
-    Os os;
+
     enum ZigLLVM_EnvironmentType abi;
-    struct ZigGLibCVersion *glibc_version; // null means default
-    struct Stage2CpuFeatures *cpu_features;
+    Os os;
+
     bool is_native;
+
+    // null means default. this is double-purposed to be darwin min version
+    struct Stage2SemVer *glibc_or_darwin_version;
+
+    const char *llvm_cpu_name;
+    const char *llvm_cpu_features;
+    const char *cpu_builtin_str;
+    const char *cache_hash;
+    size_t cache_hash_len;
+    const char *os_builtin_str;
+    const char *dynamic_linker;
+    const char *standard_dynamic_linker_path;
+
+    const char **llvm_cpu_features_asm_ptr;
+    size_t llvm_cpu_features_asm_len;
 };
 
 // ABI warning
-ZIG_EXTERN_C enum Error stage2_detect_dynamic_linker(const struct ZigTarget *target,
-        char **out_ptr, size_t *out_len);
+ZIG_EXTERN_C enum Error stage2_target_parse(struct ZigTarget *target, const char *zig_triple, const char *mcpu,
+        const char *dynamic_linker);
+
+// ABI warning
+ZIG_EXTERN_C int stage2_cmd_targets(const char *zig_triple, const char *mcpu, const char *dynamic_linker);
+
+
+// ABI warning
+struct Stage2NativePaths {
+    const char **include_dirs_ptr;
+    size_t include_dirs_len;
+    const char **lib_dirs_ptr;
+    size_t lib_dirs_len;
+    const char **rpaths_ptr;
+    size_t rpaths_len;
+    const char **warnings_ptr;
+    size_t warnings_len;
+};
+// ABI warning
+ZIG_EXTERN_C enum Error stage2_detect_native_paths(struct Stage2NativePaths *native_paths);
+
+// ABI warning
+enum Stage2ClangArg {
+    Stage2ClangArgTarget,
+    Stage2ClangArgO,
+    Stage2ClangArgC,
+    Stage2ClangArgOther,
+    Stage2ClangArgPositional,
+    Stage2ClangArgL,
+    Stage2ClangArgIgnore,
+    Stage2ClangArgDriverPunt,
+    Stage2ClangArgPIC,
+    Stage2ClangArgNoPIC,
+    Stage2ClangArgNoStdLib,
+    Stage2ClangArgShared,
+    Stage2ClangArgRDynamic,
+    Stage2ClangArgWL,
+    Stage2ClangArgPreprocess,
+    Stage2ClangArgOptimize,
+    Stage2ClangArgDebug,
+    Stage2ClangArgSanitize,
+};
+
+// ABI warning
+struct Stage2ClangArgIterator {
+    bool has_next;
+    enum Stage2ClangArg kind;
+    const char *only_arg;
+    const char *second_arg;
+    const char **other_args_ptr;
+    size_t other_args_len;
+    const char **argv_ptr;
+    size_t argv_len;
+    size_t next_index;
+};
+
+// ABI warning
+ZIG_EXTERN_C void stage2_clang_arg_iterator(struct Stage2ClangArgIterator *it,
+        size_t argc, char **argv);
+
+// ABI warning
+ZIG_EXTERN_C enum Error stage2_clang_arg_next(struct Stage2ClangArgIterator *it);
 
 #endif

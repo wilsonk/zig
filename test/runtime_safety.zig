@@ -1,6 +1,36 @@
 const tests = @import("tests.zig");
 
 pub fn addCases(cases: *tests.CompareOutputContext) void {
+    cases.addRuntimeSafety("shift left by huge amount",
+        \\const std = @import("std");
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    if (std.mem.eql(u8, message, "shift amount is greater than the type size")) {
+        \\        std.process.exit(126); // good
+        \\    }
+        \\    std.process.exit(0); // test failed
+        \\}
+        \\pub fn main() void {
+        \\    var x: u24 = 42;
+        \\    var y: u5 = 24;
+        \\    var z = x >> y;
+        \\}
+    );
+
+    cases.addRuntimeSafety("shift right by huge amount",
+        \\const std = @import("std");
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    if (std.mem.eql(u8, message, "shift amount is greater than the type size")) {
+        \\        std.process.exit(126); // good
+        \\    }
+        \\    std.process.exit(0); // test failed
+        \\}
+        \\pub fn main() void {
+        \\    var x: u24 = 42;
+        \\    var y: u5 = 24;
+        \\    var z = x << y;
+        \\}
+    );
+
     cases.addRuntimeSafety("slice sentinel mismatch - optional pointers",
         \\const std = @import("std");
         \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
@@ -39,7 +69,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\}
         \\pub fn main() void {
         \\    var buf: [4]u8 = undefined;
-        \\    const ptr = buf[0..].ptr;
+        \\    const ptr: [*]u8 = &buf;
         \\    const slice = ptr[0..3 :0];
         \\}
     );
@@ -553,15 +583,16 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
     );
 
     cases.addRuntimeSafety("cast []u8 to bigger slice of wrong size",
-        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
-        \\    @import("std").os.exit(126);
+        \\const std = @import("std");
+        \\pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace) noreturn {
+        \\    std.os.exit(126);
         \\}
         \\pub fn main() !void {
         \\    const x = widenSlice(&[_]u8{1, 2, 3, 4, 5});
         \\    if (x.len == 0) return error.Whatever;
         \\}
         \\fn widenSlice(slice: []align(1) const u8) []align(1) const i32 {
-        \\    return @bytesToSlice(i32, slice);
+        \\    return std.mem.bytesAsSlice(i32, slice);
         \\}
     );
 
@@ -656,17 +687,18 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
     );
 
     cases.addRuntimeSafety("@alignCast misaligned",
-        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
-        \\    @import("std").os.exit(126);
+        \\const std = @import("std");
+        \\pub fn panic(message: []const u8, stack_trace: ?*std.builtin.StackTrace) noreturn {
+        \\    std.os.exit(126);
         \\}
         \\pub fn main() !void {
         \\    var array align(4) = [_]u32{0x11111111, 0x11111111};
-        \\    const bytes = @sliceToBytes(array[0..]);
+        \\    const bytes = std.mem.sliceAsBytes(array[0..]);
         \\    if (foo(bytes) != 0x11111111) return error.Wrong;
         \\}
         \\fn foo(bytes: []u8) u32 {
         \\    const slice4 = bytes[1..5];
-        \\    const int_slice = @bytesToSlice(u32, @alignCast(4, slice4));
+        \\    const int_slice = std.mem.bytesAsSlice(u32, @alignCast(4, slice4));
         \\    return int_slice[0];
         \\}
     );
@@ -741,6 +773,19 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\
         \\async fn printTrace(p: anyframe->anyerror!void) void {
         \\    (await p) catch unreachable;
+        \\}
+    );
+
+    // Slicing a C pointer returns a non-allowzero slice, thus we need to emit
+    // a safety check to ensure the pointer is not null.
+    cases.addRuntimeSafety("slicing null C pointer",
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    @import("std").os.exit(126);
+        \\}
+        \\
+        \\pub fn main() void {
+        \\    var ptr: [*c]const u32 = null;
+        \\    var slice = ptr[0..3];
         \\}
     );
 }

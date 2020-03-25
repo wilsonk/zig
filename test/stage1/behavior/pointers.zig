@@ -159,12 +159,13 @@ test "allowzero pointer and slice" {
     var opt_ptr: ?[*]allowzero i32 = ptr;
     expect(opt_ptr != null);
     expect(@ptrToInt(ptr) == 0);
-    var slice = ptr[0..10];
-    expect(@TypeOf(slice) == []allowzero i32);
+    var runtime_zero: usize = 0;
+    var slice = ptr[runtime_zero..10];
+    comptime expect(@TypeOf(slice) == []allowzero i32);
     expect(@ptrToInt(&slice[5]) == 20);
 
-    expect(@typeInfo(@TypeOf(ptr)).Pointer.is_allowzero);
-    expect(@typeInfo(@TypeOf(slice)).Pointer.is_allowzero);
+    comptime expect(@typeInfo(@TypeOf(ptr)).Pointer.is_allowzero);
+    comptime expect(@typeInfo(@TypeOf(slice)).Pointer.is_allowzero);
 }
 
 test "assign null directly to C pointer and test null equality" {
@@ -316,5 +317,17 @@ test "pointer arithmetic affects the alignment" {
         expect(@typeInfo(@TypeOf(ptr3)).Pointer.alignment == 8);
         const ptr4 = ptr + 4; // 3 * 4 = 12 -> lcd(8,12) = 4
         expect(@typeInfo(@TypeOf(ptr4)).Pointer.alignment == 4);
+    }
+}
+
+test "@ptrToInt on null optional at comptime" {
+    {
+        const pointer = @intToPtr(?*u8, 0x000);
+        const x = @ptrToInt(pointer);
+        comptime expect(0 == @ptrToInt(pointer));
+    }
+    {
+        const pointer = @intToPtr(?*u8, 0xf00);
+        comptime expect(0xf00 == @ptrToInt(pointer));
     }
 }

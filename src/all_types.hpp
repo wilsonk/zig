@@ -231,6 +231,7 @@ enum ConstPtrSpecial {
     // The pointer is a reference to a single object.
     ConstPtrSpecialRef,
     // The pointer points to an element in an underlying array.
+    // Not to be confused with ConstPtrSpecialSubArray.
     ConstPtrSpecialBaseArray,
     // The pointer points to a field in an underlying struct.
     ConstPtrSpecialBaseStruct,
@@ -257,6 +258,10 @@ enum ConstPtrSpecial {
     // types to be the same, so all optionals of pointer types use x_ptr
     // instead of x_optional.
     ConstPtrSpecialNull,
+    // The pointer points to a sub-array (not an individual element).
+    // Not to be confused with ConstPtrSpecialBaseArray. However, it uses the same
+    // union payload struct (base_array).
+    ConstPtrSpecialSubArray,
 };
 
 enum ConstPtrMut {
@@ -369,10 +374,20 @@ enum LazyValueId {
     LazyValueIdFnType,
     LazyValueIdErrUnionType,
     LazyValueIdArrayType,
+    LazyValueIdTypeInfoDecls,
 };
 
 struct LazyValue {
     LazyValueId id;
+};
+
+struct LazyValueTypeInfoDecls {
+    LazyValue base;
+
+    IrAnalyze *ira;
+
+    ScopeDecls *decls_scope;
+    IrInst *source_instr;
 };
 
 struct LazyValueAlignOf {
@@ -641,6 +656,7 @@ enum NodeType {
     NodeTypeSwitchProng,
     NodeTypeSwitchRange,
     NodeTypeCompTime,
+    NodeTypeNoAsync,
     NodeTypeBreak,
     NodeTypeContinue,
     NodeTypeAsmExpr,
@@ -728,6 +744,7 @@ struct AstNodeReturnExpr {
 
 struct AstNodeDefer {
     ReturnKind kind;
+    AstNode *err_payload;
     AstNode *expr;
 
     // temporary data used in IR generation
@@ -981,6 +998,10 @@ struct AstNodeCompTime {
     AstNode *expr;
 };
 
+struct AstNodeNoAsync {
+    AstNode *expr;
+};
+
 struct AsmOutput {
     Buf *asm_symbolic_name;
     Buf *constraint;
@@ -1138,7 +1159,6 @@ struct AstNodeErrorType {
 };
 
 struct AstNodeAwaitExpr {
-    Token *noasync_token;
     AstNode *expr;
 };
 
@@ -1189,6 +1209,7 @@ struct AstNode {
         AstNodeSwitchProng switch_prong;
         AstNodeSwitchRange switch_range;
         AstNodeCompTime comptime_expr;
+        AstNodeNoAsync noasync_expr;
         AstNodeAsmExpr asm_expr;
         AstNodeFieldAccessExpr field_access_expr;
         AstNodePtrDerefExpr ptr_deref_expr;
@@ -1685,9 +1706,6 @@ enum BuiltinFnId {
     BuiltinFnIdMemset,
     BuiltinFnIdSizeof,
     BuiltinFnIdAlignOf,
-    BuiltinFnIdMemberCount,
-    BuiltinFnIdMemberType,
-    BuiltinFnIdMemberName,
     BuiltinFnIdField,
     BuiltinFnIdTypeInfo,
     BuiltinFnIdType,
@@ -1740,8 +1758,6 @@ enum BuiltinFnId {
     BuiltinFnIdIntCast,
     BuiltinFnIdFloatCast,
     BuiltinFnIdErrSetCast,
-    BuiltinFnIdToBytes,
-    BuiltinFnIdFromBytes,
     BuiltinFnIdIntToFloat,
     BuiltinFnIdFloatToInt,
     BuiltinFnIdBoolToInt,
@@ -1749,7 +1765,6 @@ enum BuiltinFnId {
     BuiltinFnIdIntToErr,
     BuiltinFnIdEnumToInt,
     BuiltinFnIdIntToEnum,
-    BuiltinFnIdIntType,
     BuiltinFnIdVectorType,
     BuiltinFnIdShuffle,
     BuiltinFnIdSplat,
@@ -1767,9 +1782,7 @@ enum BuiltinFnId {
     BuiltinFnIdFieldParentPtr,
     BuiltinFnIdByteOffsetOf,
     BuiltinFnIdBitOffsetOf,
-    BuiltinFnIdNewStackCall,
     BuiltinFnIdAsyncCall,
-    BuiltinFnIdTypeId,
     BuiltinFnIdShlExact,
     BuiltinFnIdShrExact,
     BuiltinFnIdSetEvalBranchQuota,
@@ -1777,7 +1790,6 @@ enum BuiltinFnId {
     BuiltinFnIdOpaqueType,
     BuiltinFnIdThis,
     BuiltinFnIdSetAlignStack,
-    BuiltinFnIdArgType,
     BuiltinFnIdExport,
     BuiltinFnIdErrorReturnTrace,
     BuiltinFnIdAtomicRmw,
@@ -1811,7 +1823,6 @@ enum PanicMsgId {
     PanicMsgIdDivisionByZero,
     PanicMsgIdRemainderDivisionByZero,
     PanicMsgIdExactDivisionRemainder,
-    PanicMsgIdSliceWidenRemainder,
     PanicMsgIdUnwrapOptionalFail,
     PanicMsgIdInvalidErrorCode,
     PanicMsgIdIncorrectAlignment,
@@ -1828,6 +1839,7 @@ enum PanicMsgId {
     PanicMsgIdBadNoAsyncCall,
     PanicMsgIdResumeNotSuspendedFn,
     PanicMsgIdBadSentinel,
+    PanicMsgIdShxTooBigRhs,
 
     PanicMsgIdCount,
 };
@@ -1956,12 +1968,6 @@ enum CodeModel {
     CodeModelLarge,
 };
 
-enum EmitFileType {
-    EmitFileTypeBinary,
-    EmitFileTypeAssembly,
-    EmitFileTypeLLVMIr,
-};
-
 struct LinkLib {
     Buf *name;
     Buf *path;
@@ -1996,6 +2002,7 @@ enum WantCSanitize {
 struct CFile {
     ZigList<const char *> args;
     const char *source_path;
+    const char *preprocessor_only_basename;
 };
 
 // When adding fields, check if they should be added to the hash computation in build_with_cache
@@ -2132,12 +2139,15 @@ struct CodeGen {
 
     Buf llvm_triple_str;
     Buf global_asm;
-    Buf output_file_path;
     Buf o_file_output_path;
+    Buf bin_file_output_path;
+    Buf asm_file_output_path;
+    Buf llvm_ir_file_output_path;
     Buf *cache_dir;
     // As an input parameter, mutually exclusive with enable_cache. But it gets
     // populated in codegen_build_and_link.
     Buf *output_dir;
+    Buf *c_artifact_dir;
     const char **libc_include_dir_list;
     size_t libc_include_dir_len;
 
@@ -2226,7 +2236,6 @@ struct CodeGen {
     size_t version_patch;
     const char *linker_script;
 
-    EmitFileType emit_file_type;
     BuildMode build_mode;
     OutType out_type;
     const ZigTarget *zig_target;
@@ -2248,19 +2257,19 @@ struct CodeGen {
     bool function_sections;
     bool enable_dump_analysis;
     bool enable_doc_generation;
-    bool disable_bin_generation;
+    bool emit_bin;
+    bool emit_asm;
+    bool emit_llvm_ir;
     bool test_is_evented;
     CodeModel code_model;
 
-    Buf *mmacosx_version_min;
-    Buf *mios_version_min;
     Buf *root_out_name;
     Buf *test_filter;
     Buf *test_name_prefix;
     Buf *zig_lib_dir;
     Buf *zig_std_dir;
-    Buf *dynamic_linker_path;
     Buf *version_script_path;
+    Buf *override_soname;
 
     const char **llvm_argv;
     size_t llvm_argv_len;
@@ -2330,6 +2339,7 @@ enum ScopeId {
     ScopeIdRuntime,
     ScopeIdTypeOf,
     ScopeIdExpr,
+    ScopeIdNoAsync,
 };
 
 struct Scope {
@@ -2462,6 +2472,11 @@ struct ScopeCompTime {
     Scope base;
 };
 
+// This scope is created for a noasync expression.
+// NodeTypeNoAsync
+struct ScopeNoAsync {
+    Scope base;
+};
 
 // This scope is created for a function definition.
 // NodeTypeFnDef
@@ -2626,7 +2641,6 @@ enum IrInstSrcId {
     IrInstSrcIdIntToFloat,
     IrInstSrcIdFloatToInt,
     IrInstSrcIdBoolToInt,
-    IrInstSrcIdIntType,
     IrInstSrcIdVectorType,
     IrInstSrcIdShuffleVector,
     IrInstSrcIdSplat,
@@ -2634,9 +2648,6 @@ enum IrInstSrcId {
     IrInstSrcIdMemset,
     IrInstSrcIdMemcpy,
     IrInstSrcIdSlice,
-    IrInstSrcIdMemberCount,
-    IrInstSrcIdMemberType,
-    IrInstSrcIdMemberName,
     IrInstSrcIdBreakpoint,
     IrInstSrcIdReturnAddress,
     IrInstSrcIdFrameAddress,
@@ -2673,7 +2684,6 @@ enum IrInstSrcId {
     IrInstSrcIdTypeInfo,
     IrInstSrcIdType,
     IrInstSrcIdHasField,
-    IrInstSrcIdTypeId,
     IrInstSrcIdSetEvalBranchQuota,
     IrInstSrcIdPtrType,
     IrInstSrcIdAlignCast,
@@ -2692,8 +2702,6 @@ enum IrInstSrcId {
     IrInstSrcIdSaveErrRetAddr,
     IrInstSrcIdAddImplicitReturnType,
     IrInstSrcIdErrSetCast,
-    IrInstSrcIdToBytes,
-    IrInstSrcIdFromBytes,
     IrInstSrcIdCheckRuntimeScope,
     IrInstSrcIdHasDecl,
     IrInstSrcIdUndeclaredIdent,
@@ -2732,7 +2740,6 @@ enum IrInstGenId {
     IrInstGenIdCall,
     IrInstGenIdReturn,
     IrInstGenIdCast,
-    IrInstGenIdResizeSlice,
     IrInstGenIdUnreachable,
     IrInstGenIdAsm,
     IrInstGenIdTestNonNull,
@@ -3264,13 +3271,6 @@ struct IrInstGenCast {
     CastOp cast_op;
 };
 
-struct IrInstGenResizeSlice {
-    IrInstGen base;
-
-    IrInstGen *operand;
-    IrInstGen *result_loc;
-};
-
 struct IrInstSrcContainerInitList {
     IrInstSrc base;
 
@@ -3284,7 +3284,6 @@ struct IrInstSrcContainerInitList {
 struct IrInstSrcContainerInitFieldsField {
     Buf *name;
     AstNode *source_node;
-    TypeStructField *type_struct_field;
     IrInstSrc *result_loc;
 };
 
@@ -3307,7 +3306,11 @@ struct IrInstGenUnreachable {
 struct IrInstSrcTypeOf {
     IrInstSrc base;
 
-    IrInstSrc *value;
+    union {
+        IrInstSrc *scalar; // value_count == 1
+        IrInstSrc **list; // value_count > 1
+    } value;
+    size_t value_count;
 };
 
 struct IrInstSrcSetCold {
@@ -3622,21 +3625,6 @@ struct IrInstSrcErrSetCast {
     IrInstSrc *target;
 };
 
-struct IrInstSrcToBytes {
-    IrInstSrc base;
-
-    IrInstSrc *target;
-    ResultLoc *result_loc;
-};
-
-struct IrInstSrcFromBytes {
-    IrInstSrc base;
-
-    IrInstSrc *dest_child_type;
-    IrInstSrc *target;
-    ResultLoc *result_loc;
-};
-
 struct IrInstSrcIntToFloat {
     IrInstSrc base;
 
@@ -3655,13 +3643,6 @@ struct IrInstSrcBoolToInt {
     IrInstSrc base;
 
     IrInstSrc *target;
-};
-
-struct IrInstSrcIntType {
-    IrInstSrc base;
-
-    IrInstSrc *is_signed;
-    IrInstSrc *bit_count;
 };
 
 struct IrInstSrcVectorType {
@@ -3733,27 +3714,8 @@ struct IrInstGenSlice {
     IrInstGen *start;
     IrInstGen *end;
     IrInstGen *result_loc;
+    ZigValue *sentinel;
     bool safety_check_on;
-};
-
-struct IrInstSrcMemberCount {
-    IrInstSrc base;
-
-    IrInstSrc *container;
-};
-
-struct IrInstSrcMemberType {
-    IrInstSrc base;
-
-    IrInstSrc *container_type;
-    IrInstSrc *member_index;
-};
-
-struct IrInstSrcMemberName {
-    IrInstSrc base;
-
-    IrInstSrc *container_type;
-    IrInstSrc *member_index;
 };
 
 struct IrInstSrcBreakpoint {
@@ -4161,12 +4123,6 @@ struct IrInstSrcHasField {
 
     IrInstSrc *container_type;
     IrInstSrc *field_name;
-};
-
-struct IrInstSrcTypeId {
-    IrInstSrc base;
-
-    IrInstSrc *type_value;
 };
 
 struct IrInstSrcSetEvalBranchQuota {

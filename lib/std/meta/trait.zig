@@ -1,5 +1,5 @@
 const std = @import("../std.zig");
-const builtin = @import("builtin");
+const builtin = std.builtin;
 const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
@@ -54,7 +54,7 @@ pub fn hasFn(comptime name: []const u8) TraitFn {
             if (!comptime isContainer(T)) return false;
             if (!comptime @hasDecl(T, name)) return false;
             const DeclType = @TypeOf(@field(T, name));
-            return @typeId(DeclType) == .Fn;
+            return @typeInfo(DeclType) == .Fn;
         }
     };
     return Closure.trait;
@@ -105,7 +105,7 @@ test "std.meta.trait.hasField" {
 pub fn is(comptime id: builtin.TypeId) TraitFn {
     const Closure = struct {
         pub fn trait(comptime T: type) bool {
-            return id == @typeId(T);
+            return id == @typeInfo(T);
         }
     };
     return Closure.trait;
@@ -123,7 +123,7 @@ pub fn isPtrTo(comptime id: builtin.TypeId) TraitFn {
     const Closure = struct {
         pub fn trait(comptime T: type) bool {
             if (!comptime isSingleItemPtr(T)) return false;
-            return id == @typeId(meta.Child(T));
+            return id == @typeInfo(meta.Child(T));
         }
     };
     return Closure.trait;
@@ -133,6 +133,22 @@ test "std.meta.trait.isPtrTo" {
     testing.expect(!isPtrTo(.Struct)(struct {}));
     testing.expect(isPtrTo(.Struct)(*struct {}));
     testing.expect(!isPtrTo(.Struct)(**struct {}));
+}
+
+pub fn isSliceOf(comptime id: builtin.TypeId) TraitFn {
+    const Closure = struct {
+        pub fn trait(comptime T: type) bool {
+            if (!comptime isSlice(T)) return false;
+            return id == @typeInfo(meta.Child(T));
+        }
+    };
+    return Closure.trait;
+}
+
+test "std.meta.trait.isSliceOf" {
+    testing.expect(!isSliceOf(.Struct)(struct {}));
+    testing.expect(isSliceOf(.Struct)([]struct {}));
+    testing.expect(!isSliceOf(.Struct)([][]struct {}));
 }
 
 ///////////Strait trait Fns
@@ -214,9 +230,10 @@ pub fn isSingleItemPtr(comptime T: type) bool {
 
 test "std.meta.trait.isSingleItemPtr" {
     const array = [_]u8{0} ** 10;
-    testing.expect(isSingleItemPtr(@TypeOf(&array[0])));
-    testing.expect(!isSingleItemPtr(@TypeOf(array)));
-    testing.expect(!isSingleItemPtr(@TypeOf(array[0..1])));
+    comptime testing.expect(isSingleItemPtr(@TypeOf(&array[0])));
+    comptime testing.expect(!isSingleItemPtr(@TypeOf(array)));
+    var runtime_zero: usize = 0;
+    testing.expect(!isSingleItemPtr(@TypeOf(array[runtime_zero..1])));
 }
 
 pub fn isManyItemPtr(comptime T: type) bool {
@@ -243,7 +260,8 @@ pub fn isSlice(comptime T: type) bool {
 
 test "std.meta.trait.isSlice" {
     const array = [_]u8{0} ** 10;
-    testing.expect(isSlice(@TypeOf(array[0..])));
+    var runtime_zero: usize = 0;
+    testing.expect(isSlice(@TypeOf(array[runtime_zero..])));
     testing.expect(!isSlice(@TypeOf(array)));
     testing.expect(!isSlice(@TypeOf(&array[0])));
 }
@@ -260,7 +278,7 @@ pub fn isIndexable(comptime T: type) bool {
 
 test "std.meta.trait.isIndexable" {
     const array = [_]u8{0} ** 10;
-    const slice = array[0..];
+    const slice = @as([]const u8, &array);
 
     testing.expect(isIndexable(@TypeOf(array)));
     testing.expect(isIndexable(@TypeOf(&array)));
@@ -269,7 +287,7 @@ test "std.meta.trait.isIndexable" {
 }
 
 pub fn isNumber(comptime T: type) bool {
-    return switch (@typeId(T)) {
+    return switch (@typeInfo(T)) {
         .Int, .Float, .ComptimeInt, .ComptimeFloat => true,
         else => false,
     };
@@ -304,7 +322,7 @@ test "std.meta.trait.isConstPtr" {
 }
 
 pub fn isContainer(comptime T: type) bool {
-    return switch (@typeId(T)) {
+    return switch (@typeInfo(T)) {
         .Struct, .Union, .Enum => true,
         else => false,
     };

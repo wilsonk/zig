@@ -7,11 +7,7 @@ const Allocator = std.mem.Allocator;
 const Batch = std.event.Batch;
 
 const is_darwin = Target.current.isDarwin();
-const is_windows = Target.current.isWindows();
-const is_freebsd = Target.current.isFreeBSD();
-const is_netbsd = Target.current.isNetBSD();
-const is_linux = Target.current.isLinux();
-const is_dragonfly = Target.current.isDragonFlyBSD();
+const is_windows = Target.current.os.tag == .windows;
 const is_gnu = Target.current.isGnu();
 
 usingnamespace @import("windows_sdk.zig");
@@ -21,7 +17,6 @@ pub const LibCInstallation = struct {
     include_dir: ?[:0]const u8 = null,
     sys_include_dir: ?[:0]const u8 = null,
     crt_dir: ?[:0]const u8 = null,
-    static_crt_dir: ?[:0]const u8 = null,
     msvc_lib_dir: ?[:0]const u8 = null,
     kernel32_lib_dir: ?[:0]const u8 = null,
 
@@ -42,7 +37,7 @@ pub const LibCInstallation = struct {
     pub fn parse(
         allocator: *Allocator,
         libc_file: []const u8,
-        stderr: *std.io.OutStream(fs.File.WriteError),
+        stderr: var,
     ) !LibCInstallation {
         var self: LibCInstallation = .{};
 
@@ -99,27 +94,20 @@ pub const LibCInstallation = struct {
             return error.ParseError;
         }
         if (self.crt_dir == null and !is_darwin) {
-            try stderr.print("crt_dir may not be empty for {}\n", .{@tagName(Target.current.getOs())});
-            return error.ParseError;
-        }
-        if (self.static_crt_dir == null and is_windows and is_gnu) {
-            try stderr.print("static_crt_dir may not be empty for {}-{}\n", .{
-                @tagName(Target.current.getOs()),
-                @tagName(Target.current.getAbi()),
-            });
+            try stderr.print("crt_dir may not be empty for {}\n", .{@tagName(Target.current.os.tag)});
             return error.ParseError;
         }
         if (self.msvc_lib_dir == null and is_windows and !is_gnu) {
             try stderr.print("msvc_lib_dir may not be empty for {}-{}\n", .{
-                @tagName(Target.current.getOs()),
-                @tagName(Target.current.getAbi()),
+                @tagName(Target.current.os.tag),
+                @tagName(Target.current.abi),
             });
             return error.ParseError;
         }
         if (self.kernel32_lib_dir == null and is_windows and !is_gnu) {
             try stderr.print("kernel32_lib_dir may not be empty for {}-{}\n", .{
-                @tagName(Target.current.getOs()),
-                @tagName(Target.current.getAbi()),
+                @tagName(Target.current.os.tag),
+                @tagName(Target.current.abi),
             });
             return error.ParseError;
         }
@@ -127,12 +115,11 @@ pub const LibCInstallation = struct {
         return self;
     }
 
-    pub fn render(self: LibCInstallation, out: *std.io.OutStream(fs.File.WriteError)) !void {
+    pub fn render(self: LibCInstallation, out: var) !void {
         @setEvalBranchQuota(4000);
         const include_dir = self.include_dir orelse "";
         const sys_include_dir = self.sys_include_dir orelse "";
         const crt_dir = self.crt_dir orelse "";
-        const static_crt_dir = self.static_crt_dir orelse "";
         const msvc_lib_dir = self.msvc_lib_dir orelse "";
         const kernel32_lib_dir = self.kernel32_lib_dir orelse "";
 
@@ -151,11 +138,6 @@ pub const LibCInstallation = struct {
             \\# Not needed when targeting MacOS.
             \\crt_dir={}
             \\
-            \\# The directory that contains `crtbegin.o`.
-            \\# On POSIX, can be found with `cc -print-file-name=crtbegin.o`.
-            \\# Only needed when targeting MinGW-w64 on Windows.
-            \\static_crt_dir={}
-            \\
             \\# The directory that contains `vcruntime.lib`.
             \\# Only needed when targeting MSVC on Windows.
             \\msvc_lib_dir={}
@@ -168,22 +150,27 @@ pub const LibCInstallation = struct {
             include_dir,
             sys_include_dir,
             crt_dir,
-            static_crt_dir,
             msvc_lib_dir,
             kernel32_lib_dir,
         });
     }
 
+    pub const FindNativeOptions = struct {
+        allocator: *Allocator,
+
+        /// If enabled, will print human-friendly errors to stderr.
+        verbose: bool = false,
+    };
+
     /// Finds the default, native libc.
-    pub fn findNative(allocator: *Allocator) FindError!LibCInstallation {
+    pub fn findNative(args: FindNativeOptions) FindError!LibCInstallation {
         var self: LibCInstallation = .{};
 
         if (is_windows) {
             if (is_gnu) {
                 var batch = Batch(FindError!void, 3, .auto_async).init();
-                batch.add(&async self.findNativeIncludeDirPosix(allocator));
-                batch.add(&async self.findNativeCrtDirPosix(allocator));
-                batch.add(&async self.findNativeStaticCrtDirPosix(allocator));
+                batch.add(&async self.findNativeIncludeDirPosix(args));
+                batch.add(&async self.findNativeCrtDirPosix(args));
                 try batch.wait();
             } else {
                 var sdk: *ZigWindowsSDK = undefined;
@@ -192,11 +179,11 @@ pub const LibCInstallation = struct {
                         defer zig_free_windows_sdk(sdk);
 
                         var batch = Batch(FindError!void, 5, .auto_async).init();
-                        batch.add(&async self.findNativeMsvcIncludeDir(allocator, sdk));
-                        batch.add(&async self.findNativeMsvcLibDir(allocator, sdk));
-                        batch.add(&async self.findNativeKernel32LibDir(allocator, sdk));
-                        batch.add(&async self.findNativeIncludeDirWindows(allocator, sdk));
-                        batch.add(&async self.findNativeCrtDirWindows(allocator, sdk));
+                        batch.add(&async self.findNativeMsvcIncludeDir(args, sdk));
+                        batch.add(&async self.findNativeMsvcLibDir(args, sdk));
+                        batch.add(&async self.findNativeKernel32LibDir(args, sdk));
+                        batch.add(&async self.findNativeIncludeDirWindows(args, sdk));
+                        batch.add(&async self.findNativeCrtDirWindows(args, sdk));
                         try batch.wait();
                     },
                     .OutOfMemory => return error.OutOfMemory,
@@ -208,11 +195,11 @@ pub const LibCInstallation = struct {
             try blk: {
                 var batch = Batch(FindError!void, 2, .auto_async).init();
                 errdefer batch.wait() catch {};
-                batch.add(&async self.findNativeIncludeDirPosix(allocator));
-                if (is_freebsd or is_netbsd) {
-                    self.crt_dir = try std.mem.dupeZ(allocator, u8, "/usr/lib");
-                } else if (is_linux or is_dragonfly) {
-                    batch.add(&async self.findNativeCrtDirPosix(allocator));
+                batch.add(&async self.findNativeIncludeDirPosix(args));
+                switch (Target.current.os.tag) {
+                    .freebsd, .netbsd => self.crt_dir = try std.mem.dupeZ(args.allocator, u8, "/usr/lib"),
+                    .linux, .dragonfly => batch.add(&async self.findNativeCrtDirPosix(args)),
+                    else => {},
                 }
                 break :blk batch.wait();
             };
@@ -231,7 +218,8 @@ pub const LibCInstallation = struct {
         self.* = undefined;
     }
 
-    fn findNativeIncludeDirPosix(self: *LibCInstallation, allocator: *Allocator) FindError!void {
+    fn findNativeIncludeDirPosix(self: *LibCInstallation, args: FindNativeOptions) FindError!void {
+        const allocator = args.allocator;
         const dev_null = if (is_windows) "nul" else "/dev/null";
         const cc_exe = std.os.getenvZ("CC") orelse default_cc_exe;
         const argv = [_][]const u8{
@@ -252,15 +240,24 @@ pub const LibCInstallation = struct {
             .expand_arg0 = .expand,
         }) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
-            else => return error.UnableToSpawnCCompiler,
+            else => {
+                printVerboseInvocation(&argv, null, args.verbose, null);
+                return error.UnableToSpawnCCompiler;
+            },
         };
         defer {
             allocator.free(exec_res.stdout);
             allocator.free(exec_res.stderr);
         }
         switch (exec_res.term) {
-            .Exited => |code| if (code != 0) return error.CCompilerExitCode,
-            else => return error.CCompilerCrashed,
+            .Exited => |code| if (code != 0) {
+                printVerboseInvocation(&argv, null, args.verbose, exec_res.stderr);
+                return error.CCompilerExitCode;
+            },
+            else => {
+                printVerboseInvocation(&argv, null, args.verbose, exec_res.stderr);
+                return error.CCompilerCrashed;
+            },
         }
 
         var it = std.mem.tokenize(exec_res.stderr, "\n\r");
@@ -283,7 +280,7 @@ pub const LibCInstallation = struct {
             // search in reverse order
             const search_path_untrimmed = search_paths.at(search_paths.len - path_i - 1);
             const search_path = std.mem.trimLeft(u8, search_path_untrimmed, " ");
-            var search_dir = fs.cwd().openDirList(search_path) catch |err| switch (err) {
+            var search_dir = fs.cwd().openDir(search_path, .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,
@@ -322,9 +319,11 @@ pub const LibCInstallation = struct {
 
     fn findNativeIncludeDirWindows(
         self: *LibCInstallation,
-        allocator: *Allocator,
+        args: FindNativeOptions,
         sdk: *ZigWindowsSDK,
     ) FindError!void {
+        const allocator = args.allocator;
+
         var search_buf: [2]Search = undefined;
         const searches = fillSearch(&search_buf, sdk);
 
@@ -333,10 +332,10 @@ pub const LibCInstallation = struct {
 
         for (searches) |search| {
             result_buf.shrink(0);
-            const stream = &std.io.BufferOutStream.init(&result_buf).stream;
+            const stream = result_buf.outStream();
             try stream.print("{}\\Include\\{}\\ucrt", .{ search.path, search.version });
 
-            var dir = fs.cwd().openDirList(result_buf.toSliceConst()) catch |err| switch (err) {
+            var dir = fs.cwd().openDir(result_buf.toSliceConst(), .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,
@@ -358,7 +357,13 @@ pub const LibCInstallation = struct {
         return error.LibCStdLibHeaderNotFound;
     }
 
-    fn findNativeCrtDirWindows(self: *LibCInstallation, allocator: *Allocator, sdk: *ZigWindowsSDK) FindError!void {
+    fn findNativeCrtDirWindows(
+        self: *LibCInstallation,
+        args: FindNativeOptions,
+        sdk: *ZigWindowsSDK,
+    ) FindError!void {
+        const allocator = args.allocator;
+
         var search_buf: [2]Search = undefined;
         const searches = fillSearch(&search_buf, sdk);
 
@@ -374,10 +379,10 @@ pub const LibCInstallation = struct {
 
         for (searches) |search| {
             result_buf.shrink(0);
-            const stream = &std.io.BufferOutStream.init(&result_buf).stream;
+            const stream = result_buf.outStream();
             try stream.print("{}\\Lib\\{}\\ucrt\\{}", .{ search.path, search.version, arch_sub_dir });
 
-            var dir = fs.cwd().openDirList(result_buf.toSliceConst()) catch |err| switch (err) {
+            var dir = fs.cwd().openDir(result_buf.toSliceConst(), .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,
@@ -398,15 +403,22 @@ pub const LibCInstallation = struct {
         return error.LibCRuntimeNotFound;
     }
 
-    fn findNativeCrtDirPosix(self: *LibCInstallation, allocator: *Allocator) FindError!void {
-        self.crt_dir = try ccPrintFileName(allocator, "crt1.o", .only_dir);
+    fn findNativeCrtDirPosix(self: *LibCInstallation, args: FindNativeOptions) FindError!void {
+        self.crt_dir = try ccPrintFileName(.{
+            .allocator = args.allocator,
+            .search_basename = "crt1.o",
+            .want_dirname = .only_dir,
+            .verbose = args.verbose,
+        });
     }
 
-    fn findNativeStaticCrtDirPosix(self: *LibCInstallation, allocator: *Allocator) FindError!void {
-        self.static_crt_dir = try ccPrintFileName(allocator, "crtbegin.o", .only_dir);
-    }
+    fn findNativeKernel32LibDir(
+        self: *LibCInstallation,
+        args: FindNativeOptions,
+        sdk: *ZigWindowsSDK,
+    ) FindError!void {
+        const allocator = args.allocator;
 
-    fn findNativeKernel32LibDir(self: *LibCInstallation, allocator: *Allocator, sdk: *ZigWindowsSDK) FindError!void {
         var search_buf: [2]Search = undefined;
         const searches = fillSearch(&search_buf, sdk);
 
@@ -422,10 +434,10 @@ pub const LibCInstallation = struct {
 
         for (searches) |search| {
             result_buf.shrink(0);
-            const stream = &std.io.BufferOutStream.init(&result_buf).stream;
+            const stream = result_buf.outStream();
             try stream.print("{}\\Lib\\{}\\um\\{}", .{ search.path, search.version, arch_sub_dir });
 
-            var dir = fs.cwd().openDirList(result_buf.toSliceConst()) catch |err| switch (err) {
+            var dir = fs.cwd().openDir(result_buf.toSliceConst(), .{}) catch |err| switch (err) {
                 error.FileNotFound,
                 error.NotDir,
                 error.NoDevice,
@@ -448,9 +460,11 @@ pub const LibCInstallation = struct {
 
     fn findNativeMsvcIncludeDir(
         self: *LibCInstallation,
-        allocator: *Allocator,
+        args: FindNativeOptions,
         sdk: *ZigWindowsSDK,
     ) FindError!void {
+        const allocator = args.allocator;
+
         const msvc_lib_dir_ptr = sdk.msvc_lib_dir_ptr orelse return error.LibCStdLibHeaderNotFound;
         const msvc_lib_dir = msvc_lib_dir_ptr[0..sdk.msvc_lib_dir_len];
         const up1 = fs.path.dirname(msvc_lib_dir) orelse return error.LibCStdLibHeaderNotFound;
@@ -461,7 +475,7 @@ pub const LibCInstallation = struct {
 
         try result_buf.append("\\include");
 
-        var dir = fs.cwd().openDirList(result_buf.toSliceConst()) catch |err| switch (err) {
+        var dir = fs.cwd().openDir(result_buf.toSliceConst(), .{}) catch |err| switch (err) {
             error.FileNotFound,
             error.NotDir,
             error.NoDevice,
@@ -481,9 +495,10 @@ pub const LibCInstallation = struct {
 
     fn findNativeMsvcLibDir(
         self: *LibCInstallation,
-        allocator: *Allocator,
+        args: FindNativeOptions,
         sdk: *ZigWindowsSDK,
     ) FindError!void {
+        const allocator = args.allocator;
         const msvc_lib_dir_ptr = sdk.msvc_lib_dir_ptr orelse return error.LibCRuntimeNotFound;
         self.msvc_lib_dir = try std.mem.dupeZ(allocator, u8, msvc_lib_dir_ptr[0..sdk.msvc_lib_dir_len]);
     }
@@ -491,14 +506,19 @@ pub const LibCInstallation = struct {
 
 const default_cc_exe = if (is_windows) "cc.exe" else "cc";
 
-/// caller owns returned memory
-fn ccPrintFileName(
+pub const CCPrintFileNameOptions = struct {
     allocator: *Allocator,
-    o_file: []const u8,
+    search_basename: []const u8,
     want_dirname: enum { full_path, only_dir },
-) ![:0]u8 {
+    verbose: bool = false,
+};
+
+/// caller owns returned memory
+fn ccPrintFileName(args: CCPrintFileNameOptions) ![:0]u8 {
+    const allocator = args.allocator;
+
     const cc_exe = std.os.getenvZ("CC") orelse default_cc_exe;
-    const arg1 = try std.fmt.allocPrint(allocator, "-print-file-name={}", .{o_file});
+    const arg1 = try std.fmt.allocPrint(allocator, "-print-file-name={}", .{args.search_basename});
     defer allocator.free(arg1);
     const argv = [_][]const u8{ cc_exe, arg1 };
 
@@ -520,16 +540,22 @@ fn ccPrintFileName(
         allocator.free(exec_res.stderr);
     }
     switch (exec_res.term) {
-        .Exited => |code| if (code != 0) return error.CCompilerExitCode,
-        else => return error.CCompilerCrashed,
+        .Exited => |code| if (code != 0) {
+            printVerboseInvocation(&argv, args.search_basename, args.verbose, exec_res.stderr);
+            return error.CCompilerExitCode;
+        },
+        else => {
+            printVerboseInvocation(&argv, args.search_basename, args.verbose, exec_res.stderr);
+            return error.CCompilerCrashed;
+        },
     }
 
     var it = std.mem.tokenize(exec_res.stdout, "\n\r");
     const line = it.next() orelse return error.LibCRuntimeNotFound;
     // When this command fails, it returns exit code 0 and duplicates the input file name.
     // So we detect failure by checking if the output matches exactly the input.
-    if (std.mem.eql(u8, line, o_file)) return error.LibCRuntimeNotFound;
-    switch (want_dirname) {
+    if (std.mem.eql(u8, line, args.search_basename)) return error.LibCRuntimeNotFound;
+    switch (args.want_dirname) {
         .full_path => return std.mem.dupeZ(allocator, u8, line),
         .only_dir => {
             const dirname = fs.path.dirname(line) orelse return error.LibCRuntimeNotFound;
@@ -538,99 +564,27 @@ fn ccPrintFileName(
     }
 }
 
-/// Caller owns returned memory.
-pub fn detectNativeDynamicLinker(allocator: *Allocator) error{
-    OutOfMemory,
-    TargetHasNoDynamicLinker,
-    UnknownDynamicLinkerPath,
-}![:0]u8 {
-    if (!comptime Target.current.hasDynamicLinker()) {
-        return error.TargetHasNoDynamicLinker;
+fn printVerboseInvocation(
+    argv: []const []const u8,
+    search_basename: ?[]const u8,
+    verbose: bool,
+    stderr: ?[]const u8,
+) void {
+    if (!verbose) return;
+
+    if (search_basename) |s| {
+        std.debug.warn("Zig attempted to find the file '{}' by executing this command:\n", .{s});
+    } else {
+        std.debug.warn("Zig attempted to find the path to native system libc headers by executing this command:\n", .{});
     }
-
-    // The current target's ABI cannot be relied on for this. For example, we may build the zig
-    // compiler for target riscv64-linux-musl and provide a tarball for users to download.
-    // A user could then run that zig compiler on riscv64-linux-gnu. This use case is well-defined
-    // and supported by Zig. But that means that we must detect the system ABI here rather than
-    // relying on `std.Target.current`.
-
-    const LdInfo = struct {
-        ld_path: []u8,
-        abi: Target.Abi,
-    };
-    var ld_info_list = std.ArrayList(LdInfo).init(allocator);
-    defer {
-        for (ld_info_list.toSlice()) |ld_info| allocator.free(ld_info.ld_path);
-        ld_info_list.deinit();
+    for (argv) |arg, i| {
+        if (i != 0) std.debug.warn(" ", .{});
+        std.debug.warn("{}", .{arg});
     }
-
-    const all_abis = comptime blk: {
-        const fields = std.meta.fields(Target.Abi);
-        var array: [fields.len]Target.Abi = undefined;
-        inline for (fields) |field, i| {
-            array[i] = @field(Target.Abi, field.name);
-        }
-        break :blk array;
-    };
-    for (all_abis) |abi| {
-        // This may be a nonsensical parameter. We detect this with error.UnknownDynamicLinkerPath and
-        // skip adding it to `ld_info_list`.
-        const target: Target = .{
-            .Cross = .{
-                .arch = Target.current.getArch(),
-                .os = Target.current.getOs(),
-                .abi = abi,
-                .cpu_features = Target.current.getArch().getBaselineCpuFeatures(),
-            },
-        };
-        const standard_ld_path = target.getStandardDynamicLinkerPath(allocator) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.UnknownDynamicLinkerPath, error.TargetHasNoDynamicLinker => continue,
-        };
-        errdefer allocator.free(standard_ld_path);
-        try ld_info_list.append(.{
-            .ld_path = standard_ld_path,
-            .abi = abi,
-        });
+    std.debug.warn("\n", .{});
+    if (stderr) |s| {
+        std.debug.warn("Output:\n==========\n{}\n==========\n", .{s});
     }
-
-    // Best case scenario: the zig compiler is dynamically linked, and we can iterate
-    // over our own shared objects and find a dynamic linker.
-    {
-        const lib_paths = try std.process.getSelfExeSharedLibPaths(allocator);
-        defer allocator.free(lib_paths);
-
-        // This is O(N^M) but typical case here is N=2 and M=10.
-        for (lib_paths) |lib_path| {
-            for (ld_info_list.toSlice()) |ld_info| {
-                const standard_ld_basename = fs.path.basename(ld_info.ld_path);
-                if (std.mem.endsWith(u8, lib_path, standard_ld_basename)) {
-                    return std.mem.dupeZ(allocator, u8, lib_path);
-                }
-            }
-        }
-    }
-
-    // If Zig is statically linked, such as via distributed binary static builds, the above
-    // trick won't work. What are we left with? Try to run the system C compiler and get
-    // it to tell us the dynamic linker path.
-    // TODO: instead of this, look at the shared libs of /usr/bin/env.
-    for (ld_info_list.toSlice()) |ld_info| {
-        const standard_ld_basename = fs.path.basename(ld_info.ld_path);
-
-        const full_ld_path = ccPrintFileName(allocator, standard_ld_basename, .full_path) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.LibCRuntimeNotFound,
-            error.CCompilerExitCode,
-            error.CCompilerCrashed,
-            error.UnableToSpawnCCompiler,
-            => continue,
-        };
-        return full_ld_path;
-    }
-
-    // Finally, we fall back on the standard path.
-    return Target.current.getStandardDynamicLinkerPath(allocator);
 }
 
 const Search = struct {

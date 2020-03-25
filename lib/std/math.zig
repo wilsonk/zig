@@ -1,6 +1,4 @@
-const builtin = @import("builtin");
 const std = @import("std.zig");
-const TypeId = builtin.TypeId;
 const assert = std.debug.assert;
 const testing = std.testing;
 
@@ -63,11 +61,17 @@ pub const f16_toint = 1.0 / f16_epsilon;
 pub const nan_u16 = @as(u16, 0x7C01);
 pub const nan_f16 = @bitCast(f16, nan_u16);
 
+pub const qnan_u16 = @as(u16, 0x7E00);
+pub const qnan_f16 = @bitCast(f16, qnan_u16);
+
 pub const inf_u16 = @as(u16, 0x7C00);
 pub const inf_f16 = @bitCast(f16, inf_u16);
 
 pub const nan_u32 = @as(u32, 0x7F800001);
 pub const nan_f32 = @bitCast(f32, nan_u32);
+
+pub const qnan_u32 = @as(u32, 0x7FC00000);
+pub const qnan_f32 = @bitCast(f32, qnan_u32);
 
 pub const inf_u32 = @as(u32, 0x7F800000);
 pub const inf_f32 = @bitCast(f32, inf_u32);
@@ -75,11 +79,17 @@ pub const inf_f32 = @bitCast(f32, inf_u32);
 pub const nan_u64 = @as(u64, 0x7FF << 52) | 1;
 pub const nan_f64 = @bitCast(f64, nan_u64);
 
+pub const qnan_u64 = @as(u64, 0x7ff8000000000000);
+pub const qnan_f64 = @bitCast(f64, qnan_u64);
+
 pub const inf_u64 = @as(u64, 0x7FF << 52);
 pub const inf_f64 = @bitCast(f64, inf_u64);
 
 pub const nan_u128 = @as(u128, 0x7fff0000000000000000000000000001);
 pub const nan_f128 = @bitCast(f128, nan_u128);
+
+pub const qnan_u128 = @as(u128, 0x7fff8000000000000000000000000000);
+pub const qnan_f128 = @bitCast(f128, qnan_u128);
 
 pub const inf_u128 = @as(u128, 0x7fff0000000000000000000000000000);
 pub const inf_f128 = @bitCast(f128, inf_u128);
@@ -89,7 +99,7 @@ pub const snan = @import("math/nan.zig").snan;
 pub const inf = @import("math/inf.zig").inf;
 
 pub fn approxEq(comptime T: type, x: T, y: T, epsilon: T) bool {
-    assert(@typeId(T) == TypeId.Float);
+    assert(@typeInfo(T) == .Float);
     return fabs(x - y) < epsilon;
 }
 
@@ -198,7 +208,7 @@ test "" {
 }
 
 pub fn floatMantissaBits(comptime T: type) comptime_int {
-    assert(@typeId(T) == builtin.TypeId.Float);
+    assert(@typeInfo(T) == .Float);
 
     return switch (T.bit_count) {
         16 => 10,
@@ -211,7 +221,7 @@ pub fn floatMantissaBits(comptime T: type) comptime_int {
 }
 
 pub fn floatExponentBits(comptime T: type) comptime_int {
-    assert(@typeId(T) == builtin.TypeId.Float);
+    assert(@typeInfo(T) == .Float);
 
     return switch (T.bit_count) {
         16 => 5,
@@ -295,7 +305,7 @@ test "math.min" {
     }
 }
 
-pub fn max(x: var, y: var) @TypeOf(x + y) {
+pub fn max(x: var, y: var) @TypeOf(x, y) {
     return if (x > y) x else y;
 }
 
@@ -446,7 +456,7 @@ pub fn Log2Int(comptime T: type) type {
         count += 1;
     }
 
-    return @IntType(false, count);
+    return std.meta.IntType(false, count);
 }
 
 pub fn IntFittingRange(comptime from: comptime_int, comptime to: comptime_int) type {
@@ -462,7 +472,7 @@ pub fn IntFittingRange(comptime from: comptime_int, comptime to: comptime_int) t
     if (is_signed) {
         magnitude_bits += 1;
     }
-    return @IntType(is_signed, magnitude_bits);
+    return std.meta.IntType(is_signed, magnitude_bits);
 }
 
 test "math.IntFittingRange" {
@@ -526,7 +536,7 @@ fn testOverflow() void {
 
 pub fn absInt(x: var) !@TypeOf(x) {
     const T = @TypeOf(x);
-    comptime assert(@typeId(T) == builtin.TypeId.Int); // must pass an integer to absInt
+    comptime assert(@typeInfo(T) == .Int); // must pass an integer to absInt
     comptime assert(T.is_signed); // must pass a signed integer to absInt
 
     if (x == minInt(@TypeOf(x))) {
@@ -560,7 +570,7 @@ fn testAbsFloat() void {
 pub fn divTrunc(comptime T: type, numerator: T, denominator: T) !T {
     @setRuntimeSafety(false);
     if (denominator == 0) return error.DivisionByZero;
-    if (@typeId(T) == builtin.TypeId.Int and T.is_signed and numerator == minInt(T) and denominator == -1) return error.Overflow;
+    if (@typeInfo(T) == .Int and T.is_signed and numerator == minInt(T) and denominator == -1) return error.Overflow;
     return @divTrunc(numerator, denominator);
 }
 
@@ -581,7 +591,7 @@ fn testDivTrunc() void {
 pub fn divFloor(comptime T: type, numerator: T, denominator: T) !T {
     @setRuntimeSafety(false);
     if (denominator == 0) return error.DivisionByZero;
-    if (@typeId(T) == builtin.TypeId.Int and T.is_signed and numerator == minInt(T) and denominator == -1) return error.Overflow;
+    if (@typeInfo(T) == .Int and T.is_signed and numerator == minInt(T) and denominator == -1) return error.Overflow;
     return @divFloor(numerator, denominator);
 }
 
@@ -602,7 +612,7 @@ fn testDivFloor() void {
 pub fn divExact(comptime T: type, numerator: T, denominator: T) !T {
     @setRuntimeSafety(false);
     if (denominator == 0) return error.DivisionByZero;
-    if (@typeId(T) == builtin.TypeId.Int and T.is_signed and numerator == minInt(T) and denominator == -1) return error.Overflow;
+    if (@typeInfo(T) == .Int and T.is_signed and numerator == minInt(T) and denominator == -1) return error.Overflow;
     const result = @divTrunc(numerator, denominator);
     if (result * denominator != numerator) return error.UnexpectedRemainder;
     return result;
@@ -672,41 +682,45 @@ fn testRem() void {
 
 /// Returns the absolute value of the integer parameter.
 /// Result is an unsigned integer.
-pub fn absCast(x: var) t: {
-    if (@TypeOf(x) == comptime_int) {
-        break :t comptime_int;
-    } else {
-        break :t @IntType(false, @TypeOf(x).bit_count);
-    }
+pub fn absCast(x: var) switch (@typeInfo(@TypeOf(x))) {
+    .ComptimeInt => comptime_int,
+    .Int => |intInfo| std.meta.IntType(false, intInfo.bits),
+    else => @compileError("absCast only accepts integers"),
 } {
-    if (@TypeOf(x) == comptime_int) {
-        return if (x < 0) -x else x;
+    switch (@typeInfo(@TypeOf(x))) {
+        .ComptimeInt => {
+            if (x < 0) {
+                return -x;
+            } else {
+                return x;
+            }
+        },
+        .Int => |intInfo| {
+            const Uint = std.meta.IntType(false, intInfo.bits);
+            if (x < 0) {
+                return ~@bitCast(Uint, x +% -1);
+            } else {
+                return @intCast(Uint, x);
+            }
+        },
+        else => unreachable,
     }
-    const uint = @IntType(false, @TypeOf(x).bit_count);
-    if (x >= 0) return @intCast(uint, x);
-
-    return @intCast(uint, -(x + 1)) + 1;
 }
 
 test "math.absCast" {
-    testing.expect(absCast(@as(i32, -999)) == 999);
-    testing.expect(@TypeOf(absCast(@as(i32, -999))) == u32);
-
-    testing.expect(absCast(@as(i32, 999)) == 999);
-    testing.expect(@TypeOf(absCast(@as(i32, 999))) == u32);
-
-    testing.expect(absCast(@as(i32, minInt(i32))) == -minInt(i32));
-    testing.expect(@TypeOf(absCast(@as(i32, minInt(i32)))) == u32);
-
-    testing.expect(absCast(-999) == 999);
+    testing.expectEqual(@as(u1, 1), absCast(@as(i1, -1)));
+    testing.expectEqual(@as(u32, 999), absCast(@as(i32, -999)));
+    testing.expectEqual(@as(u32, 999), absCast(@as(i32, 999)));
+    testing.expectEqual(@as(u32, -minInt(i32)), absCast(@as(i32, minInt(i32))));
+    testing.expectEqual(999, absCast(-999));
 }
 
 /// Returns the negation of the integer parameter.
 /// Result is a signed integer.
-pub fn negateCast(x: var) !@IntType(true, @TypeOf(x).bit_count) {
+pub fn negateCast(x: var) !std.meta.IntType(true, @TypeOf(x).bit_count) {
     if (@TypeOf(x).is_signed) return negate(x);
 
-    const int = @IntType(true, @TypeOf(x).bit_count);
+    const int = std.meta.IntType(true, @TypeOf(x).bit_count);
     if (x > -minInt(int)) return error.Overflow;
 
     if (x == -minInt(int)) return minInt(int);
@@ -727,8 +741,8 @@ test "math.negateCast" {
 /// Cast an integer to a different integer type. If the value doesn't fit,
 /// return an error.
 pub fn cast(comptime T: type, x: var) (error{Overflow}!T) {
-    comptime assert(@typeId(T) == builtin.TypeId.Int); // must pass an integer
-    comptime assert(@typeId(@TypeOf(x)) == builtin.TypeId.Int); // must pass an integer
+    comptime assert(@typeInfo(T) == .Int); // must pass an integer
+    comptime assert(@typeInfo(@TypeOf(x)) == .Int); // must pass an integer
     if (maxInt(@TypeOf(x)) > maxInt(T) and x > maxInt(T)) {
         return error.Overflow;
     } else if (minInt(@TypeOf(x)) < minInt(T) and x < minInt(T)) {
@@ -792,11 +806,11 @@ fn testFloorPowerOfTwo() void {
 /// Returns the next power of two (if the value is not already a power of two).
 /// Only unsigned integers can be used. Zero is not an allowed input.
 /// Result is a type with 1 more bit than the input type.
-pub fn ceilPowerOfTwoPromote(comptime T: type, value: T) @IntType(T.is_signed, T.bit_count + 1) {
-    comptime assert(@typeId(T) == builtin.TypeId.Int);
+pub fn ceilPowerOfTwoPromote(comptime T: type, value: T) std.meta.IntType(T.is_signed, T.bit_count + 1) {
+    comptime assert(@typeInfo(T) == .Int);
     comptime assert(!T.is_signed);
     assert(value != 0);
-    comptime const PromotedType = @IntType(T.is_signed, T.bit_count + 1);
+    comptime const PromotedType = std.meta.IntType(T.is_signed, T.bit_count + 1);
     comptime const shiftType = std.math.Log2Int(PromotedType);
     return @as(PromotedType, 1) << @intCast(shiftType, T.bit_count - @clz(T, value - 1));
 }
@@ -805,9 +819,9 @@ pub fn ceilPowerOfTwoPromote(comptime T: type, value: T) @IntType(T.is_signed, T
 /// Only unsigned integers can be used. Zero is not an allowed input.
 /// If the value doesn't fit, returns an error.
 pub fn ceilPowerOfTwo(comptime T: type, value: T) (error{Overflow}!T) {
-    comptime assert(@typeId(T) == builtin.TypeId.Int);
+    comptime assert(@typeInfo(T) == .Int);
     comptime assert(!T.is_signed);
-    comptime const PromotedType = @IntType(T.is_signed, T.bit_count + 1);
+    comptime const PromotedType = std.meta.IntType(T.is_signed, T.bit_count + 1);
     comptime const overflowBit = @as(PromotedType, 1) << T.bit_count;
     var x = ceilPowerOfTwoPromote(T, value);
     if (overflowBit & x != 0) {
@@ -878,10 +892,10 @@ test "std.math.log2_int_ceil" {
 
 pub fn lossyCast(comptime T: type, value: var) T {
     switch (@typeInfo(@TypeOf(value))) {
-        builtin.TypeId.Int => return @intToFloat(T, value),
-        builtin.TypeId.Float => return @floatCast(T, value),
-        builtin.TypeId.ComptimeInt => return @as(T, value),
-        builtin.TypeId.ComptimeFloat => return @as(T, value),
+        .Int => return @intToFloat(T, value),
+        .Float => return @floatCast(T, value),
+        .ComptimeInt => return @as(T, value),
+        .ComptimeFloat => return @as(T, value),
         else => @compileError("bad type"),
     }
 }
@@ -949,8 +963,8 @@ test "max value type" {
     testing.expect(x == 2147483647);
 }
 
-pub fn mulWide(comptime T: type, a: T, b: T) @IntType(T.is_signed, T.bit_count * 2) {
-    const ResultInt = @IntType(T.is_signed, T.bit_count * 2);
+pub fn mulWide(comptime T: type, a: T, b: T) std.meta.IntType(T.is_signed, T.bit_count * 2) {
+    const ResultInt = std.meta.IntType(T.is_signed, T.bit_count * 2);
     return @as(ResultInt, a) * @as(ResultInt, b);
 }
 

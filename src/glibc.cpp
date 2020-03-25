@@ -16,6 +16,7 @@ static const ZigGLibCLib glibc_libs[] = {
     {"pthread", 0},
     {"dl", 2},
     {"rt", 1},
+    {"ld", 2},
 };
 
 Error glibc_load_metadata(ZigGLibCAbi **out_result, Buf *zig_lib_dir, bool verbose) {
@@ -55,7 +56,7 @@ Error glibc_load_metadata(ZigGLibCAbi **out_result, Buf *zig_lib_dir, bool verbo
             Optional<Slice<uint8_t>> opt_component = SplitIterator_next(&it);
             if (!opt_component.is_some) break;
             Buf *ver_buf = buf_create_from_slice(opt_component.value);
-            ZigGLibCVersion *this_ver = glibc_abi->all_versions.add_one();
+            Stage2SemVer *this_ver = glibc_abi->all_versions.add_one();
             if ((err = target_parse_glibc_version(this_ver, buf_ptr(ver_buf)))) {
                 if (verbose) {
                     fprintf(stderr, "Unable to parse glibc version '%s': %s\n", buf_ptr(ver_buf), err_str(err));
@@ -116,10 +117,8 @@ Error glibc_load_metadata(ZigGLibCAbi **out_result, Buf *zig_lib_dir, bool verbo
                     assert(opt_abi.is_some);
 
 
-                    err = target_parse_archsub(&target->arch, &target->sub_arch,
-                            (char*)opt_arch.value.ptr, opt_arch.value.len);
-                    // there's no sub arch so we might get an error, but the arch is still populated
-                    assert(err == ErrorNone || err == ErrorUnknownArchitecture);
+                    err = target_parse_arch(&target->arch, (char*)opt_arch.value.ptr, opt_arch.value.len);
+                    assert(err == ErrorNone);
 
                     target->os = OsLinux;
 
@@ -188,9 +187,9 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
     cache_buf(cache_hash, compiler_id);
     cache_int(cache_hash, target->arch);
     cache_int(cache_hash, target->abi);
-    cache_int(cache_hash, target->glibc_version->major);
-    cache_int(cache_hash, target->glibc_version->minor);
-    cache_int(cache_hash, target->glibc_version->patch);
+    cache_int(cache_hash, target->glibc_or_darwin_version->major);
+    cache_int(cache_hash, target->glibc_or_darwin_version->minor);
+    cache_int(cache_hash, target->glibc_or_darwin_version->patch);
 
     Buf digest = BUF_INIT;
     buf_resize(&digest, 0);
@@ -226,10 +225,10 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
 
     uint8_t target_ver_index = 0;
     for (;target_ver_index < glibc_abi->all_versions.length; target_ver_index += 1) {
-        const ZigGLibCVersion *this_ver = &glibc_abi->all_versions.at(target_ver_index);
-        if (this_ver->major == target->glibc_version->major &&
-            this_ver->minor == target->glibc_version->minor &&
-            this_ver->patch == target->glibc_version->patch)
+        const Stage2SemVer *this_ver = &glibc_abi->all_versions.at(target_ver_index);
+        if (this_ver->major == target->glibc_or_darwin_version->major &&
+            this_ver->minor == target->glibc_or_darwin_version->minor &&
+            this_ver->patch == target->glibc_or_darwin_version->patch)
         {
             break;
         }
@@ -237,9 +236,9 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
     if (target_ver_index == glibc_abi->all_versions.length) {
         if (verbose) {
             fprintf(stderr, "Unrecognized glibc version: %d.%d.%d\n",
-                   target->glibc_version->major,
-                   target->glibc_version->minor,
-                   target->glibc_version->patch);
+                   target->glibc_or_darwin_version->major,
+                   target->glibc_or_darwin_version->minor,
+                   target->glibc_or_darwin_version->patch);
         }
         return ErrorUnknownABI;
     }
@@ -248,7 +247,7 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
     Buf *map_contents = buf_alloc();
 
     for (uint8_t ver_i = 0; ver_i < glibc_abi->all_versions.length; ver_i += 1) {
-        const ZigGLibCVersion *ver = &glibc_abi->all_versions.at(ver_i);
+        const Stage2SemVer *ver = &glibc_abi->all_versions.at(ver_i);
         if (ver->patch == 0) {
             buf_appendf(map_contents, "GLIBC_%d.%d { };\n", ver->major, ver->minor);
         } else {
@@ -296,7 +295,7 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
                 uint8_t ver_index = ver_list->versions[ver_i];
 
                 Buf *stub_name;
-                const ZigGLibCVersion *ver = &glibc_abi->all_versions.at(ver_index);
+                const Stage2SemVer *ver = &glibc_abi->all_versions.at(ver_index);
                 const char *sym_name = buf_ptr(libc_fn->name);
                 if (ver->patch == 0) {
                     stub_name = buf_sprintf("%s_%d_%d", sym_name, ver->major, ver->minor);
@@ -332,6 +331,8 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
             return err;
         }
 
+        bool is_ld = (strcmp(lib->name, "ld") == 0);
+
         CodeGen *child_gen = create_child_codegen(g, zig_file_path, OutTypeLib, nullptr, lib->name, progress_node);
         codegen_set_lib_version(child_gen, lib->sover, 0, 0);
         child_gen->is_dynamic = true;
@@ -339,6 +340,13 @@ Error glibc_build_dummies_and_maps(CodeGen *g, const ZigGLibCAbi *glibc_abi, con
         child_gen->version_script_path = map_file_path;
         child_gen->enable_cache = false;
         child_gen->output_dir = dummy_dir;
+        if (is_ld) {
+            assert(g->zig_target->standard_dynamic_linker_path != nullptr);
+            Buf *ld_basename = buf_alloc();
+            os_path_split(buf_create_from_str(g->zig_target->standard_dynamic_linker_path),
+                    nullptr, ld_basename);
+            child_gen->override_soname = ld_basename;
+        }
         codegen_build_and_link(child_gen);
     }
 
@@ -363,43 +371,6 @@ bool eql_glibc_target(const ZigTarget *a, const ZigTarget *b) {
         a->os == b->os &&
         a->abi == b->abi;
 }
-
-#ifdef ZIG_OS_LINUX
-#include <unistd.h>
-Error glibc_detect_native_version(ZigGLibCVersion *glibc_ver) {
-    Buf *self_libc_path = get_self_libc_path();
-    if (self_libc_path == nullptr) {
-        // TODO There is still more we could do to detect the native glibc version. For example,
-        // we could look at the ELF file of `/usr/bin/env`, find `libc.so.6`, and then `readlink`
-        // to find out the glibc version. This is relevant for the static zig builds distributed
-        // on the download page, since the above detection based on zig's own dynamic linking
-        // will not work.
-
-        return ErrorUnknownABI;
-    }
-    Buf *link_name = buf_alloc();
-    buf_resize(link_name, 4096);
-    ssize_t amt = readlink(buf_ptr(self_libc_path), buf_ptr(link_name), buf_len(link_name));
-    if (amt == -1) {
-        return ErrorUnknownABI;
-    }
-    buf_resize(link_name, amt);
-    if (!buf_starts_with_str(link_name, "libc-") || !buf_ends_with_str(link_name, ".so")) {
-        return ErrorUnknownABI;
-    }
-    // example: "libc-2.3.4.so"
-    // example: "libc-2.27.so"
-    buf_resize(link_name, buf_len(link_name) - 3); // chop off ".so"
-    glibc_ver->major = 2;
-    glibc_ver->minor = 0;
-    glibc_ver->patch = 0;
-    return target_parse_glibc_version(glibc_ver, buf_ptr(link_name) + 5);
-}
-#else
-Error glibc_detect_native_version(ZigGLibCVersion *glibc_ver) {
-    return ErrorUnknownABI;
-}
-#endif
 
 size_t glibc_lib_count(void) {
     return array_length(glibc_libs);

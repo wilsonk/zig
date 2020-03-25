@@ -10,6 +10,7 @@ const c = std.c;
 const maxInt = std.math.maxInt;
 
 pub const LoggingAllocator = @import("heap/logging_allocator.zig").LoggingAllocator;
+pub const loggingAllocator = @import("heap/logging_allocator.zig").loggingAllocator;
 
 const Allocator = mem.Allocator;
 
@@ -36,7 +37,7 @@ fn cShrink(self: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new
 /// Thread-safe and lock-free.
 pub const page_allocator = if (std.Target.current.isWasm())
     &wasm_page_allocator_state
-else if (std.Target.current.getOs() == .freestanding)
+else if (std.Target.current.os.tag == .freestanding)
     root.os.heap.page_allocator
 else
     &page_allocator_state;
@@ -57,7 +58,7 @@ const PageAllocator = struct {
     fn alloc(allocator: *Allocator, n: usize, alignment: u29) error{OutOfMemory}![]u8 {
         if (n == 0) return &[0]u8{};
 
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const w = os.windows;
 
             // Although officially it's at least aligned to page boundary,
@@ -143,7 +144,7 @@ const PageAllocator = struct {
 
     fn shrink(allocator: *Allocator, old_mem_unaligned: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
         const old_mem = @alignCast(mem.page_size, old_mem_unaligned);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             const w = os.windows;
             if (new_size == 0) {
                 // From the docs:
@@ -183,7 +184,7 @@ const PageAllocator = struct {
 
     fn realloc(allocator: *Allocator, old_mem_unaligned: []u8, old_align: u29, new_size: usize, new_align: u29) ![]u8 {
         const old_mem = @alignCast(mem.page_size, old_mem_unaligned);
-        if (builtin.os == .windows) {
+        if (builtin.os.tag == .windows) {
             if (old_mem.len == 0) {
                 return alloc(allocator, new_size, new_align);
             }
@@ -283,14 +284,14 @@ const WasmPageAllocator = struct {
 
         fn getBit(self: FreeBlock, idx: usize) PageStatus {
             const bit_offset = 0;
-            return @intToEnum(PageStatus, Io.get(@sliceToBytes(self.data), idx, bit_offset));
+            return @intToEnum(PageStatus, Io.get(mem.sliceAsBytes(self.data), idx, bit_offset));
         }
 
         fn setBits(self: FreeBlock, start_idx: usize, len: usize, val: PageStatus) void {
             const bit_offset = 0;
             var i: usize = 0;
             while (i < len) : (i += 1) {
-                Io.set(@sliceToBytes(self.data), start_idx + i, bit_offset, @enumToInt(val));
+                Io.set(mem.sliceAsBytes(self.data), start_idx + i, bit_offset, @enumToInt(val));
             }
         }
 
@@ -412,7 +413,7 @@ const WasmPageAllocator = struct {
     }
 };
 
-pub const HeapAllocator = switch (builtin.os) {
+pub const HeapAllocator = switch (builtin.os.tag) {
     .windows => struct {
         allocator: Allocator,
         heap_handle: ?HeapHandle,
@@ -552,7 +553,7 @@ pub const ArenaAllocator = struct {
             if (len >= actual_min_size) break;
         }
         const buf = try self.child_allocator.alignedAlloc(u8, @alignOf(BufNode), len);
-        const buf_node_slice = @bytesToSlice(BufNode, buf[0..@sizeOf(BufNode)]);
+        const buf_node_slice = mem.bytesAsSlice(BufNode, buf[0..@sizeOf(BufNode)]);
         const buf_node = &buf_node_slice[0];
         buf_node.* = BufNode{
             .data = buf,
@@ -855,7 +856,7 @@ test "PageAllocator" {
         try testAllocatorAlignedShrink(allocator);
     }
 
-    if (builtin.os == .windows) {
+    if (builtin.os.tag == .windows) {
         // Trying really large alignment. As mentionned in the implementation,
         // VirtualAlloc returns 64K aligned addresses. We want to make sure
         // PageAllocator works beyond that, as it's not tested by
@@ -868,7 +869,7 @@ test "PageAllocator" {
 }
 
 test "HeapAllocator" {
-    if (builtin.os == .windows) {
+    if (builtin.os.tag == .windows) {
         var heap_allocator = HeapAllocator.init();
         defer heap_allocator.deinit();
 
@@ -1015,7 +1016,7 @@ fn testAllocatorLargeAlignment(allocator: *mem.Allocator) mem.Allocator.Error!vo
     //  very near usize?
     if (mem.page_size << 2 > maxInt(usize)) return;
 
-    const USizeShift = @IntType(false, std.math.log2(usize.bit_count));
+    const USizeShift = std.meta.IntType(false, std.math.log2(usize.bit_count));
     const large_align = @as(u29, mem.page_size << 2);
 
     var align_mask: usize = undefined;

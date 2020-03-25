@@ -104,7 +104,7 @@ pub fn Child(comptime T: type) type {
         .Array => |info| info.child,
         .Pointer => |info| info.child,
         .Optional => |info| info.child,
-        else => @compileError("Expected pointer, optional, or array type, " ++ "found '" ++ @typeName(T) ++ "'"),
+        else => @compileError("Expected pointer, optional, or array type, found '" ++ @typeName(T) ++ "'"),
     };
 }
 
@@ -113,6 +113,67 @@ test "std.meta.Child" {
     testing.expect(Child(*u8) == u8);
     testing.expect(Child([]u8) == u8);
     testing.expect(Child(?u8) == u8);
+}
+
+/// Given a "memory span" type, returns the "element type".
+pub fn Elem(comptime T: type) type {
+    switch (@typeInfo(T)) {
+        .Array => |info| return info.child,
+        .Pointer => |info| switch (info.size) {
+            .One => switch (@typeInfo(info.child)) {
+                .Array => |array_info| return array_info.child,
+                else => {},
+            },
+            .Many, .C, .Slice => return info.child,
+        },
+        else => {},
+    }
+    @compileError("Expected pointer, slice, or array, found '" ++ @typeName(T) ++ "'");
+}
+
+test "std.meta.Elem" {
+    testing.expect(Elem([1]u8) == u8);
+    testing.expect(Elem([*]u8) == u8);
+    testing.expect(Elem([]u8) == u8);
+    testing.expect(Elem(*[10]u8) == u8);
+}
+
+/// Given a type which can have a sentinel e.g. `[:0]u8`, returns the sentinel value,
+/// or `null` if there is not one.
+/// Types which cannot possibly have a sentinel will be a compile error.
+pub fn sentinel(comptime T: type) ?Elem(T) {
+    switch (@typeInfo(T)) {
+        .Array => |info| return info.sentinel,
+        .Pointer => |info| {
+            switch (info.size) {
+                .Many, .Slice => return info.sentinel,
+                .One => switch (@typeInfo(info.child)) {
+                    .Array => |array_info| return array_info.sentinel,
+                    else => {},
+                },
+                else => {},
+            }
+        },
+        else => {},
+    }
+    @compileError("type '" ++ @typeName(T) ++ "' cannot possibly have a sentinel");
+}
+
+test "std.meta.sentinel" {
+    testSentinel();
+    comptime testSentinel();
+}
+
+fn testSentinel() void {
+    testing.expectEqual(@as(u8, 0), sentinel([:0]u8).?);
+    testing.expectEqual(@as(u8, 0), sentinel([*:0]u8).?);
+    testing.expectEqual(@as(u8, 0), sentinel([5:0]u8).?);
+    testing.expectEqual(@as(u8, 0), sentinel(*const [5:0]u8).?);
+
+    testing.expect(sentinel([]u8) == null);
+    testing.expect(sentinel([*]u8) == null);
+    testing.expect(sentinel([5]u8) == null);
+    testing.expect(sentinel(*const [5]u8) == null);
 }
 
 pub fn containerLayout(comptime T: type) TypeInfo.ContainerLayout {
@@ -437,7 +498,7 @@ pub fn eql(a: var, b: @TypeOf(a)) bool {
         },
         .Pointer => |info| {
             return switch (info.size) {
-                .One, .Many, .C, => a == b,
+                .One, .Many, .C => a == b,
                 .Slice => a.ptr == b.ptr and a.len == b.len,
             };
         },
@@ -536,9 +597,8 @@ test "intToEnum with error return" {
 pub const IntToEnumError = error{InvalidEnumTag};
 
 pub fn intToEnum(comptime Tag: type, tag_int: var) IntToEnumError!Tag {
-    comptime var i = 0;
-    inline while (i != @memberCount(Tag)) : (i += 1) {
-        const this_tag_value = @field(Tag, @memberName(Tag, i));
+    inline for (@typeInfo(Tag).Enum.fields) |f| {
+        const this_tag_value = @field(Tag, f.name);
         if (tag_int == @enumToInt(this_tag_value)) {
             return this_tag_value;
         }
@@ -559,7 +619,9 @@ pub fn fieldIndex(comptime T: type, comptime name: []const u8) ?comptime_int {
 /// Given a type, reference all the declarations inside, so that the semantic analyzer sees them.
 pub fn refAllDecls(comptime T: type) void {
     if (!builtin.is_test) return;
-    _ = declarations(T);
+    inline for (declarations(T)) |decl| {
+        _ = decl;
+    }
 }
 
 /// Returns a slice of pointers to public declarations of a namespace.
@@ -578,4 +640,13 @@ pub fn declList(comptime Namespace: type, comptime Decl: type) []const *const De
         std.sort.sort(*const Decl, &array, S.declNameLessThan);
         return &array;
     }
+}
+
+pub fn IntType(comptime is_signed: bool, comptime bit_count: u16) type {
+    return @Type(TypeInfo{
+        .Int = .{
+            .is_signed = is_signed,
+            .bits = bit_count,
+        },
+    });
 }

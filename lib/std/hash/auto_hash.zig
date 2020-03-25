@@ -25,13 +25,13 @@ pub fn hashPointer(hasher: var, key: var, comptime strat: HashStrategy) void {
     const info = @typeInfo(@TypeOf(key));
 
     switch (info.Pointer.size) {
-        builtin.TypeInfo.Pointer.Size.One => switch (strat) {
+        .One => switch (strat) {
             .Shallow => hash(hasher, @ptrToInt(key), .Shallow),
             .Deep => hash(hasher, key.*, .Shallow),
             .DeepRecursive => hash(hasher, key.*, .DeepRecursive),
         },
 
-        builtin.TypeInfo.Pointer.Size.Slice => switch (strat) {
+        .Slice => switch (strat) {
             .Shallow => {
                 hashPointer(hasher, key.ptr, .Shallow);
                 hash(hasher, key.len, .Shallow);
@@ -40,8 +40,8 @@ pub fn hashPointer(hasher: var, key: var, comptime strat: HashStrategy) void {
             .DeepRecursive => hashArray(hasher, key, .DeepRecursive),
         },
 
-        builtin.TypeInfo.Pointer.Size.Many,
-        builtin.TypeInfo.Pointer.Size.C,
+        .Many,
+        .C,
         => switch (strat) {
             .Shallow => hash(hasher, @ptrToInt(key), .Shallow),
             else => @compileError(
@@ -93,7 +93,7 @@ pub fn hash(hasher: var, key: var, comptime strat: HashStrategy) void {
         // TODO Check if the situation is better after #561 is resolved.
         .Int => @call(.{ .modifier = .always_inline }, hasher.update, .{std.mem.asBytes(&key)}),
 
-        .Float => |info| hash(hasher, @bitCast(@IntType(false, info.bits), key), strat),
+        .Float => |info| hash(hasher, @bitCast(std.meta.IntType(false, info.bits), key), strat),
 
         .Bool => hash(hasher, @boolToInt(key), strat),
         .Enum => hash(hasher, @enumToInt(key), strat),
@@ -238,9 +238,11 @@ test "hash slice shallow" {
     defer std.testing.allocator.destroy(array1);
     array1.* = [_]u32{ 1, 2, 3, 4, 5, 6 };
     const array2 = [_]u32{ 1, 2, 3, 4, 5, 6 };
-    const a = array1[0..];
-    const b = array2[0..];
-    const c = array1[0..3];
+    // TODO audit deep/shallow - maybe it has the wrong behavior with respect to array pointers and slices
+    var runtime_zero: usize = 0;
+    const a = array1[runtime_zero..];
+    const b = array2[runtime_zero..];
+    const c = array1[runtime_zero..3];
     testing.expect(testHashShallow(a) == testHashShallow(a));
     testing.expect(testHashShallow(a) != testHashShallow(array1));
     testing.expect(testHashShallow(a) != testHashShallow(b));

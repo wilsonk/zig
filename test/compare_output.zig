@@ -1,4 +1,3 @@
-const builtin = @import("builtin");
 const std = @import("std");
 const os = std.os;
 const tests = @import("tests.zig");
@@ -23,7 +22,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\
             \\pub fn main() void {
             \\    privateFunction();
-            \\    const stdout = &getStdOut().outStream().stream;
+            \\    const stdout = getStdOut().outStream();
             \\    stdout.print("OK 2\n", .{}) catch unreachable;
             \\}
             \\
@@ -38,7 +37,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\// purposefully conflicting function with main.zig
             \\// but it's private so it should be OK
             \\fn privateFunction() void {
-            \\    const stdout = &getStdOut().outStream().stream;
+            \\    const stdout = getStdOut().outStream();
             \\    stdout.print("OK 1\n", .{}) catch unreachable;
             \\}
             \\
@@ -64,7 +63,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         tc.addSourceFile("foo.zig",
             \\usingnamespace @import("std").io;
             \\pub fn foo_function() void {
-            \\    const stdout = &getStdOut().outStream().stream;
+            \\    const stdout = getStdOut().outStream();
             \\    stdout.print("OK\n", .{}) catch unreachable;
             \\}
         );
@@ -75,7 +74,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\
             \\pub fn bar_function() void {
             \\    if (foo_function()) {
-            \\        const stdout = &getStdOut().outStream().stream;
+            \\        const stdout = getStdOut().outStream();
             \\        stdout.print("OK\n", .{}) catch unreachable;
             \\    }
             \\}
@@ -107,7 +106,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\pub const a_text = "OK\n";
             \\
             \\pub fn ok() void {
-            \\    const stdout = &io.getStdOut().outStream().stream;
+            \\    const stdout = io.getStdOut().outStream();
             \\    stdout.print(b_text, .{}) catch unreachable;
             \\}
         );
@@ -125,14 +124,14 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const io = @import("std").io;
         \\
         \\pub fn main() void {
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    stdout.print("Hello, world!\n{d:4} {x:3} {c}\n", .{@as(u32, 12), @as(u16, 0x12), @as(u8, 'a')}) catch unreachable;
         \\}
     , "Hello, world!\n  12  12 a\n");
 
     cases.addC("number literals",
-        \\const builtin = @import("builtin");
-        \\const is_windows = builtin.os == builtin.Os.windows;
+        \\const std = @import("std");
+        \\const is_windows = std.Target.current.os.tag == .windows;
         \\const c = @cImport({
         \\    if (is_windows) {
         \\        // See https://github.com/ziglang/zig/issues/515
@@ -268,7 +267,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    var x_local : i32 = print_ok(x);
         \\}
         \\fn print_ok(val: @TypeOf(x)) @TypeOf(foo) {
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    stdout.print("OK\n", .{}) catch unreachable;
         \\    return 0;
         \\}
@@ -293,7 +292,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\pub export fn main() c_int {
         \\    var array = [_]u32{ 1, 7, 3, 2, 0, 9, 4, 8, 6, 5 };
         \\
-        \\    c.qsort(@ptrCast(?*c_void, array[0..].ptr), @intCast(c_ulong, array.len), @sizeOf(i32), compare_fn);
+        \\    c.qsort(@ptrCast(?*c_void, &array), @intCast(c_ulong, array.len), @sizeOf(i32), compare_fn);
         \\
         \\    for (array) |item, i| {
         \\        if (item != i) {
@@ -306,8 +305,8 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
     , "");
 
     cases.addC("casting between float and integer types",
-        \\const builtin = @import("builtin");
-        \\const is_windows = builtin.os == builtin.Os.windows;
+        \\const std = @import("std");
+        \\const is_windows = std.Target.current.os.tag == .windows;
         \\const c = @cImport({
         \\    if (is_windows) {
         \\        // See https://github.com/ziglang/zig/issues/515
@@ -350,7 +349,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\pub fn main() void {
         \\    const bar = Bar {.field2 = 13,};
         \\    const foo = Foo {.field1 = bar,};
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    if (!foo.method()) {
         \\        stdout.print("BAD\n", .{}) catch unreachable;
         \\    }
@@ -364,7 +363,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
     cases.add("defer with only fallthrough",
         \\const io = @import("std").io;
         \\pub fn main() void {
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    stdout.print("before\n", .{}) catch unreachable;
         \\    defer stdout.print("defer1\n", .{}) catch unreachable;
         \\    defer stdout.print("defer2\n", .{}) catch unreachable;
@@ -377,7 +376,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const io = @import("std").io;
         \\const os = @import("std").os;
         \\pub fn main() void {
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    stdout.print("before\n", .{}) catch unreachable;
         \\    defer stdout.print("defer1\n", .{}) catch unreachable;
         \\    defer stdout.print("defer2\n", .{}) catch unreachable;
@@ -394,7 +393,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    do_test() catch return;
         \\}
         \\fn do_test() !void {
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    stdout.print("before\n", .{}) catch unreachable;
         \\    defer stdout.print("defer1\n", .{}) catch unreachable;
         \\    errdefer stdout.print("deferErr\n", .{}) catch unreachable;
@@ -413,7 +412,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    do_test() catch return;
         \\}
         \\fn do_test() !void {
-        \\    const stdout = &io.getStdOut().outStream().stream;
+        \\    const stdout = io.getStdOut().outStream();
         \\    stdout.print("before\n", .{}) catch unreachable;
         \\    defer stdout.print("defer1\n", .{}) catch unreachable;
         \\    errdefer stdout.print("deferErr\n", .{}) catch unreachable;
@@ -430,7 +429,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\const io = @import("std").io;
             \\
             \\pub fn main() void {
-            \\    const stdout = &io.getStdOut().outStream().stream;
+            \\    const stdout = io.getStdOut().outStream();
             \\    stdout.print(foo_txt, .{}) catch unreachable;
             \\}
         , "1234\nabcd\n");
@@ -449,9 +448,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\
             \\pub fn main() !void {
             \\    var args_it = std.process.args();
-            \\    var stdout_file = io.getStdOut();
-            \\    var stdout_adapter = stdout_file.outStream();
-            \\    const stdout = &stdout_adapter.stream;
+            \\    const stdout = io.getStdOut().outStream();
             \\    var index: usize = 0;
             \\    _ = args_it.skip();
             \\    while (args_it.next(allocator)) |arg_or_err| : (index += 1) {
@@ -490,9 +487,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
             \\
             \\pub fn main() !void {
             \\    var args_it = std.process.args();
-            \\    var stdout_file = io.getStdOut();
-            \\    var stdout_adapter = stdout_file.outStream();
-            \\    const stdout = &stdout_adapter.stream;
+            \\    const stdout = io.getStdOut().outStream();
             \\    var index: usize = 0;
             \\    _ = args_it.skip();
             \\    while (args_it.next(allocator)) |arg_or_err| : (index += 1) {

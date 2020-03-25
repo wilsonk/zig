@@ -230,7 +230,7 @@
 const std = @import("std");
 
 pub fn main() !void {
-    const stdout = &std.io.getStdOut().outStream().stream;
+    const stdout = std.io.getStdOut().outStream();
     try stdout.print("Hello, {}!\n", .{"world"});
 }
       {#code_end#}
@@ -550,7 +550,7 @@ pub fn main() void {
       {#syntax#}i7{#endsyntax#} refers to a signed 7-bit integer. The maximum allowed bit-width of an
       integer type is {#syntax#}65535{#endsyntax#}.
       </p>
-      {#see_also|Integers|Floats|void|Errors|@IntType#}
+      {#see_also|Integers|Floats|void|Errors|@Type#}
       {#header_close#}
       {#header_open|Primitive Values#}
       <div class="table-wrapper">
@@ -885,6 +885,12 @@ const hex_int = 0xff;
 const another_hex_int = 0xFF;
 const octal_int = 0o755;
 const binary_int = 0b11110000;
+
+// underscores may be placed between two digits as a visual separator
+const one_billion = 1_000_000_000;
+const binary_mask = 0b1_1111_1111;
+const permissions = 0o7_5_5;
+const big_address = 0xFF80_0000_0000_0000;
       {#code_end#}
       {#header_close#}
       {#header_open|Runtime Integer Values#}
@@ -947,6 +953,11 @@ const yet_another = 123.0e+77;
 const hex_floating_point = 0x103.70p-5;
 const another_hex_float = 0x103.70;
 const yet_another_hex_float = 0x103.70P-5;
+
+// underscores may be placed between two digits as a visual separator
+const lightspeed = 299_792_458.000_000;
+const nanosecond = 0.000_000_001;
+const more_hex = 0x1234_5678.9ABC_CDEFp-10;
       {#code_end#}
       <p>
       There is no syntax for NaN, infinity, or negative infinity. For these special values,
@@ -965,7 +976,8 @@ const nan = std.math.nan(f128);
           but you can switch to {#syntax#}Optimized{#endsyntax#} mode on a per-block basis:</p>
       {#code_begin|obj|foo#}
       {#code_release_fast#}
-const builtin = @import("builtin");
+const std = @import("std");
+const builtin = std.builtin;
 const big = @as(f64, 1 << 40);
 
 export fn foo_strict(x: f64) f64 {
@@ -2025,7 +2037,8 @@ test "volatile" {
       conversions are not possible.
       </p>
       {#code_begin|test#}
-const assert = @import("std").debug.assert;
+const std = @import("std");
+const assert = std.debug.assert;
 
 test "pointer casting" {
     const bytes align(@alignOf(u32)) = [_]u8{ 0x12, 0x12, 0x12, 0x12 };
@@ -2034,7 +2047,7 @@ test "pointer casting" {
 
     // Even this example is contrived - there are better ways to do the above than
     // pointer casting. For example, using a slice narrowing cast:
-    const u32_value = @bytesToSlice(u32, bytes[0..])[0];
+    const u32_value = std.mem.bytesAsSlice(u32, bytes[0..])[0];
     assert(u32_value == 0x12121212);
 
     // And even another way, the most straightforward way to do it:
@@ -2062,15 +2075,15 @@ test "pointer child type" {
       alignment of the underlying type, it can be omitted from the type:
       </p>
       {#code_begin|test#}
-const assert = @import("std").debug.assert;
-const builtin = @import("builtin");
+const std = @import("std");
+const assert = std.debug.assert;
 
 test "variable alignment" {
     var x: i32 = 1234;
     const align_of_i32 = @alignOf(@TypeOf(x));
     assert(@TypeOf(&x) == *i32);
     assert(*i32 == *align(align_of_i32) i32);
-    if (builtin.arch == builtin.Arch.x86_64) {
+    if (std.Target.current.cpu.arch == .x86_64) {
         assert((*i32).alignment == 4);
     }
 }
@@ -2091,8 +2104,9 @@ var foo: u8 align(4) = 100;
 test "global variable alignment" {
     assert(@TypeOf(&foo).alignment == 4);
     assert(@TypeOf(&foo) == *align(4) u8);
-    const slice = @as(*[1]u8, &foo)[0..];
-    assert(@TypeOf(slice) == []align(4) u8);
+    const as_pointer_to_array: *[1]u8 = &foo;
+    const as_slice: []u8 = as_pointer_to_array;
+    assert(@TypeOf(as_slice) == []align(4) u8);
 }
 
 fn derp() align(@sizeOf(usize) * 2) i32 { return 1234; }
@@ -2114,16 +2128,16 @@ test "function alignment" {
       {#link|safety check|Incorrect Pointer Alignment#}:
       </p>
       {#code_begin|test_safety|incorrect alignment#}
-const assert = @import("std").debug.assert;
+const std = @import("std");
 
 test "pointer alignment safety" {
     var array align(4) = [_]u32{ 0x11111111, 0x11111111 };
-    const bytes = @sliceToBytes(array[0..]);
-    assert(foo(bytes) == 0x11111111);
+    const bytes = std.mem.sliceAsBytes(array[0..]);
+    std.debug.assert(foo(bytes) == 0x11111111);
 }
 fn foo(bytes: []u8) u32 {
     const slice4 = bytes[1..5];
-    const int_slice = @bytesToSlice(u32, @alignCast(4, slice4));
+    const int_slice = std.mem.bytesAsSlice(u32, @alignCast(4, slice4));
     return int_slice[0];
 }
       {#code_end#}
@@ -2185,7 +2199,8 @@ test "basic slices" {
     // a slice is that the array's length is part of the type and known at
     // compile-time, whereas the slice's length is known at runtime.
     // Both can be accessed with the `len` field.
-    const slice = array[0..array.len];
+    var known_at_runtime_zero: usize = 0;
+    const slice = array[known_at_runtime_zero..array.len];
     assert(&slice[0] == &array[0]);
     assert(slice.len == array.len);
 
@@ -2205,13 +2220,15 @@ test "basic slices" {
       {#code_end#}
       <p>This is one reason we prefer slices to pointers.</p>
       {#code_begin|test|slices#}
-const assert = @import("std").debug.assert;
-const mem = @import("std").mem;
-const fmt = @import("std").fmt;
+const std = @import("std");
+const assert = std.debug.assert;
+const mem = std.mem;
+const fmt = std.fmt;
 
 test "using slices for strings" {
-    // Zig has no concept of strings. String literals are arrays of u8, and
-    // in general the string type is []u8 (slice of u8).
+    // Zig has no concept of strings. String literals are const pointers to
+    // arrays of u8, and by convention parameters that are "strings" are
+    // expected to be UTF-8 encoded slices of u8.
     // Here we coerce [5]u8 to []const u8
     const hello: []const u8 = "hello";
     const world: []const u8 = "世界";
@@ -2220,7 +2237,7 @@ test "using slices for strings" {
     // You can use slice syntax on an array to convert an array into a slice.
     const all_together_slice = all_together[0..];
     // String concatenation example.
-    const hello_world = try fmt.bufPrint(all_together_slice, "{} {}", .{hello, world});
+    const hello_world = try fmt.bufPrint(all_together_slice, "{} {}", .{ hello, world });
 
     // Generally, you can use UTF-8 and not worry about whether something is a
     // string. If you don't need to deal with individual characters, no need
@@ -2237,22 +2254,14 @@ test "slice pointer" {
     slice[2] = 3;
     assert(slice[2] == 3);
     // The slice is mutable because we sliced a mutable pointer.
-    assert(@TypeOf(slice) == []u8);
+    // Furthermore, it is actually a pointer to an array, since the start
+    // and end indexes were both comptime-known.
+    assert(@TypeOf(slice) == *[5]u8);
 
     // You can also slice a slice:
     const slice2 = slice[2..3];
     assert(slice2.len == 1);
     assert(slice2[0] == 3);
-}
-
-test "slice widening" {
-    // Zig supports slice widening and slice narrowing. Cast a slice of u8
-    // to a slice of anything else, and Zig will perform the length conversion.
-    const array align(@alignOf(u32)) = [_]u8{ 0x12, 0x12, 0x12, 0x12, 0x13, 0x13, 0x13, 0x13 };
-    const slice = @bytesToSlice(u32, array[0..]);
-    assert(slice.len == 2);
-    assert(slice[0] == 0x12121212);
-    assert(slice[1] == 0x13131313);
 }
       {#code_end#}
       {#see_also|Pointers|for|Arrays#}
@@ -2473,7 +2482,7 @@ test "default struct initialization fields" {
       </p>
       {#code_begin|test#}
 const std = @import("std");
-const builtin = @import("builtin");
+const builtin = std.builtin;
 const assert = std.debug.assert;
 
 const Full = packed struct {
@@ -2809,14 +2818,10 @@ test "@TagType" {
     assert(@TagType(Small) == u2);
 }
 
-// @memberCount tells how many fields an enum has:
-test "@memberCount" {
-    assert(@memberCount(Small) == 4);
-}
-
-// @memberName tells the name of a field in an enum:
-test "@memberName" {
-    assert(mem.eql(u8, @memberName(Small, 1), "Two"));
+// @typeInfo tells us the field count and the fields names:
+test "@typeInfo" {
+    assert(@typeInfo(Small).Enum.fields.len == 4);
+    assert(mem.eql(u8, @typeInfo(Small).Enum.fields[1].name, "Two"));
 }
 
 // @tagName gives a []const u8 representation of an enum value:
@@ -2824,7 +2829,7 @@ test "@tagName" {
     assert(mem.eql(u8, @tagName(Small.Three), "Three"));
 }
       {#code_end#}
-      {#see_also|@memberName|@memberCount|@tagName|@sizeOf#}
+      {#see_also|@typeInfo|@tagName|@sizeOf#}
 
       {#header_open|extern enum#}
       <p>
@@ -3207,8 +3212,8 @@ test "separate scopes" {
 
       {#header_open|switch#}
       {#code_begin|test|switch#}
-const assert = @import("std").debug.assert;
-const builtin = @import("builtin");
+const std = @import("std");
+const assert = std.debug.assert;
 
 test "switch simple" {
     const a: u64 = 10;
@@ -3252,16 +3257,16 @@ test "switch simple" {
 }
 
 // Switch expressions can be used outside a function:
-const os_msg = switch (builtin.os) {
-    builtin.Os.linux => "we found a linux user",
+const os_msg = switch (std.Target.current.os.tag) {
+    .linux => "we found a linux user",
     else => "not a linux user",
 };
 
 // Inside a function, switch statements implicitly are compile-time
 // evaluated if the target expression is compile-time known.
 test "switch inside function" {
-    switch (builtin.os) {
-        builtin.Os.fuchsia => {
+    switch (std.Target.current.os.tag) {
+        .fuchsia => {
             // On an OS other than fuchsia, block is not even analyzed,
             // so this compile error is not triggered.
             // On fuchsia this compile error would be triggered.
@@ -5186,7 +5191,6 @@ test "coercion of zero bit types" {
           <li>{#link|@bitCast#} - change type but maintain bit representation</li>
           <li>{#link|@alignCast#} - make a pointer have more alignment</li>
           <li>{#link|@boolToInt#} - convert true to 1 and false to 0</li>
-          <li>{#link|@bytesToSlice#} - convert a slice of bytes to a slice of another type</li>
           <li>{#link|@enumToInt#} - obtain the integer tag value of an enum or tagged union</li>
           <li>{#link|@errSetCast#} - convert to a smaller error set</li>
           <li>{#link|@errorToInt#} - obtain the integer value of an error code</li>
@@ -5199,7 +5203,6 @@ test "coercion of zero bit types" {
           <li>{#link|@intToPtr#} - convert an address to a pointer</li>
           <li>{#link|@ptrCast#} - convert between pointer types</li>
           <li>{#link|@ptrToInt#} - obtain the address of a pointer</li>
-          <li>{#link|@sliceToBytes#} - convert a slice of anything to a slice of bytes</li>
           <li>{#link|@truncate#} - convert between integer types, chopping off bits</li>
       </ul>
       {#header_close#}
@@ -6023,13 +6026,16 @@ pub fn printf(self: *OutStream, arg0: i32, arg1: []const u8) !void {
       </p>
       {#code_begin|syntax#}
 pub fn printValue(self: *OutStream, value: var) !void {
-    const T = @TypeOf(value);
-    if (@isInteger(T)) {
-        return self.printInt(T, value);
-    } else if (@isFloat(T)) {
-        return self.printFloat(T, value);
-    } else {
-        @compileError("Unable to print type '" ++ @typeName(T) ++ "'");
+    switch (@typeInfo(@TypeOf(value))) {
+        .Int => {
+            return self.printInt(T, value);
+        },
+        .Float => {
+            return self.printFloat(T, value);
+        },
+        else => {
+            @compileError("Unable to print type '" ++ @typeName(T) ++ "'");
+        },
     }
 }
       {#code_end#}
@@ -6153,7 +6159,7 @@ volatile (
 // Next is the output constraint string. This feature is still
 // considered unstable in Zig, and so LLVM/GCC documentation
 // must be used to understand the semantics.
-// http://releases.llvm.org/9.0.0/docs/LangRef.html#inline-asm-constraint-string
+// http://releases.llvm.org/10.0.0/docs/LangRef.html#inline-asm-constraint-string
 // https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html
 // In this example, the constraint string means "the result value of
 // this inline assembly instruction is whatever is in $rax".
@@ -6194,7 +6200,7 @@ volatile (
       <p>
       Output constraints are still considered to be unstable in Zig, and
       so
-      <a href="http://releases.llvm.org/9.0.0/docs/LangRef.html#inline-asm-constraint-string">LLVM documentation</a>
+      <a href="http://releases.llvm.org/10.0.0/docs/LangRef.html#inline-asm-constraint-string">LLVM documentation</a>
       and
       <a href="https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html">GCC documentation</a>
       must be used to understand the semantics.
@@ -6209,7 +6215,7 @@ volatile (
       <p>
       Input constraints are still considered to be unstable in Zig, and
       so
-      <a href="http://releases.llvm.org/9.0.0/docs/LangRef.html#inline-asm-constraint-string">LLVM documentation</a>
+      <a href="http://releases.llvm.org/10.0.0/docs/LangRef.html#inline-asm-constraint-string">LLVM documentation</a>
       and
       <a href="https://gcc.gnu.org/onlinedocs/gcc/Extended-Asm.html">GCC documentation</a>
       must be used to understand the semantics.
@@ -6672,18 +6678,6 @@ comptime {
       </p>
       {#see_also|Alignment#}
       {#header_close#}
-      {#header_open|@ArgType#}
-      <pre>{#syntax#}@ArgType(comptime T: type, comptime n: usize) type{#endsyntax#}</pre>
-      <p>
-      This builtin function takes a function type and returns the type of the parameter at index {#syntax#}n{#endsyntax#}.
-      </p>
-      <p>
-      {#syntax#}T{#endsyntax#} must be a function type.
-      </p>
-      <p>
-      Note: This function is deprecated. Use {#link|@typeInfo#} instead.
-      </p>
-      {#header_close#}
 
       {#header_open|@as#}
       <pre>{#syntax#}@as(comptime T: type, expression) T{#endsyntax#}</pre>
@@ -6741,17 +6735,8 @@ async fn func(y: *i32) void {
       This builtin function atomically dereferences a pointer and returns the value.
       </p>
       <p>
-      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#}, a float,
-      an integer whose bit count meets these requirements:
-      </p>
-      <ul>
-          <li>At least 8</li>
-          <li>At most the same as usize</li>
-          <li>Power of 2</li>
-      </ul> or an enum with a valid integer tag type.
-      <p>
-      TODO right now bool is not accepted. Also I think we could make non powers of 2 work fine, maybe
-      we can remove this restriction
+      {#syntax#}T{#endsyntax#} must be a {#syntax#}bool{#endsyntax#}, a float,
+      an integer or an enum.
       </p>
       {#header_close#}
       {#header_open|@atomicRmw#}
@@ -6760,17 +6745,8 @@ async fn func(y: *i32) void {
       This builtin function atomically modifies memory and then returns the previous value.
       </p>
       <p>
-      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#},
-      or an integer whose bit count meets these requirements:
-      </p>
-      <ul>
-          <li>At least 8</li>
-          <li>At most the same as usize</li>
-          <li>Power of 2</li>
-      </ul>
-      <p>
-      TODO right now bool is not accepted. Also I think we could make non powers of 2 work fine, maybe
-      we can remove this restriction
+      {#syntax#}T{#endsyntax#} must be a {#syntax#}bool{#endsyntax#}, a float,
+      an integer or an enum.
       </p>
       <p>
       Supported operations:
@@ -6795,17 +6771,8 @@ async fn func(y: *i32) void {
       This builtin function atomically stores a value.
       </p>
       <p>
-      {#syntax#}T{#endsyntax#} must be a pointer type, a {#syntax#}bool{#endsyntax#}, a float,
-      an integer whose bit count meets these requirements:
-      </p>
-      <ul>
-          <li>At least 8</li>
-          <li>At most the same as usize</li>
-          <li>Power of 2</li>
-      </ul> or an enum with a valid integer tag type.
-      <p>
-      TODO right now bool is not accepted. Also I think we could make non powers of 2 work fine, maybe
-      we can remove this restriction
+      {#syntax#}T{#endsyntax#} must be a {#syntax#}bool{#endsyntax#}, a float,
+      an integer or an enum.
       </p>
       {#header_close#}
       {#header_open|@bitCast#}
@@ -6817,7 +6784,7 @@ async fn func(y: *i32) void {
       Asserts that {#syntax#}@sizeOf(@TypeOf(value)) == @sizeOf(DestType){#endsyntax#}.
       </p>
       <p>
-      Asserts that {#syntax#}@typeId(DestType) != @import("builtin").TypeId.Pointer{#endsyntax#}. Use {#syntax#}@ptrCast{#endsyntax#} or {#syntax#}@intToPtr{#endsyntax#} if you need this.
+      Asserts that {#syntax#}@typeInfo(DestType) != .Pointer{#endsyntax#}. Use {#syntax#}@ptrCast{#endsyntax#} or {#syntax#}@intToPtr{#endsyntax#} if you need this.
       </p>
       <p>
       Can be used for these things for example:
@@ -6929,18 +6896,6 @@ async fn func(y: *i32) void {
       {#see_also|@bitOffsetOf#}
       {#header_close#}
 
-      {#header_open|@bytesToSlice#}
-      <pre>{#syntax#}@bytesToSlice(comptime Element: type, bytes: []u8) []Element{#endsyntax#}</pre>
-      <p>
-      Converts a slice of bytes or array of bytes into a slice of {#syntax#}Element{#endsyntax#}.
-      The resulting slice has the same {#link|pointer|Pointers#} properties as the parameter.
-      </p>
-      <p>
-      Attempting to convert a number of bytes with a length that does not evenly divide into a slice of
-      elements results in safety-protected {#link|Undefined Behavior#}.
-      </p>
-      {#header_close#}
-
       {#header_open|@call#}
       <pre>{#syntax#}@call(options: std.builtin.CallOptions, function: var, args: var) var{#endsyntax#}</pre>
       <p>
@@ -7001,40 +6956,6 @@ pub const CallOptions = struct {
     };
 };
       {#code_end#}
-
-      {#header_open|Calling with a New Stack#}
-      <p>
-      When the {#syntax#}stack{#endsyntax#} option is provided, instead of using the same stack as the caller, the function uses the provided stack.
-      </p>
-      {#code_begin|test|new_stack_call#}
-const std = @import("std");
-const assert = std.debug.assert;
-
-var new_stack_bytes: [1024]u8 align(16) = undefined;
-
-test "calling a function with a new stack" {
-    const arg = 1234;
-
-    const a = @call(.{.stack = new_stack_bytes[0..512]}, targetFunction, .{arg});
-    const b = @call(.{.stack = new_stack_bytes[512..]}, targetFunction, .{arg});
-    _ = targetFunction(arg);
-
-    assert(arg == 1234);
-    assert(a < b);
-}
-
-fn targetFunction(x: i32) usize {
-    assert(x == 1234);
-
-    var local_variable: i32 = 42;
-    const ptr = &local_variable;
-    ptr.* += 1;
-
-    assert(local_variable == 43);
-    return @ptrToInt(ptr);
-}
-      {#code_end#}
-      {#header_close#}
       {#header_close#}
 
       {#header_open|@cDefine#}
@@ -7133,7 +7054,8 @@ fn cmpxchgStrongButNotAtomic(comptime T: type, ptr: *T, expected_value: T, new_v
       more efficiently in machine instructions.
       </p>
       <p>
-      {#syntax#}AtomicOrder{#endsyntax#} can be found with {#syntax#}@import("builtin").AtomicOrder{#endsyntax#}.
+      {#syntax#}T{#endsyntax#} must be a {#syntax#}bool{#endsyntax#}, a float,
+      an integer or an enum.
       </p>
       <p>{#syntax#}@TypeOf(ptr).alignment{#endsyntax#} must be {#syntax#}>= @sizeOf(T).{#endsyntax#}</p>
       {#see_also|Compile Variables|cmpxchgWeak#}
@@ -7161,7 +7083,8 @@ fn cmpxchgWeakButNotAtomic(comptime T: type, ptr: *T, expected_value: T, new_val
       However if you need a stronger guarantee, use {#link|@cmpxchgStrong#}.
       </p>
       <p>
-      {#syntax#}AtomicOrder{#endsyntax#} can be found with {#syntax#}@import("builtin").AtomicOrder{#endsyntax#}.
+      {#syntax#}T{#endsyntax#} must be a {#syntax#}bool{#endsyntax#}, a float,
+      an integer or an enum.
       </p>
       <p>{#syntax#}@TypeOf(ptr).alignment{#endsyntax#} must be {#syntax#}>= @sizeOf(T).{#endsyntax#}</p>
       {#see_also|Compile Variables|cmpxchgStrong#}
@@ -7282,7 +7205,7 @@ test "main" {
       <p>
       Floored division. Rounds toward negative infinity. For unsigned integers it is
       the same as {#syntax#}numerator / denominator{#endsyntax#}. Caller guarantees {#syntax#}denominator != 0{#endsyntax#} and
-              {#syntax#}!(@typeId(T) == builtin.TypeId.Int and T.is_signed and numerator == std.math.minInt(T) and denominator == -1){#endsyntax#}.
+              {#syntax#}!(@typeInfo(T) == .Int and T.is_signed and numerator == std.math.minInt(T) and denominator == -1){#endsyntax#}.
       </p>
       <ul>
           <li>{#syntax#}@divFloor(-5, 3) == -2{#endsyntax#}</li>
@@ -7296,7 +7219,7 @@ test "main" {
       <p>
       Truncated division. Rounds toward zero. For unsigned integers it is
       the same as {#syntax#}numerator / denominator{#endsyntax#}. Caller guarantees {#syntax#}denominator != 0{#endsyntax#} and
-              {#syntax#}!(@typeId(T) == builtin.TypeId.Int and T.is_signed and numerator == std.math.minInt(T) and denominator == -1){#endsyntax#}.
+              {#syntax#}!(@typeInfo(T) == .Int and T.is_signed and numerator == std.math.minInt(T) and denominator == -1){#endsyntax#}.
       </p>
       <ul>
           <li>{#syntax#}@divTrunc(-5, 3) == -1{#endsyntax#}</li>
@@ -7306,11 +7229,13 @@ test "main" {
       {#see_also|@divFloor|@divExact#}
       {#header_close#}
       {#header_open|@embedFile#}
-      <pre>{#syntax#}@embedFile(comptime path: []const u8) [X]u8{#endsyntax#}</pre>
+      <pre>{#syntax#}@embedFile(comptime path: []const u8) *const [X:0]u8{#endsyntax#}</pre>
       <p>
-      This function returns a compile time constant fixed-size array with length
-      equal to the byte count of the file given by {#syntax#}path{#endsyntax#}. The contents of the array
-      are the contents of the file.
+      This function returns a compile time constant pointer to null-terminated,
+      fixed-size array with length equal to the byte count of the file given by
+      {#syntax#}path{#endsyntax#}. The contents of the array are the contents of the file.
+      This is equivalent to a {#link|string literal|String Literals and Character Literals#}
+      with the file contents.
       </p>
       <p>
       {#syntax#}path{#endsyntax#} is absolute or relative to the current file, just like {#syntax#}@import{#endsyntax#}.
@@ -7354,7 +7279,7 @@ test "main" {
       {#header_close#}
 
       {#header_open|@errorToInt#}
-      <pre>{#syntax#}@errorToInt(err: var) @IntType(false, @sizeOf(anyerror) * 8){#endsyntax#}</pre>
+      <pre>{#syntax#}@errorToInt(err: var) std.meta.IntType(false, @sizeOf(anyerror) * 8){#endsyntax#}</pre>
       <p>
       Supports the following types:
       </p>
@@ -7393,13 +7318,11 @@ test "main" {
       the {#syntax#}export{#endsyntax#} keyword used on a function:
       </p>
       {#code_begin|obj#}
-const builtin = @import("builtin");
-
 comptime {
     @export(internalName, .{ .name = "foo", .linkage = .Strong });
 }
 
-extern fn internalName() void {}
+fn internalName() callconv(.C) void {}
       {#code_end#}
       <p>This is equivalent to:</p>
       {#code_begin|obj#}
@@ -7648,7 +7571,7 @@ test "@hasDecl" {
       {#header_close#}
 
       {#header_open|@intToError#}
-      <pre>{#syntax#}@intToError(value: @IntType(false, @sizeOf(anyerror) * 8)) anyerror{#endsyntax#}</pre>
+      <pre>{#syntax#}@intToError(value: std.meta.IntType(false, @sizeOf(anyerror) * 8)) anyerror{#endsyntax#}</pre>
       <p>
       Converts from the integer representation of an error into {#link|The Global Error Set#} type.
       </p>
@@ -7679,44 +7602,6 @@ test "@hasDecl" {
       If the destination pointer type does not allow address zero and {#syntax#}address{#endsyntax#}
       is zero, this invokes safety-checked {#link|Undefined Behavior#}.
       </p>
-      {#header_close#}
-
-      {#header_open|@IntType#}
-      <pre>{#syntax#}@IntType(comptime is_signed: bool, comptime bit_count: u16) type{#endsyntax#}</pre>
-      <p>
-      This function returns an integer type with the given signness and bit count. The maximum
-      bit count for an integer type is {#syntax#}65535{#endsyntax#}.
-      </p>
-      <p>
-      Deprecated. Use {#link|@Type#}.
-      </p>
-      {#header_close#}
-
-      {#header_open|@memberCount#}
-      <pre>{#syntax#}@memberCount(comptime T: type) comptime_int{#endsyntax#}</pre>
-      <p>
-      This function returns the number of members in a struct, enum, or union type.
-      </p>
-      <p>
-      The result is a compile time constant.
-      </p>
-      <p>
-      It does not include functions, variables, or constants.
-      </p>
-      {#header_close#}
-      {#header_open|@memberName#}
-      <pre>{#syntax#}@memberName(comptime T: type, comptime index: usize) [N]u8{#endsyntax#}</pre>
-      <p>Returns the field name of a struct, union, or enum.</p>
-      <p>
-      The result is a compile time constant.
-      </p>
-      <p>
-      It does not include functions, variables, or constants.
-      </p>
-      {#header_close#}
-      {#header_open|@memberType#}
-      <pre>{#syntax#}@memberType(comptime T: type, comptime index: usize) type{#endsyntax#}</pre>
-      <p>Returns the field type of a struct or union.</p>
       {#header_close#}
 
       {#header_open|@memcpy#}
@@ -8101,14 +7986,6 @@ test "@setRuntimeSafety" {
       {#see_also|@bitSizeOf|@typeInfo#}
       {#header_close#}
 
-      {#header_open|@sliceToBytes#}
-      <pre>{#syntax#}@sliceToBytes(value: var) []u8{#endsyntax#}</pre>
-      <p>
-      Converts a slice or array to a slice of {#syntax#}u8{#endsyntax#}. The resulting slice has the same
-      {#link|pointer|Pointers#} properties as the parameter.
-      </p>
-      {#header_close#}
-
       {#header_open|@splat#}
       <pre>{#syntax#}@splat(comptime len: u32, scalar: var) @Vector(len, @TypeOf(scalar)){#endsyntax#}</pre>
       <p>
@@ -8422,43 +8299,6 @@ test "integer truncation" {
           <li>{#link|struct#}</li>
       </ul>
       {#header_close#}
-
-      {#header_open|@typeId#}
-      <pre>{#syntax#}@typeId(comptime T: type) @import("builtin").TypeId{#endsyntax#}</pre>
-      <p>
-      Returns which kind of type something is. Possible values:
-      </p>
-      {#code_begin|syntax#}
-pub const TypeId = enum {
-    Type,
-    Void,
-    Bool,
-    NoReturn,
-    Int,
-    Float,
-    Pointer,
-    Array,
-    Struct,
-    ComptimeFloat,
-    ComptimeInt,
-    Undefined,
-    Null,
-    Optional,
-    ErrorUnion,
-    ErrorSet,
-    Enum,
-    Union,
-    Fn,
-    BoundFn,
-    Opaque,
-    Frame,
-    AnyFrame,
-    Vector,
-    EnumLiteral,
-};
-      {#code_end#}
-      {#header_close#}
-
       {#header_open|@typeInfo#}
       <pre>{#syntax#}@typeInfo(comptime T: type) @import("std").builtin.TypeInfo{#endsyntax#}</pre>
       <p>
@@ -8481,12 +8321,14 @@ pub const TypeId = enum {
       {#header_close#}
 
       {#header_open|@TypeOf#}
-      <pre>{#syntax#}@TypeOf(expression) type{#endsyntax#}</pre>
+      <pre>{#syntax#}@TypeOf(...) type{#endsyntax#}</pre>
       <p>
-      This function returns a compile-time constant, which is the type of the
-      expression passed as an argument. The expression is evaluated.
+      {#syntax#}@TypeOf{#endsyntax#} is a special builtin function that takes any (nonzero) number of expressions
+      as parameters and returns the type of the result, using {#link|Peer Type Resolution#}.
       </p>
-      <p>{#syntax#}@TypeOf{#endsyntax#} guarantees no run-time side-effects within the expression:</p>
+      <p>
+      The expressions are evaluated, however they are guaranteed to have no <em>runtime</em> side-effects:
+      </p>
       {#code_begin|test#}
 const std = @import("std");
 const assert = std.debug.assert;
@@ -8922,25 +8764,6 @@ pub fn main() void {
 }
       {#code_end#}
       {#header_close#}
-      {#header_open|Slice Widen Remainder#}
-      <p>At compile-time:</p>
-      {#code_begin|test_err|unable to convert#}
-comptime {
-    var bytes = [5]u8{ 1, 2, 3, 4, 5 };
-    var slice = @bytesToSlice(u32, bytes[0..]);
-}
-      {#code_end#}
-      <p>At runtime:</p>
-      {#code_begin|exe_err#}
-const std = @import("std");
-
-pub fn main() void {
-    var bytes = [5]u8{ 1, 2, 3, 4, 5 };
-    var slice = @bytesToSlice(u32, bytes[0..]);
-    std.debug.warn("value: {}\n", .{slice[0]});
-}
-      {#code_end#}
-      {#header_close#}
       {#header_open|Attempt to Unwrap Null#}
       <p>At compile-time:</p>
       {#code_begin|test_err|unable to unwrap null#}
@@ -9119,14 +8942,15 @@ comptime {
       {#code_end#}
       <p>At runtime:</p>
       {#code_begin|exe_err#}
+const mem = @import("std").mem;
 pub fn main() !void {
     var array align(4) = [_]u32{ 0x11111111, 0x11111111 };
-    const bytes = @sliceToBytes(array[0..]);
+    const bytes = mem.sliceAsBytes(array[0..]);
     if (foo(bytes) != 0x11111111) return error.Wrong;
 }
 fn foo(bytes: []u8) u32 {
     const slice4 = bytes[1..5];
-    const int_slice = @bytesToSlice(u32, @alignCast(4, slice4));
+    const int_slice = mem.bytesAsSlice(u32, @alignCast(4, slice4));
     return int_slice[0];
 }
       {#code_end#}
@@ -9527,7 +9351,7 @@ const separator = if (builtin.os == builtin.Os.windows) '\\' else '/';
       </p>
       {#code_begin|test|detect_test#}
 const std = @import("std");
-const builtin = @import("builtin");
+const builtin = std.builtin;
 const assert = std.debug.assert;
 
 test "builtin.is_test" {
@@ -9845,7 +9669,8 @@ WebAssembly.instantiate(typedArray, {
     <pre><code>$ node test.js
 The result is 3</code></pre>
       {#header_open|WASI#}
-      <p>Zig's support for WebAssembly System Interface (WASI) is under active development. Example of using the standard library and reading command line arguments:</p>
+      <p>Zig's support for WebAssembly System Interface (WASI) is under active development.
+      Example of using the standard library and reading command line arguments:</p>
       {#code_begin|exe|wasi#}
       {#target_wasi#}
 const std = @import("std");

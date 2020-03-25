@@ -1,9 +1,11 @@
 const std = @import("../std.zig");
-const Cpu = std.Target.Cpu;
+const CpuFeature = std.Target.Cpu.Feature;
+const CpuModel = std.Target.Cpu.Model;
 
 pub const Feature = enum {
     abs2008,
     cnmips,
+    cnmipsp,
     crc,
     dsp,
     dspr2,
@@ -51,14 +53,15 @@ pub const Feature = enum {
     use_tcc_in_div,
     vfpu,
     virt,
+    xgot,
 };
 
-pub usingnamespace Cpu.Feature.feature_set_fns(Feature);
+pub usingnamespace CpuFeature.feature_set_fns(Feature);
 
 pub const all_features = blk: {
     const len = @typeInfo(Feature).Enum.fields.len;
-    std.debug.assert(len <= Cpu.Feature.Set.needed_bit_count);
-    var result: [len]Cpu.Feature = undefined;
+    std.debug.assert(len <= CpuFeature.Set.needed_bit_count);
+    var result: [len]CpuFeature = undefined;
     result[@enumToInt(Feature.abs2008)] = .{
         .llvm_name = "abs2008",
         .description = "Disable IEEE 754-2008 abs.fmt mode",
@@ -69,6 +72,13 @@ pub const all_features = blk: {
         .description = "Octeon cnMIPS Support",
         .dependencies = featureSet(&[_]Feature{
             .mips64r2,
+        }),
+    };
+    result[@enumToInt(Feature.cnmipsp)] = .{
+        .llvm_name = "cnmipsp",
+        .description = "Octeon+ cnMIPS Support",
+        .dependencies = featureSet(&[_]Feature{
+            .cnmips,
         }),
     };
     result[@enumToInt(Feature.crc)] = .{
@@ -363,6 +373,11 @@ pub const all_features = blk: {
         .description = "Mips Virtualization ASE",
         .dependencies = featureSet(&[_]Feature{}),
     };
+    result[@enumToInt(Feature.xgot)] = .{
+        .llvm_name = "xgot",
+        .description = "Assume 32-bit GOT",
+        .dependencies = featureSet(&[_]Feature{}),
+    };
     const ti = @typeInfo(Feature);
     for (result) |*elem, i| {
         elem.index = i;
@@ -372,112 +387,119 @@ pub const all_features = blk: {
 };
 
 pub const cpu = struct {
-    pub const mips1 = Cpu{
+    pub const generic = CpuModel{
+        .name = "generic",
+        .llvm_name = "generic",
+        .features = featureSet(&[_]Feature{
+            .mips32,
+        }),
+    };
+    pub const mips1 = CpuModel{
         .name = "mips1",
         .llvm_name = "mips1",
         .features = featureSet(&[_]Feature{
             .mips1,
         }),
     };
-    pub const mips2 = Cpu{
+    pub const mips2 = CpuModel{
         .name = "mips2",
         .llvm_name = "mips2",
         .features = featureSet(&[_]Feature{
             .mips2,
         }),
     };
-    pub const mips3 = Cpu{
+    pub const mips3 = CpuModel{
         .name = "mips3",
         .llvm_name = "mips3",
         .features = featureSet(&[_]Feature{
             .mips3,
         }),
     };
-    pub const mips32 = Cpu{
+    pub const mips32 = CpuModel{
         .name = "mips32",
         .llvm_name = "mips32",
         .features = featureSet(&[_]Feature{
             .mips32,
         }),
     };
-    pub const mips32r2 = Cpu{
+    pub const mips32r2 = CpuModel{
         .name = "mips32r2",
         .llvm_name = "mips32r2",
         .features = featureSet(&[_]Feature{
             .mips32r2,
         }),
     };
-    pub const mips32r3 = Cpu{
+    pub const mips32r3 = CpuModel{
         .name = "mips32r3",
         .llvm_name = "mips32r3",
         .features = featureSet(&[_]Feature{
             .mips32r3,
         }),
     };
-    pub const mips32r5 = Cpu{
+    pub const mips32r5 = CpuModel{
         .name = "mips32r5",
         .llvm_name = "mips32r5",
         .features = featureSet(&[_]Feature{
             .mips32r5,
         }),
     };
-    pub const mips32r6 = Cpu{
+    pub const mips32r6 = CpuModel{
         .name = "mips32r6",
         .llvm_name = "mips32r6",
         .features = featureSet(&[_]Feature{
             .mips32r6,
         }),
     };
-    pub const mips4 = Cpu{
+    pub const mips4 = CpuModel{
         .name = "mips4",
         .llvm_name = "mips4",
         .features = featureSet(&[_]Feature{
             .mips4,
         }),
     };
-    pub const mips5 = Cpu{
+    pub const mips5 = CpuModel{
         .name = "mips5",
         .llvm_name = "mips5",
         .features = featureSet(&[_]Feature{
             .mips5,
         }),
     };
-    pub const mips64 = Cpu{
+    pub const mips64 = CpuModel{
         .name = "mips64",
         .llvm_name = "mips64",
         .features = featureSet(&[_]Feature{
             .mips64,
         }),
     };
-    pub const mips64r2 = Cpu{
+    pub const mips64r2 = CpuModel{
         .name = "mips64r2",
         .llvm_name = "mips64r2",
         .features = featureSet(&[_]Feature{
             .mips64r2,
         }),
     };
-    pub const mips64r3 = Cpu{
+    pub const mips64r3 = CpuModel{
         .name = "mips64r3",
         .llvm_name = "mips64r3",
         .features = featureSet(&[_]Feature{
             .mips64r3,
         }),
     };
-    pub const mips64r5 = Cpu{
+    pub const mips64r5 = CpuModel{
         .name = "mips64r5",
         .llvm_name = "mips64r5",
         .features = featureSet(&[_]Feature{
             .mips64r5,
         }),
     };
-    pub const mips64r6 = Cpu{
+    pub const mips64r6 = CpuModel{
         .name = "mips64r6",
         .llvm_name = "mips64r6",
         .features = featureSet(&[_]Feature{
             .mips64r6,
         }),
     };
-    pub const octeon = Cpu{
+    pub const octeon = CpuModel{
         .name = "octeon",
         .llvm_name = "octeon",
         .features = featureSet(&[_]Feature{
@@ -485,7 +507,16 @@ pub const cpu = struct {
             .mips64r2,
         }),
     };
-    pub const p5600 = Cpu{
+    pub const @"octeon+" = CpuModel{
+        .name = "octeon+",
+        .llvm_name = "octeon+",
+        .features = featureSet(&[_]Feature{
+            .cnmips,
+            .cnmipsp,
+            .mips64r2,
+        }),
+    };
+    pub const p5600 = CpuModel{
         .name = "p5600",
         .llvm_name = "p5600",
         .features = featureSet(&[_]Feature{
@@ -497,7 +528,8 @@ pub const cpu = struct {
 /// All mips CPUs, sorted alphabetically by name.
 /// TODO: Replace this with usage of `std.meta.declList`. It does work, but stage1
 /// compiler has inefficient memory and CPU usage, affecting build times.
-pub const all_cpus = &[_]*const Cpu{
+pub const all_cpus = &[_]*const CpuModel{
+    &cpu.generic,
     &cpu.mips1,
     &cpu.mips2,
     &cpu.mips3,
@@ -514,5 +546,6 @@ pub const all_cpus = &[_]*const Cpu{
     &cpu.mips64r5,
     &cpu.mips64r6,
     &cpu.octeon,
+    &cpu.@"octeon+",
     &cpu.p5600,
 };
