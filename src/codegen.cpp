@@ -562,8 +562,7 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
     add_uwtable_attr(g, llvm_fn);
     addLLVMFnAttr(llvm_fn, "nobuiltin");
     if (codegen_have_frame_pointer(g) && fn->fn_inline != FnInlineAlways) {
-        ZigLLVMAddFunctionAttr(llvm_fn, "no-frame-pointer-elim", "true");
-        ZigLLVMAddFunctionAttr(llvm_fn, "no-frame-pointer-elim-non-leaf", nullptr);
+        ZigLLVMAddFunctionAttr(llvm_fn, "frame-pointer", "all");
     }
     if (fn->section_name) {
         LLVMSetSection(llvm_fn, buf_ptr(fn->section_name));
@@ -687,6 +686,7 @@ static ZigLLVMDIScope *get_di_scope(CodeGen *g, Scope *scope) {
         case ScopeIdLoop:
         case ScopeIdSuspend:
         case ScopeIdCompTime:
+        case ScopeIdNoAsync:
         case ScopeIdRuntime:
         case ScopeIdTypeOf:
         case ScopeIdExpr:
@@ -968,11 +968,13 @@ static Buf *panic_msg_buf(PanicMsgId msg_id) {
         case PanicMsgIdResumedFnPendingAwait:
             return buf_create_from_str("resumed an async function which can only be awaited");
         case PanicMsgIdBadNoAsyncCall:
-            return buf_create_from_str("async function called with noasync suspended");
+            return buf_create_from_str("async function called in noasync scope suspended");
         case PanicMsgIdResumeNotSuspendedFn:
             return buf_create_from_str("resumed a non-suspended function");
         case PanicMsgIdBadSentinel:
             return buf_create_from_str("sentinel mismatch");
+        case PanicMsgIdShxTooBigRhs:
+            return buf_create_from_str("shift amount is greater than the type size");
     }
     zig_unreachable();
 }
@@ -1124,8 +1126,7 @@ static LLVMValueRef get_add_error_return_trace_addr_fn(CodeGen *g) {
     // on any architecture.
     addLLVMArgAttr(fn_val, (unsigned)0, "nonnull");
     if (codegen_have_frame_pointer(g)) {
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim", "true");
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim-non-leaf", nullptr);
+        ZigLLVMAddFunctionAttr(fn_val, "frame-pointer", "all");
     }
 
     LLVMBasicBlockRef entry_block = LLVMAppendBasicBlock(fn_val, "Entry");
@@ -1202,8 +1203,7 @@ static LLVMValueRef get_return_err_fn(CodeGen *g) {
     addLLVMFnAttr(fn_val, "nounwind");
     add_uwtable_attr(g, fn_val);
     if (codegen_have_frame_pointer(g)) {
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim", "true");
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim-non-leaf", nullptr);
+        ZigLLVMAddFunctionAttr(fn_val, "frame-pointer", "all");
     }
 
     // this is above the ZigLLVMClearCurrentDebugLocation
@@ -1286,8 +1286,7 @@ static LLVMValueRef get_safety_crash_err_fn(CodeGen *g) {
     addLLVMFnAttr(fn_val, "nounwind");
     add_uwtable_attr(g, fn_val);
     if (codegen_have_frame_pointer(g)) {
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim", "true");
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim-non-leaf", nullptr);
+        ZigLLVMAddFunctionAttr(fn_val, "frame-pointer", "all");
     }
     // Not setting alignment here. See the comment above about
     // "Cannot getTypeInfo() on a type that is unsized!"
@@ -2840,6 +2839,26 @@ static LLVMValueRef gen_rem(CodeGen *g, bool want_runtime_safety, bool want_fast
 
 }
 
+static void gen_shift_rhs_check(CodeGen *g, ZigType *lhs_type, ZigType *rhs_type, LLVMValueRef value) {
+    // We only check if the rhs value of the shift expression is greater or
+    // equal to the number of bits of the lhs if it's not a power of two,
+    // otherwise the check is useful as the allowed values are limited by the
+    // operand type itself
+    if (!is_power_of_2(lhs_type->data.integral.bit_count)) {
+        LLVMValueRef bit_count_value = LLVMConstInt(get_llvm_type(g, rhs_type),
+            lhs_type->data.integral.bit_count, false);
+        LLVMValueRef less_than_bit = LLVMBuildICmp(g->builder, LLVMIntULT, value, bit_count_value, "");
+        LLVMBasicBlockRef fail_block = LLVMAppendBasicBlock(g->cur_fn_val, "CheckFail");
+        LLVMBasicBlockRef ok_block = LLVMAppendBasicBlock(g->cur_fn_val, "CheckOk");
+        LLVMBuildCondBr(g->builder, less_than_bit, ok_block, fail_block);
+
+        LLVMPositionBuilderAtEnd(g->builder, fail_block);
+        gen_safety_crash(g, PanicMsgIdShxTooBigRhs);
+
+        LLVMPositionBuilderAtEnd(g->builder, ok_block);
+    }
+}
+
 static LLVMValueRef ir_render_bin_op(CodeGen *g, IrExecutableGen *executable,
         IrInstGenBinOp *bin_op_instruction)
 {
@@ -2948,6 +2967,11 @@ static LLVMValueRef ir_render_bin_op(CodeGen *g, IrExecutableGen *executable,
             {
                 assert(scalar_type->id == ZigTypeIdInt);
                 LLVMValueRef op2_casted = gen_widen_or_shorten(g, false, op2->value->type, scalar_type, op2_value);
+
+                if (want_runtime_safety) {
+                    gen_shift_rhs_check(g, scalar_type, op2->value->type, op2_value);
+                }
+
                 bool is_sloppy = (op_id == IrBinOpBitShiftLeftLossy);
                 if (is_sloppy) {
                     return LLVMBuildShl(g->builder, op1_value, op2_casted, "");
@@ -2964,6 +2988,11 @@ static LLVMValueRef ir_render_bin_op(CodeGen *g, IrExecutableGen *executable,
             {
                 assert(scalar_type->id == ZigTypeIdInt);
                 LLVMValueRef op2_casted = gen_widen_or_shorten(g, false, op2->value->type, scalar_type, op2_value);
+
+                if (want_runtime_safety) {
+                    gen_shift_rhs_check(g, scalar_type, op2->value->type, op2_value);
+                }
+
                 bool is_sloppy = (op_id == IrBinOpBitShiftRightLossy);
                 if (is_sloppy) {
                     if (scalar_type->data.integral.is_signed) {
@@ -3934,6 +3963,7 @@ static void render_async_var_decls(CodeGen *g, Scope *scope) {
             case ScopeIdLoop:
             case ScopeIdSuspend:
             case ScopeIdCompTime:
+            case ScopeIdNoAsync:
             case ScopeIdRuntime:
             case ScopeIdTypeOf:
             case ScopeIdExpr:
@@ -4984,8 +5014,7 @@ static LLVMValueRef get_enum_tag_name_function(CodeGen *g, ZigType *enum_type) {
     addLLVMFnAttr(fn_val, "nounwind");
     add_uwtable_attr(g, fn_val);
     if (codegen_have_frame_pointer(g)) {
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim", "true");
-        ZigLLVMAddFunctionAttr(fn_val, "no-frame-pointer-elim-non-leaf", nullptr);
+        ZigLLVMAddFunctionAttr(fn_val, "frame-pointer", "all");
     }
 
     LLVMBasicBlockRef prev_block = LLVMGetInsertBlock(g->builder);
@@ -5217,10 +5246,54 @@ static enum ZigLLVM_AtomicRMWBinOp to_ZigLLVMAtomicRMWBinOp(AtomicRmwOp op, bool
     zig_unreachable();
 }
 
+static LLVMTypeRef get_atomic_abi_type(CodeGen *g, IrInstGen *instruction) {
+    // If the operand type of an atomic operation is not a power of two sized
+    // we need to widen it before using it and then truncate the result.
+
+    ir_assert(instruction->value->type->id == ZigTypeIdPointer, instruction);
+    ZigType *operand_type = instruction->value->type->data.pointer.child_type;
+    if (operand_type->id == ZigTypeIdInt || operand_type->id == ZigTypeIdEnum) {
+        if (operand_type->id == ZigTypeIdEnum) {
+            operand_type = operand_type->data.enumeration.tag_int_type;
+        }
+        auto bit_count = operand_type->data.integral.bit_count;
+        bool is_signed = operand_type->data.integral.is_signed;
+        
+        ir_assert(bit_count != 0, instruction);
+        if (bit_count == 1 || !is_power_of_2(bit_count)) {
+            return get_llvm_type(g, get_int_type(g, is_signed, operand_type->abi_size * 8));
+        } else {
+            return nullptr;
+        }
+    } else if (operand_type->id == ZigTypeIdFloat) {
+        return nullptr;
+    } else if (operand_type->id == ZigTypeIdBool) {
+        return g->builtin_types.entry_u8->llvm_type;
+    } else {
+        ir_assert(get_codegen_ptr_type_bail(g, operand_type) != nullptr, instruction);
+        return nullptr;
+    }
+}
+
 static LLVMValueRef ir_render_cmpxchg(CodeGen *g, IrExecutableGen *executable, IrInstGenCmpxchg *instruction) {
     LLVMValueRef ptr_val = ir_llvm_value(g, instruction->ptr);
     LLVMValueRef cmp_val = ir_llvm_value(g, instruction->cmp_value);
     LLVMValueRef new_val = ir_llvm_value(g, instruction->new_value);
+
+    ZigType *operand_type = instruction->new_value->value->type;
+    LLVMTypeRef actual_abi_type = get_atomic_abi_type(g, instruction->ptr);
+    if (actual_abi_type != nullptr) {
+        // operand needs widening and truncating
+        ptr_val = LLVMBuildBitCast(g->builder, ptr_val,
+            LLVMPointerType(actual_abi_type, 0), "");
+        if (operand_type->data.integral.is_signed) {
+            cmp_val = LLVMBuildSExt(g->builder, cmp_val, actual_abi_type, "");
+            new_val = LLVMBuildSExt(g->builder, new_val, actual_abi_type, "");
+        } else {
+            cmp_val = LLVMBuildZExt(g->builder, cmp_val, actual_abi_type, "");
+            new_val = LLVMBuildZExt(g->builder, new_val, actual_abi_type, "");
+        }
+    }
 
     LLVMAtomicOrdering success_order = to_LLVMAtomicOrdering(instruction->success_order);
     LLVMAtomicOrdering failure_order = to_LLVMAtomicOrdering(instruction->failure_order);
@@ -5234,6 +5307,9 @@ static LLVMValueRef ir_render_cmpxchg(CodeGen *g, IrExecutableGen *executable, I
 
     if (!handle_is_ptr(g, optional_type)) {
         LLVMValueRef payload_val = LLVMBuildExtractValue(g->builder, result_val, 0, "");
+        if (actual_abi_type != nullptr) {
+            payload_val = LLVMBuildTrunc(g->builder, payload_val, get_llvm_type(g, operand_type), "");
+        }
         LLVMValueRef success_bit = LLVMBuildExtractValue(g->builder, result_val, 1, "");
         return LLVMBuildSelect(g->builder, success_bit, LLVMConstNull(get_llvm_type(g, child_type)), payload_val, "");
     }
@@ -5248,6 +5324,9 @@ static LLVMValueRef ir_render_cmpxchg(CodeGen *g, IrExecutableGen *executable, I
     ir_assert(type_has_bits(g, child_type), &instruction->base);
 
     LLVMValueRef payload_val = LLVMBuildExtractValue(g->builder, result_val, 0, "");
+    if (actual_abi_type != nullptr) {
+        payload_val = LLVMBuildTrunc(g->builder, payload_val, get_llvm_type(g, operand_type), "");
+    }
     LLVMValueRef val_ptr = LLVMBuildStructGEP(g->builder, result_loc, maybe_child_index, "");
     gen_assign_raw(g, val_ptr, get_pointer_to_type(g, child_type, false), payload_val);
 
@@ -5334,12 +5413,16 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutableGen *executable, IrI
     ZigType *array_type = array_ptr_type->data.pointer.child_type;
     LLVMValueRef array_ptr = get_handle_value(g, array_ptr_ptr, array_type, array_ptr_type);
 
-    LLVMValueRef tmp_struct_ptr = ir_llvm_value(g, instruction->result_loc);
-
     bool want_runtime_safety = instruction->safety_check_on && ir_want_runtime_safety(g, &instruction->base);
 
-    ZigType *res_slice_ptr_type = instruction->base.value->type->data.structure.fields[slice_ptr_index]->type_entry;
-    ZigValue *sentinel = res_slice_ptr_type->data.pointer.sentinel;
+    ZigType *result_type = instruction->base.value->type;
+    if (!type_has_bits(g, result_type)) {
+        return nullptr;
+    }
+
+    // This is not whether the result type has a sentinel, but whether there should be a sentinel check,
+    // e.g. if they used [a..b :s] syntax.
+    ZigValue *sentinel = instruction->sentinel;
 
     if (array_type->id == ZigTypeIdArray ||
         (array_type->id == ZigTypeIdPointer && array_type->data.pointer.ptr_len == PtrLenSingle))
@@ -5374,6 +5457,8 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutableGen *executable, IrI
             }
         }
         if (!type_has_bits(g, array_type)) {
+            LLVMValueRef tmp_struct_ptr = ir_llvm_value(g, instruction->result_loc);
+
             LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, slice_len_index, "");
 
             // TODO if runtime safety is on, store 0xaaaaaaa in ptr field
@@ -5382,20 +5467,26 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutableGen *executable, IrI
             return tmp_struct_ptr;
         }
 
-
-        LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, slice_ptr_index, "");
         LLVMValueRef indices[] = {
             LLVMConstNull(g->builtin_types.entry_usize->llvm_type),
             start_val,
         };
         LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, array_ptr, indices, 2, "");
-        gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
+        if (result_type->id == ZigTypeIdPointer) {
+            ir_assert(instruction->result_loc == nullptr, &instruction->base);
+            LLVMTypeRef result_ptr_type = get_llvm_type(g, result_type);
+            return LLVMBuildBitCast(g->builder, slice_start_ptr, result_ptr_type, "");
+        } else {
+            LLVMValueRef tmp_struct_ptr = ir_llvm_value(g, instruction->result_loc);
+            LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, slice_ptr_index, "");
+            gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
 
-        LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, slice_len_index, "");
-        LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
-        gen_store_untyped(g, len_value, len_field_ptr, 0, false);
+            LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, slice_len_index, "");
+            LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
+            gen_store_untyped(g, len_value, len_field_ptr, 0, false);
 
-        return tmp_struct_ptr;
+            return tmp_struct_ptr;
+        }
     } else if (array_type->id == ZigTypeIdPointer) {
         assert(array_type->data.pointer.ptr_len != PtrLenSingle);
         LLVMValueRef start_val = ir_llvm_value(g, instruction->start);
@@ -5409,24 +5500,39 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutableGen *executable, IrI
             }
         }
 
-        if (type_has_bits(g, array_type)) {
-            size_t gen_ptr_index = instruction->base.value->type->data.structure.fields[slice_ptr_index]->gen_index;
-            LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, gen_ptr_index, "");
-            LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, array_ptr, &start_val, 1, "");
-            gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
+        if (!type_has_bits(g, array_type)) {
+            LLVMValueRef tmp_struct_ptr = ir_llvm_value(g, instruction->result_loc);
+            size_t gen_len_index = result_type->data.structure.fields[slice_len_index]->gen_index;
+            LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, gen_len_index, "");
+            LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
+            gen_store_untyped(g, len_value, len_field_ptr, 0, false);
+            return tmp_struct_ptr;
         }
 
-        size_t gen_len_index = instruction->base.value->type->data.structure.fields[slice_len_index]->gen_index;
+        LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, array_ptr, &start_val, 1, "");
+        if (result_type->id == ZigTypeIdPointer) {
+            ir_assert(instruction->result_loc == nullptr, &instruction->base);
+            LLVMTypeRef result_ptr_type = get_llvm_type(g, result_type);
+            return LLVMBuildBitCast(g->builder, slice_start_ptr, result_ptr_type, "");
+        }
+
+        LLVMValueRef tmp_struct_ptr = ir_llvm_value(g, instruction->result_loc);
+
+        size_t gen_ptr_index = result_type->data.structure.fields[slice_ptr_index]->gen_index;
+        LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, gen_ptr_index, "");
+        gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
+
+        size_t gen_len_index = result_type->data.structure.fields[slice_len_index]->gen_index;
         LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, gen_len_index, "");
         LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
         gen_store_untyped(g, len_value, len_field_ptr, 0, false);
 
         return tmp_struct_ptr;
+
     } else if (array_type->id == ZigTypeIdStruct) {
         assert(array_type->data.structure.special == StructSpecialSlice);
         assert(LLVMGetTypeKind(LLVMTypeOf(array_ptr)) == LLVMPointerTypeKind);
         assert(LLVMGetTypeKind(LLVMGetElementType(LLVMTypeOf(array_ptr))) == LLVMStructTypeKind);
-        assert(LLVMGetTypeKind(LLVMGetElementType(LLVMTypeOf(tmp_struct_ptr))) == LLVMStructTypeKind);
 
         size_t ptr_index = array_type->data.structure.fields[slice_ptr_index]->gen_index;
         assert(ptr_index != SIZE_MAX);
@@ -5463,15 +5569,22 @@ static LLVMValueRef ir_render_slice(CodeGen *g, IrExecutableGen *executable, IrI
             }
         }
 
-        LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, (unsigned)ptr_index, "");
         LLVMValueRef slice_start_ptr = LLVMBuildInBoundsGEP(g->builder, src_ptr, &start_val, 1, "");
-        gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
+        if (result_type->id == ZigTypeIdPointer) {
+            ir_assert(instruction->result_loc == nullptr, &instruction->base);
+            LLVMTypeRef result_ptr_type = get_llvm_type(g, result_type);
+            return LLVMBuildBitCast(g->builder, slice_start_ptr, result_ptr_type, "");
+        } else {
+            LLVMValueRef tmp_struct_ptr = ir_llvm_value(g, instruction->result_loc);
+            LLVMValueRef ptr_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, (unsigned)ptr_index, "");
+            gen_store_untyped(g, slice_start_ptr, ptr_field_ptr, 0, false);
 
-        LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, (unsigned)len_index, "");
-        LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
-        gen_store_untyped(g, len_value, len_field_ptr, 0, false);
+            LLVMValueRef len_field_ptr = LLVMBuildStructGEP(g->builder, tmp_struct_ptr, (unsigned)len_index, "");
+            LLVMValueRef len_value = LLVMBuildNSWSub(g->builder, end_val, start_val, "");
+            gen_store_untyped(g, len_value, len_field_ptr, 0, false);
 
-        return tmp_struct_ptr;
+            return tmp_struct_ptr;
+        }
     } else {
         zig_unreachable();
     }
@@ -5510,7 +5623,7 @@ static LLVMValueRef get_frame_address_fn_val(CodeGen *g) {
 
     LLVMTypeRef fn_type = LLVMFunctionType(get_llvm_type(g, return_type),
             &g->builtin_types.entry_i32->llvm_type, 1, false);
-    g->frame_address_fn_val = LLVMAddFunction(g->module, "llvm.frameaddress", fn_type);
+    g->frame_address_fn_val = LLVMAddFunction(g->module, "llvm.frameaddress.p0i8", fn_type);
     assert(LLVMGetIntrinsicID(g->frame_address_fn_val));
 
     return g->frame_address_fn_val;
@@ -5825,6 +5938,22 @@ static LLVMValueRef ir_render_atomic_rmw(CodeGen *g, IrExecutableGen *executable
     LLVMValueRef ptr = ir_llvm_value(g, instruction->ptr);
     LLVMValueRef operand = ir_llvm_value(g, instruction->operand);
 
+    LLVMTypeRef actual_abi_type = get_atomic_abi_type(g, instruction->ptr);
+    if (actual_abi_type != nullptr) {
+        // operand needs widening and truncating
+        LLVMValueRef casted_ptr = LLVMBuildBitCast(g->builder, ptr,
+            LLVMPointerType(actual_abi_type, 0), "");
+        LLVMValueRef casted_operand;
+        if (operand_type->data.integral.is_signed) {
+            casted_operand = LLVMBuildSExt(g->builder, operand, actual_abi_type, "");
+        } else {
+            casted_operand = LLVMBuildZExt(g->builder, operand, actual_abi_type, "");
+        }
+        LLVMValueRef uncasted_result = ZigLLVMBuildAtomicRMW(g->builder, op, casted_ptr, casted_operand, ordering,
+                g->is_single_threaded);
+        return LLVMBuildTrunc(g->builder, uncasted_result, get_llvm_type(g, operand_type), "");
+    }
+
     if (get_codegen_ptr_type_bail(g, operand_type) == nullptr) {
         return ZigLLVMBuildAtomicRMW(g->builder, op, ptr, operand, ordering, g->is_single_threaded);
     }
@@ -5843,6 +5972,17 @@ static LLVMValueRef ir_render_atomic_load(CodeGen *g, IrExecutableGen *executabl
 {
     LLVMAtomicOrdering ordering = to_LLVMAtomicOrdering(instruction->ordering);
     LLVMValueRef ptr = ir_llvm_value(g, instruction->ptr);
+
+    ZigType *operand_type = instruction->ptr->value->type->data.pointer.child_type;
+    LLVMTypeRef actual_abi_type = get_atomic_abi_type(g, instruction->ptr);
+    if (actual_abi_type != nullptr) {
+        // operand needs widening and truncating
+        ptr = LLVMBuildBitCast(g->builder, ptr,
+                LLVMPointerType(actual_abi_type, 0), "");
+        LLVMValueRef load_inst = gen_load(g, ptr, instruction->ptr->value->type, "");
+        LLVMSetOrdering(load_inst, ordering);
+        return LLVMBuildTrunc(g->builder, load_inst, get_llvm_type(g, operand_type), "");
+    }
     LLVMValueRef load_inst = gen_load(g, ptr, instruction->ptr->value->type, "");
     LLVMSetOrdering(load_inst, ordering);
     return load_inst;
@@ -5854,6 +5994,18 @@ static LLVMValueRef ir_render_atomic_store(CodeGen *g, IrExecutableGen *executab
     LLVMAtomicOrdering ordering = to_LLVMAtomicOrdering(instruction->ordering);
     LLVMValueRef ptr = ir_llvm_value(g, instruction->ptr);
     LLVMValueRef value = ir_llvm_value(g, instruction->value);
+
+    LLVMTypeRef actual_abi_type = get_atomic_abi_type(g, instruction->ptr);
+    if (actual_abi_type != nullptr) {
+        // operand needs widening
+        ptr = LLVMBuildBitCast(g->builder, ptr,
+                LLVMPointerType(actual_abi_type, 0), "");
+        if (instruction->value->value->type->data.integral.is_signed) {
+            value = LLVMBuildSExt(g->builder, value, actual_abi_type, "");
+        } else {
+            value = LLVMBuildZExt(g->builder, value, actual_abi_type, "");
+        }
+    }
     LLVMValueRef store_inst = gen_store(g, value, ptr, instruction->ptr->value->type);
     LLVMSetOrdering(store_inst, ordering);
     return nullptr;
@@ -6517,7 +6669,6 @@ static LLVMValueRef gen_const_ptr_array_recursive(CodeGen *g, ZigValue *array_co
         };
         return LLVMConstInBoundsGEP(base_ptr, indices, 2);
     } else {
-        assert(parent->id == ConstParentIdScalar);
         return base_ptr;
     }
 }
@@ -6667,6 +6818,22 @@ static LLVMValueRef pack_const_int(CodeGen *g, LLVMTypeRef big_int_type_ref, Zig
                     used_bits += packed_bits_size;
                 }
             }
+
+            if (type_entry->data.array.sentinel != nullptr) {
+                ZigValue *elem_val = type_entry->data.array.sentinel;
+                LLVMValueRef child_val = pack_const_int(g, big_int_type_ref, elem_val);
+
+                if (is_big_endian) {
+                    LLVMValueRef shift_amt = LLVMConstInt(big_int_type_ref, packed_bits_size, false);
+                    val = LLVMConstShl(val, shift_amt);
+                    val = LLVMConstOr(val, child_val);
+                } else {
+                    LLVMValueRef shift_amt = LLVMConstInt(big_int_type_ref, used_bits, false);
+                    LLVMValueRef child_val_shifted = LLVMConstShl(child_val, shift_amt);
+                    val = LLVMConstOr(val, child_val_shifted);
+                    used_bits += packed_bits_size;
+                }
+            }
             return val;
         }
         case ZigTypeIdVector:
@@ -6729,24 +6896,16 @@ static LLVMValueRef gen_const_val_ptr(CodeGen *g, ZigValue *const_val, const cha
                 return const_val->llvm_value;
             }
         case ConstPtrSpecialBaseArray:
+        case ConstPtrSpecialSubArray:
             {
                 ZigValue *array_const_val = const_val->data.x_ptr.data.base_array.array_val;
                 assert(array_const_val->type->id == ZigTypeIdArray);
                 if (!type_has_bits(g, array_const_val->type)) {
-                    if (array_const_val->type->data.array.sentinel != nullptr) {
-                        ZigValue *pointee = array_const_val->type->data.array.sentinel;
-                        render_const_val(g, pointee, "");
-                        render_const_val_global(g, pointee, "");
-                        const_val->llvm_value = LLVMConstBitCast(pointee->llvm_global,
-                                get_llvm_type(g, const_val->type));
-                        return const_val->llvm_value;
-                    } else {
-                        // make this a null pointer
-                        ZigType *usize = g->builtin_types.entry_usize;
-                        const_val->llvm_value = LLVMConstIntToPtr(LLVMConstNull(usize->llvm_type),
-                                get_llvm_type(g, const_val->type));
-                        return const_val->llvm_value;
-                    }
+                    // make this a null pointer
+                    ZigType *usize = g->builtin_types.entry_usize;
+                    const_val->llvm_value = LLVMConstIntToPtr(LLVMConstNull(usize->llvm_type),
+                            get_llvm_type(g, const_val->type));
+                    return const_val->llvm_value;
                 }
                 size_t elem_index = const_val->data.x_ptr.data.base_array.elem_index;
                 LLVMValueRef uncasted_ptr_val = gen_const_ptr_array_recursive(g, array_const_val, elem_index);
@@ -6900,8 +7059,18 @@ check: switch (const_val->special) {
         case ZigTypeIdOptional:
             {
                 ZigType *child_type = type_entry->data.maybe.child_type;
+
                 if (get_src_ptr_type(type_entry) != nullptr) {
-                    return gen_const_val_ptr(g, const_val, name);
+                    bool has_bits;
+                    if ((err = type_has_bits2(g, child_type, &has_bits)))
+                        codegen_report_errors_and_exit(g);
+
+                    if (has_bits)
+                        return gen_const_val_ptr(g, const_val, name);
+
+                    // No bits, treat this value as a boolean
+                    const unsigned bool_val = optional_value_is_null(const_val) ? 0 : 1;
+                    return LLVMConstInt(LLVMInt1Type(), bool_val, false);
                 } else if (child_type->id == ZigTypeIdErrorSet) {
                     return gen_const_val_err_set(g, const_val, name);
                 } else if (!type_has_bits(g, child_type)) {
@@ -8211,7 +8380,6 @@ static void define_builtin_fns(CodeGen *g) {
     create_builtin_fn(g, BuiltinFnIdNearbyInt, "nearbyInt", 1);
     create_builtin_fn(g, BuiltinFnIdRound, "round", 1);
     create_builtin_fn(g, BuiltinFnIdMulAdd, "mulAdd", 4);
-    create_builtin_fn(g, BuiltinFnIdNewStackCall, "newStackCall", SIZE_MAX);
     create_builtin_fn(g, BuiltinFnIdAsyncCall, "asyncCall", SIZE_MAX);
     create_builtin_fn(g, BuiltinFnIdShlExact, "shlExact", 2);
     create_builtin_fn(g, BuiltinFnIdShrExact, "shrExact", 2);
@@ -8620,7 +8788,7 @@ static Error define_builtin_compile_vars(CodeGen *g) {
     cache_int(&cache_hash, g->zig_target->os);
     cache_int(&cache_hash, g->zig_target->abi);
     if (g->zig_target->cache_hash != nullptr) {
-        cache_str(&cache_hash, g->zig_target->cache_hash);
+        cache_mem(&cache_hash, g->zig_target->cache_hash, g->zig_target->cache_hash_len);
     }
     if (g->zig_target->glibc_or_darwin_version != nullptr) {
         cache_int(&cache_hash, g->zig_target->glibc_or_darwin_version->major);
@@ -8987,13 +9155,15 @@ static void detect_libc(CodeGen *g) {
 }
 
 // does not add the "cc" arg
-void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_path, bool translate_c) {
+void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_path,
+        bool translate_c, CSourceKind source_kind)
+{
     if (translate_c) {
         args.append("-x");
         args.append("c");
     }
 
-    if (out_dep_path != nullptr) {
+    if (source_kind != CSourceKindAsm && out_dep_path != nullptr) {
         args.append("-MD");
         args.append("-MV");
         args.append("-MF");
@@ -9008,10 +9178,12 @@ void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_pa
     }
 
     if (translate_c) {
-        // this gives us access to preprocessing entities, presumably at
-        // the cost of performance
-        args.append("-Xclang");
-        args.append("-detailed-preprocessing-record");
+        if (source_kind == CSourceKindC) {
+            // this gives us access to preprocessing entities, presumably at
+            // the cost of performance
+            args.append("-Xclang");
+            args.append("-detailed-preprocessing-record");
+        }
     } else {
         switch (g->err_color) {
             case ErrColorAuto:
@@ -9044,26 +9216,29 @@ void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_pa
         args.append(include_dir);
     }
 
-    if (g->zig_target->is_native) {
-        if (target_supports_clang_march_native(g->zig_target)) {
-            args.append("-march=native");
-        }
-    } else {
-        args.append("-target");
-        args.append(buf_ptr(&g->llvm_triple_str));
+    args.append("-target");
+    args.append(buf_ptr(&g->llvm_triple_str));
 
-        if (g->zig_target->llvm_cpu_name != nullptr) {
-            args.append("-Xclang");
-            args.append("-target-cpu");
-            args.append("-Xclang");
-            args.append(g->zig_target->llvm_cpu_name);
-        }
-        if (g->zig_target->llvm_cpu_features != nullptr) {
-            args.append("-Xclang");
-            args.append("-target-feature");
-            args.append("-Xclang");
-            args.append(g->zig_target->llvm_cpu_features);
-        }
+    switch (source_kind) {
+        case CSourceKindC:
+            if (g->zig_target->llvm_cpu_name != nullptr) {
+                args.append("-Xclang");
+                args.append("-target-cpu");
+                args.append("-Xclang");
+                args.append(g->zig_target->llvm_cpu_name);
+            }
+            if (g->zig_target->llvm_cpu_features != nullptr) {
+                args.append("-Xclang");
+                args.append("-target-feature");
+                args.append("-Xclang");
+                args.append(g->zig_target->llvm_cpu_features);
+            }
+            break;
+        case CSourceKindAsm:
+            break;
+    }
+    for (size_t i = 0; i < g->zig_target->llvm_cpu_features_asm_len; i += 1) {
+        args.append(g->zig_target->llvm_cpu_features_asm_ptr[i]);
     }
 
     if (g->zig_target->os == OsFreestanding) {
@@ -9095,6 +9270,7 @@ void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_pa
         case BuildModeDebug:
             // windows c runtime requires -D_DEBUG if using debug libraries
             args.append("-D_DEBUG");
+            args.append("-Og");
 
             if (g->libc_link_lib != nullptr) {
                 args.append("-fstack-protector-strong");
@@ -9208,7 +9384,7 @@ void codegen_translate_c(CodeGen *g, Buf *full_path) {
     }
 
     ZigList<const char *> clang_argv = {0};
-    add_cc_args(g, clang_argv, out_dep_path_cstr, true);
+    add_cc_args(g, clang_argv, out_dep_path_cstr, true, CSourceKindC);
 
     clang_argv.append(buf_ptr(full_path));
 
@@ -9517,6 +9693,21 @@ Error create_c_object_cache(CodeGen *g, CacheHash **out_cache_hash, bool verbose
     return ErrorNone;
 }
 
+static bool need_llvm_module(CodeGen *g) {
+    return buf_len(&g->main_pkg->root_src_path) != 0;
+}
+
+// before gen_c_objects
+static bool main_output_dir_is_just_one_c_object_pre(CodeGen *g) {
+    return g->enable_cache && g->c_source_files.length == 1 && !need_llvm_module(g) &&
+        g->out_type == OutTypeObj && g->link_objects.length == 0;
+}
+
+// after gen_c_objects
+static bool main_output_dir_is_just_one_c_object_post(CodeGen *g) {
+    return g->enable_cache && g->link_objects.length == 1 && !need_llvm_module(g) && g->out_type == OutTypeObj;
+}
+
 // returns true if it was a cache miss
 static void gen_c_object(CodeGen *g, Buf *self_exe_path, CFile *c_file) {
     Error err;
@@ -9530,12 +9721,30 @@ static void gen_c_object(CodeGen *g, Buf *self_exe_path, CFile *c_file) {
     Buf *c_source_basename = buf_alloc();
     os_path_split(c_source_file, nullptr, c_source_basename);
 
+    CSourceKind c_source_kind;
+    if (buf_ends_with_str(c_source_basename, ".s") ||
+        buf_ends_with_str(c_source_basename, ".S"))
+    {
+        c_source_kind = CSourceKindAsm;
+    } else {
+        c_source_kind = CSourceKindC;
+    }
+
     Stage2ProgressNode *child_prog_node = stage2_progress_start(g->sub_progress_node, buf_ptr(c_source_basename),
             buf_len(c_source_basename), 0);
 
     Buf *final_o_basename = buf_alloc();
-    os_path_extname(c_source_basename, final_o_basename, nullptr);
-    buf_append_str(final_o_basename, target_o_file_ext(g->zig_target));
+    if (c_file->preprocessor_only_basename == nullptr) {
+        // We special case when doing build-obj for just one C file
+        if (main_output_dir_is_just_one_c_object_pre(g)) {
+            buf_init_from_buf(final_o_basename, g->root_out_name);
+        } else {
+            os_path_extname(c_source_basename, final_o_basename, nullptr);
+        }
+        buf_append_str(final_o_basename, target_o_file_ext(g->zig_target));
+    } else {
+        buf_init_from_str(final_o_basename, c_file->preprocessor_only_basename);
+    }
 
     CacheHash *cache_hash;
     if ((err = create_c_object_cache(g, &cache_hash, true))) {
@@ -9584,15 +9793,20 @@ static void gen_c_object(CodeGen *g, Buf *self_exe_path, CFile *c_file) {
         Termination term;
         ZigList<const char *> args = {};
         args.append(buf_ptr(self_exe_path));
-        args.append("cc");
+        args.append("clang");
+
+        if (c_file->preprocessor_only_basename != nullptr) {
+            args.append("-E");
+        } else {
+            args.append("-c");
+        }
 
         Buf *out_dep_path = buf_sprintf("%s.d", buf_ptr(out_obj_path));
-        add_cc_args(g, args, buf_ptr(out_dep_path), false);
+        add_cc_args(g, args, buf_ptr(out_dep_path), false, c_source_kind);
 
         args.append("-o");
         args.append(buf_ptr(out_obj_path));
 
-        args.append("-c");
         args.append(buf_ptr(c_source_file));
 
         for (size_t arg_i = 0; arg_i < c_file->args.length; arg_i += 1) {
@@ -9647,6 +9861,7 @@ static void gen_c_object(CodeGen *g, Buf *self_exe_path, CFile *c_file) {
         os_path_join(artifact_dir, final_o_basename, o_final_path);
     }
 
+    g->c_artifact_dir = artifact_dir;
     g->link_objects.append(o_final_path);
     g->caches_to_release.append(cache_hash);
 
@@ -10265,7 +10480,7 @@ static Error check_cache(CodeGen *g, Buf *manifest_dir, Buf *digest) {
     cache_int(ch, g->zig_target->os);
     cache_int(ch, g->zig_target->abi);
     if (g->zig_target->cache_hash != nullptr) {
-        cache_str(ch, g->zig_target->cache_hash);
+        cache_mem(ch, g->zig_target->cache_hash, g->zig_target->cache_hash_len);
     }
     if (g->zig_target->glibc_or_darwin_version != nullptr) {
         cache_int(ch, g->zig_target->glibc_or_darwin_version->major);
@@ -10316,6 +10531,7 @@ static Error check_cache(CodeGen *g, Buf *manifest_dir, Buf *digest) {
         cache_str(ch, g->libc->kernel32_lib_dir);
     }
     cache_buf_opt(ch, g->version_script_path);
+    cache_buf_opt(ch, g->override_soname);
 
     // gen_c_objects appends objects to g->link_objects which we want to include in the hash
     gen_c_objects(g);
@@ -10334,10 +10550,6 @@ static Error check_cache(CodeGen *g, Buf *manifest_dir, Buf *digest) {
     return ErrorNone;
 }
 
-static bool need_llvm_module(CodeGen *g) {
-    return buf_len(&g->main_pkg->root_src_path) != 0;
-}
-
 static void resolve_out_paths(CodeGen *g) {
     assert(g->output_dir != nullptr);
     assert(g->root_out_name != nullptr);
@@ -10349,10 +10561,6 @@ static void resolve_out_paths(CodeGen *g) {
             case OutTypeUnknown:
                 zig_unreachable();
             case OutTypeObj:
-                if (g->enable_cache && g->link_objects.length == 1 && !need_llvm_module(g)) {
-                    buf_init_from_buf(&g->bin_file_output_path, g->link_objects.at(0));
-                    return;
-                }
                 if (need_llvm_module(g) && g->link_objects.length != 0 && !g->enable_cache &&
                     buf_eql_buf(o_basename, out_basename))
                 {
@@ -10447,6 +10655,16 @@ static void output_type_information(CodeGen *g) {
     }
 }
 
+static void init_output_dir(CodeGen *g, Buf *digest) {
+    if (main_output_dir_is_just_one_c_object_post(g)) {
+        g->output_dir = buf_alloc();
+        os_path_dirname(g->link_objects.at(0), g->output_dir);
+    } else {
+        g->output_dir = buf_sprintf("%s" OS_SEP CACHE_OUT_SUBDIR OS_SEP "%s",
+            buf_ptr(g->cache_dir), buf_ptr(digest));
+    }
+}
+
 void codegen_build_and_link(CodeGen *g) {
     Error err;
     assert(g->out_type != OutTypeUnknown);
@@ -10489,8 +10707,7 @@ void codegen_build_and_link(CodeGen *g) {
     }
 
     if (g->enable_cache && buf_len(&digest) != 0) {
-        g->output_dir = buf_sprintf("%s" OS_SEP CACHE_OUT_SUBDIR OS_SEP "%s",
-                buf_ptr(g->cache_dir), buf_ptr(&digest));
+        init_output_dir(g, &digest);
         resolve_out_paths(g);
     } else {
         if (need_llvm_module(g)) {
@@ -10511,8 +10728,7 @@ void codegen_build_and_link(CodeGen *g) {
                     exit(1);
                 }
             }
-            g->output_dir = buf_sprintf("%s" OS_SEP CACHE_OUT_SUBDIR OS_SEP "%s",
-                    buf_ptr(g->cache_dir), buf_ptr(&digest));
+            init_output_dir(g, &digest);
 
             if ((err = os_make_path(g->output_dir))) {
                 fprintf(stderr, "Unable to create output directory: %s\n", err_str(err));

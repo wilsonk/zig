@@ -251,12 +251,12 @@ pub const Utf16LeIterator = struct {
     pub fn nextCodepoint(it: *Utf16LeIterator) !?u21 {
         assert(it.i <= it.bytes.len);
         if (it.i == it.bytes.len) return null;
-        const c0: u21 = mem.readIntSliceLittle(u16, it.bytes[it.i .. it.i + 2]);
+        const c0: u21 = mem.readIntLittle(u16, it.bytes[it.i..][0..2]);
         if (c0 & ~@as(u21, 0x03ff) == 0xd800) {
             // surrogate pair
             it.i += 2;
             if (it.i >= it.bytes.len) return error.DanglingSurrogateHalf;
-            const c1: u21 = mem.readIntSliceLittle(u16, it.bytes[it.i .. it.i + 2]);
+            const c1: u21 = mem.readIntLittle(u16, it.bytes[it.i..][0..2]);
             if (c1 & ~@as(u21, 0x03ff) != 0xdc00) return error.ExpectedSecondSurrogateHalf;
             it.i += 2;
             return 0x10000 + (((c0 & 0x03ff) << 10) | (c1 & 0x03ff));
@@ -626,6 +626,74 @@ test "utf8ToUtf16LeWithNull" {
         const utf16 = try utf8ToUtf16LeWithNull(testing.allocator, "\u{10FFFF}");
         defer testing.allocator.free(utf16);
         testing.expectEqualSlices(u8, "\xff\xdb\xff\xdf", mem.sliceAsBytes(utf16[0..]));
+        testing.expect(utf16[2] == 0);
+    }
+}
+
+/// Converts a UTF-8 string literal into a UTF-16LE string literal.
+pub fn utf8ToUtf16LeStringLiteral(comptime utf8: []const u8) *const [calcUtf16LeLen(utf8):0]u16 {
+    comptime {
+        const len: usize = calcUtf16LeLen(utf8);
+        var utf16le: [len:0]u16 = [_:0]u16{0} ** len;
+        const utf16le_len = utf8ToUtf16Le(&utf16le, utf8[0..]) catch |err| @compileError(err);
+        assert(len == utf16le_len);
+        return &utf16le;
+    }
+}
+
+/// Returns length of a supplied UTF-8 string literal. Asserts that the data is valid UTF-8.
+fn calcUtf16LeLen(utf8: []const u8) usize {
+    var src_i: usize = 0;
+    var dest_len: usize = 0;
+    while (src_i < utf8.len) {
+        const n = utf8ByteSequenceLength(utf8[src_i]) catch unreachable;
+        const next_src_i = src_i + n;
+        const codepoint = utf8Decode(utf8[src_i..next_src_i]) catch unreachable;
+        if (codepoint < 0x10000) {
+            dest_len += 1;
+        } else {
+            dest_len += 2;
+        }
+        src_i = next_src_i;
+    }
+    return dest_len;
+}
+
+test "utf8ToUtf16LeStringLiteral" {
+    {
+        const bytes = [_:0]u16{0x41};
+        const utf16 = utf8ToUtf16LeStringLiteral("A");
+        testing.expectEqualSlices(u16, &bytes, utf16);
+        testing.expect(utf16[1] == 0);
+    }
+    {
+        const bytes = [_:0]u16{ 0xD801, 0xDC37 };
+        const utf16 = utf8ToUtf16LeStringLiteral("𐐷");
+        testing.expectEqualSlices(u16, &bytes, utf16);
+        testing.expect(utf16[2] == 0);
+    }
+    {
+        const bytes = [_:0]u16{0x02FF};
+        const utf16 = utf8ToUtf16LeStringLiteral("\u{02FF}");
+        testing.expectEqualSlices(u16, &bytes, utf16);
+        testing.expect(utf16[1] == 0);
+    }
+    {
+        const bytes = [_:0]u16{0x7FF};
+        const utf16 = utf8ToUtf16LeStringLiteral("\u{7FF}");
+        testing.expectEqualSlices(u16, &bytes, utf16);
+        testing.expect(utf16[1] == 0);
+    }
+    {
+        const bytes = [_:0]u16{0x801};
+        const utf16 = utf8ToUtf16LeStringLiteral("\u{801}");
+        testing.expectEqualSlices(u16, &bytes, utf16);
+        testing.expect(utf16[1] == 0);
+    }
+    {
+        const bytes = [_:0]u16{ 0xDBFF, 0xDFFF };
+        const utf16 = utf8ToUtf16LeStringLiteral("\u{10FFFF}");
+        testing.expectEqualSlices(u16, &bytes, utf16);
         testing.expect(utf16[2] == 0);
     }
 }

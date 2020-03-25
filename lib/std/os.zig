@@ -176,7 +176,7 @@ fn getRandomBytesDevURandom(buf: []u8) !void {
         .io_mode = .blocking,
         .async_block_allowed = std.fs.File.async_block_allowed_yes,
     };
-    const stream = &file.inStream().stream;
+    const stream = file.inStream();
     stream.readNoEof(buf) catch return error.Unexpected;
 }
 
@@ -273,10 +273,10 @@ pub fn exit(status: u8) noreturn {
         // exit() is only avaliable if exitBootServices() has not been called yet.
         // This call to exit should not fail, so we don't care about its return value.
         if (uefi.system_table.boot_services) |bs| {
-            _ = bs.exit(uefi.handle, status, 0, null);
+            _ = bs.exit(uefi.handle, @intToEnum(uefi.Status, status), 0, null);
         }
         // If we can't exit, reboot the system instead.
-        uefi.system_table.runtime_services.resetSystem(uefi.tables.ResetType.ResetCold, status, 0, null);
+        uefi.system_table.runtime_services.resetSystem(uefi.tables.ResetType.ResetCold, @intToEnum(uefi.Status, status), 0, null);
     }
     system.exit(status);
 }
@@ -436,6 +436,59 @@ pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
         }
     }
     return index;
+}
+
+pub const TruncateError = error{
+    FileTooBig,
+    InputOutput,
+    CannotTruncate,
+    FileBusy,
+} || UnexpectedError;
+
+pub fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
+    if (std.Target.current.os.tag == .windows) {
+        var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+        var eof_info = windows.FILE_END_OF_FILE_INFORMATION{
+            .EndOfFile = @bitCast(windows.LARGE_INTEGER, length),
+        };
+
+        const rc = windows.ntdll.NtSetInformationFile(
+            fd,
+            &io_status_block,
+            &eof_info,
+            @sizeOf(windows.FILE_END_OF_FILE_INFORMATION),
+            .FileEndOfFileInformation,
+        );
+
+        switch (rc) {
+            .SUCCESS => return,
+            .INVALID_HANDLE => unreachable, // Handle not open for writing
+            .ACCESS_DENIED => return error.CannotTruncate,
+            else => return windows.unexpectedStatus(rc),
+        }
+    }
+
+    while (true) {
+        const rc = if (builtin.link_libc)
+            if (std.Target.current.os.tag == .linux)
+                system.ftruncate64(fd, @bitCast(off_t, length))
+            else
+                system.ftruncate(fd, @bitCast(off_t, length))
+        else
+            system.ftruncate(fd, length);
+
+        switch (errno(rc)) {
+            0 => return,
+            EINTR => continue,
+            EFBIG => return error.FileTooBig,
+            EIO => return error.InputOutput,
+            EPERM => return error.CannotTruncate,
+            ETXTBSY => return error.FileBusy,
+            EBADF => unreachable, // Handle not open for writing
+            EINVAL => unreachable, // Handle not open for writing
+            else => |err| return unexpectedErrno(err),
+        }
+    }
 }
 
 /// Number of bytes read is returned. Upon reading end-of-file, zero is returned.
@@ -797,6 +850,7 @@ pub const OpenError = error{
 
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
 /// See also `openC`.
+/// TODO support windows
 pub fn open(file_path: []const u8, flags: u32, perm: usize) OpenError!fd_t {
     const file_path_c = try toPosixPath(file_path);
     return openC(&file_path_c, flags, perm);
@@ -804,6 +858,7 @@ pub fn open(file_path: []const u8, flags: u32, perm: usize) OpenError!fd_t {
 
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
 /// See also `open`.
+/// TODO support windows
 pub fn openC(file_path: [*:0]const u8, flags: u32, perm: usize) OpenError!fd_t {
     while (true) {
         const rc = system.open(file_path, flags, perm);
@@ -837,6 +892,7 @@ pub fn openC(file_path: [*:0]const u8, flags: u32, perm: usize) OpenError!fd_t {
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
 /// `file_path` is relative to the open directory handle `dir_fd`.
 /// See also `openatC`.
+/// TODO support windows
 pub fn openat(dir_fd: fd_t, file_path: []const u8, flags: u32, mode: mode_t) OpenError!fd_t {
     const file_path_c = try toPosixPath(file_path);
     return openatC(dir_fd, &file_path_c, flags, mode);
@@ -845,6 +901,7 @@ pub fn openat(dir_fd: fd_t, file_path: []const u8, flags: u32, mode: mode_t) Ope
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
 /// `file_path` is relative to the open directory handle `dir_fd`.
 /// See also `openat`.
+/// TODO support windows
 pub fn openatC(dir_fd: fd_t, file_path: [*:0]const u8, flags: u32, mode: mode_t) OpenError!fd_t {
     while (true) {
         const rc = system.openat(dir_fd, file_path, flags, mode);
@@ -1472,6 +1529,9 @@ const RenameError = error{
     RenameAcrossMountPoints,
     InvalidUtf8,
     BadPathName,
+    NoDevice,
+    SharingViolation,
+    PipeBusy,
 } || UnexpectedError;
 
 /// Change the name or location of a file.
@@ -1523,6 +1583,113 @@ pub fn renameC(old_path: [*:0]const u8, new_path: [*:0]const u8) RenameError!voi
 pub fn renameW(old_path: [*:0]const u16, new_path: [*:0]const u16) RenameError!void {
     const flags = windows.MOVEFILE_REPLACE_EXISTING | windows.MOVEFILE_WRITE_THROUGH;
     return windows.MoveFileExW(old_path, new_path, flags);
+}
+
+/// Change the name or location of a file based on an open directory handle.
+pub fn renameat(
+    old_dir_fd: fd_t,
+    old_path: []const u8,
+    new_dir_fd: fd_t,
+    new_path: []const u8,
+) RenameError!void {
+    if (builtin.os.tag == .windows) {
+        const old_path_w = try windows.sliceToPrefixedFileW(old_path);
+        const new_path_w = try windows.sliceToPrefixedFileW(new_path);
+        return renameatW(old_dir_fd, &old_path_w, new_dir_fd, &new_path_w, windows.TRUE);
+    } else {
+        const old_path_c = try toPosixPath(old_path);
+        const new_path_c = try toPosixPath(new_path);
+        return renameatZ(old_dir_fd, &old_path_c, new_dir_fd, &new_path_c);
+    }
+}
+
+/// Same as `renameat` except the parameters are null-terminated byte arrays.
+pub fn renameatZ(
+    old_dir_fd: fd_t,
+    old_path: [*:0]const u8,
+    new_dir_fd: fd_t,
+    new_path: [*:0]const u8,
+) RenameError!void {
+    if (builtin.os.tag == .windows) {
+        const old_path_w = try windows.cStrToPrefixedFileW(old_path);
+        const new_path_w = try windows.cStrToPrefixedFileW(new_path);
+        return renameatW(old_dir_fd, &old_path_w, new_dir_fd, &new_path_w, windows.TRUE);
+    }
+
+    switch (errno(system.renameat(old_dir_fd, old_path, new_dir_fd, new_path))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EPERM => return error.AccessDenied,
+        EBUSY => return error.FileBusy,
+        EDQUOT => return error.DiskQuota,
+        EFAULT => unreachable,
+        EINVAL => unreachable,
+        EISDIR => return error.IsDir,
+        ELOOP => return error.SymLinkLoop,
+        EMLINK => return error.LinkQuotaExceeded,
+        ENAMETOOLONG => return error.NameTooLong,
+        ENOENT => return error.FileNotFound,
+        ENOTDIR => return error.NotDir,
+        ENOMEM => return error.SystemResources,
+        ENOSPC => return error.NoSpaceLeft,
+        EEXIST => return error.PathAlreadyExists,
+        ENOTEMPTY => return error.PathAlreadyExists,
+        EROFS => return error.ReadOnlyFileSystem,
+        EXDEV => return error.RenameAcrossMountPoints,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+/// Same as `renameat` except the parameters are null-terminated UTF16LE encoded byte arrays.
+/// Assumes target is Windows.
+/// TODO these args can actually be slices when using ntdll. audit the rest of the W functions too.
+pub fn renameatW(
+    old_dir_fd: fd_t,
+    old_path: [*:0]const u16,
+    new_dir_fd: fd_t,
+    new_path_w: [*:0]const u16,
+    ReplaceIfExists: windows.BOOLEAN,
+) RenameError!void {
+    const access_mask = windows.SYNCHRONIZE | windows.GENERIC_WRITE | windows.DELETE;
+    const src_fd = try windows.OpenFileW(old_dir_fd, old_path, null, access_mask, windows.FILE_OPEN);
+    defer windows.CloseHandle(src_fd);
+
+    const struct_buf_len = @sizeOf(windows.FILE_RENAME_INFORMATION) + (MAX_PATH_BYTES - 1);
+    var rename_info_buf: [struct_buf_len]u8 align(@alignOf(windows.FILE_RENAME_INFORMATION)) = undefined;
+    const new_path = mem.span(new_path_w);
+    const struct_len = @sizeOf(windows.FILE_RENAME_INFORMATION) - 1 + new_path.len * 2;
+    if (struct_len > struct_buf_len) return error.NameTooLong;
+
+    const rename_info = @ptrCast(*windows.FILE_RENAME_INFORMATION, &rename_info_buf);
+
+    rename_info.* = .{
+        .ReplaceIfExists = ReplaceIfExists,
+        .RootDirectory = if (std.fs.path.isAbsoluteWindowsW(new_path_w)) null else new_dir_fd,
+        .FileNameLength = @intCast(u32, new_path.len * 2), // already checked error.NameTooLong
+        .FileName = undefined,
+    };
+    std.mem.copy(u16, @as([*]u16, &rename_info.FileName)[0..new_path.len], new_path);
+
+    var io_status_block: windows.IO_STATUS_BLOCK = undefined;
+
+    const rc = windows.ntdll.NtSetInformationFile(
+        src_fd,
+        &io_status_block,
+        rename_info,
+        @intCast(u32, struct_len), // already checked for error.NameTooLong
+        .FileRenameInformation,
+    );
+
+    switch (rc) {
+        .SUCCESS => return,
+        .INVALID_HANDLE => unreachable,
+        .INVALID_PARAMETER => unreachable,
+        .OBJECT_PATH_SYNTAX_BAD => unreachable,
+        .ACCESS_DENIED => return error.AccessDenied,
+        .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
+        .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
+        else => return windows.unexpectedStatus(rc),
+    }
 }
 
 pub const MakeDirError = error{
@@ -2017,7 +2184,7 @@ const ListenError = error{
     OperationNotSupported,
 } || UnexpectedError;
 
-pub fn listen(sockfd: i32, backlog: u32) ListenError!void {
+pub fn listen(sockfd: fd_t, backlog: u32) ListenError!void {
     const rc = system.listen(sockfd, backlog);
     switch (errno(rc)) {
         0 => return,
@@ -2308,7 +2475,7 @@ pub fn connect(sockfd: fd_t, sock_addr: *const sockaddr, len: socklen_t) Connect
     }
 }
 
-pub fn getsockoptError(sockfd: i32) ConnectError!void {
+pub fn getsockoptError(sockfd: fd_t) ConnectError!void {
     var err_code: u32 = undefined;
     var size: u32 = @sizeOf(u32);
     const rc = system.getsockopt(sockfd, SOL_SOCKET, SO_ERROR, @ptrCast([*]u8, &err_code), &size);
@@ -2996,6 +3163,31 @@ pub fn lseek_CUR_get(fd: fd_t) SeekError!u64 {
     }
 }
 
+pub const FcntlError = error{
+    PermissionDenied,
+    FileBusy,
+    ProcessFdQuotaExceeded,
+    Locked,
+} || UnexpectedError;
+
+pub fn fcntl(fd: fd_t, cmd: i32, arg: usize) FcntlError!usize {
+    while (true) {
+        const rc = system.fcntl(fd, cmd, arg);
+        switch (errno(rc)) {
+            0 => return @intCast(usize, rc),
+            EINTR => continue,
+            EACCES => return error.Locked,
+            EBADF => unreachable,
+            EBUSY => return error.FileBusy,
+            EINVAL => unreachable, // invalid parameters
+            EPERM => return error.PermissionDenied,
+            EMFILE => return error.ProcessFdQuotaExceeded,
+            ENOTDIR => unreachable, // invalid parameter
+            else => |err| return unexpectedErrno(err),
+        }
+    }
+}
+
 pub const RealPathError = error{
     FileNotFound,
     AccessDenied,
@@ -3070,6 +3262,7 @@ pub fn realpathC(pathname: [*:0]const u8, out_buffer: *[MAX_PATH_BYTES]u8) RealP
 }
 
 /// Same as `realpath` except `pathname` is null-terminated and UTF16LE-encoded.
+/// TODO use ntdll for better semantics
 pub fn realpathW(pathname: [*:0]const u16, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
     const h_file = try windows.CreateFileW(
         pathname,
@@ -3077,7 +3270,7 @@ pub fn realpathW(pathname: [*:0]const u16, out_buffer: *[MAX_PATH_BYTES]u8) Real
         windows.FILE_SHARE_READ,
         null,
         windows.OPEN_EXISTING,
-        windows.FILE_ATTRIBUTE_NORMAL,
+        windows.FILE_FLAG_BACKUP_SEMANTICS,
         null,
     );
     defer windows.CloseHandle(h_file);
@@ -3734,7 +3927,8 @@ pub fn sendfile(
 
             while (true) {
                 var sbytes: off_t = undefined;
-                const err = errno(system.sendfile(out_fd, in_fd, in_offset, adjusted_count, hdtr, &sbytes, flags));
+                const offset = @bitCast(off_t, in_offset);
+                const err = errno(system.sendfile(in_fd, out_fd, offset, adjusted_count, hdtr, &sbytes, flags));
                 const amt = @bitCast(usize, sbytes);
                 switch (err) {
                     0 => return amt,
@@ -3813,19 +4007,17 @@ pub fn sendfile(
             while (true) {
                 var sbytes: off_t = adjusted_count;
                 const signed_offset = @bitCast(i64, in_offset);
-                const err = errno(system.sendfile(out_fd, in_fd, signed_offset, &sbytes, hdtr, flags));
+                const err = errno(system.sendfile(in_fd, out_fd, signed_offset, &sbytes, hdtr, flags));
                 const amt = @bitCast(usize, sbytes);
                 switch (err) {
                     0 => return amt,
 
+                    EBADF => unreachable, // Always a race condition.
                     EFAULT => unreachable, // Segmentation fault.
                     EINVAL => unreachable,
                     ENOTCONN => unreachable, // `out_fd` is an unconnected socket.
 
-                    // On macOS version 10.14.6, I observed Darwin return EBADF when
-                    // using sendfile on a valid open file descriptor of a file
-                    // system file.
-                    ENOTSUP, ENOTSOCK, ENOSYS, EBADF => break :sf,
+                    ENOTSUP, ENOTSOCK, ENOSYS => break :sf,
 
                     EINTR => if (amt != 0) return amt else continue,
 

@@ -1,6 +1,36 @@
 const tests = @import("tests.zig");
 
 pub fn addCases(cases: *tests.CompareOutputContext) void {
+    cases.addRuntimeSafety("shift left by huge amount",
+        \\const std = @import("std");
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    if (std.mem.eql(u8, message, "shift amount is greater than the type size")) {
+        \\        std.process.exit(126); // good
+        \\    }
+        \\    std.process.exit(0); // test failed
+        \\}
+        \\pub fn main() void {
+        \\    var x: u24 = 42;
+        \\    var y: u5 = 24;
+        \\    var z = x >> y;
+        \\}
+    );
+
+    cases.addRuntimeSafety("shift right by huge amount",
+        \\const std = @import("std");
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    if (std.mem.eql(u8, message, "shift amount is greater than the type size")) {
+        \\        std.process.exit(126); // good
+        \\    }
+        \\    std.process.exit(0); // test failed
+        \\}
+        \\pub fn main() void {
+        \\    var x: u24 = 42;
+        \\    var y: u5 = 24;
+        \\    var z = x << y;
+        \\}
+    );
+
     cases.addRuntimeSafety("slice sentinel mismatch - optional pointers",
         \\const std = @import("std");
         \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
@@ -39,7 +69,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\}
         \\pub fn main() void {
         \\    var buf: [4]u8 = undefined;
-        \\    const ptr = buf[0..].ptr;
+        \\    const ptr: [*]u8 = &buf;
         \\    const slice = ptr[0..3 :0];
         \\}
     );
