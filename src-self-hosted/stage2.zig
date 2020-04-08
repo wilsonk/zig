@@ -8,7 +8,7 @@ const fs = std.fs;
 const process = std.process;
 const Allocator = mem.Allocator;
 const ArrayList = std.ArrayList;
-const Buffer = std.Buffer;
+const ArrayListSentineled = std.ArrayListSentineled;
 const Target = std.Target;
 const CrossTarget = std.zig.CrossTarget;
 const self_hosted_main = @import("main.zig");
@@ -114,6 +114,8 @@ const Error = extern enum {
     InvalidAbiVersion,
     InvalidOperatingSystemVersion,
     UnknownClangOption,
+    NestedResponseFile,
+    ZigIsTheCCompiler,
 };
 
 const FILE = std.c.FILE;
@@ -184,14 +186,14 @@ fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
     const argc_usize = @intCast(usize, argc);
     var arg_i: usize = 0;
     while (arg_i < argc_usize) : (arg_i += 1) {
-        try args_list.append(mem.toSliceConst(u8, argv[arg_i]));
+        try args_list.append(mem.spanZ(argv[arg_i]));
     }
 
     stdout = std.io.getStdOut().outStream();
     stderr_file = std.io.getStdErr();
     stderr = stderr_file.outStream();
 
-    const args = args_list.toSliceConst()[2..];
+    const args = args_list.span()[2..];
 
     var color: errmsg.Color = .Auto;
     var stdin_flag: bool = false;
@@ -238,7 +240,7 @@ fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
     }
 
     if (stdin_flag) {
-        if (input_files.len != 0) {
+        if (input_files.items.len != 0) {
             try stderr.writeAll("cannot use --stdin with positional arguments\n");
             process.exit(1);
         }
@@ -272,7 +274,7 @@ fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
         return;
     }
 
-    if (input_files.len == 0) {
+    if (input_files.items.len == 0) {
         try stderr.writeAll("expected at least one source file argument\n");
         process.exit(1);
     }
@@ -284,7 +286,7 @@ fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
         .allocator = allocator,
     };
 
-    for (input_files.toSliceConst()) |file_path| {
+    for (input_files.span()) |file_path| {
         try fmtPath(&fmt, file_path, check_flag);
     }
     if (fmt.any_error) {
@@ -317,7 +319,8 @@ fn fmtPath(fmt: *Fmt, file_path: []const u8, check_mode: bool) FmtError!void {
     if (fmt.seen.exists(file_path)) return;
     try fmt.seen.put(file_path);
 
-    const source_code = io.readFileAlloc(fmt.allocator, file_path) catch |err| switch (err) {
+    const max = std.math.maxInt(usize);
+    const source_code = fs.cwd().readFileAlloc(fmt.allocator, file_path, max) catch |err| switch (err) {
         error.IsDir, error.AccessDenied => {
             // TODO make event based (and dir.next())
             var dir = try fs.cwd().openDir(file_path, .{ .iterate = true });
@@ -409,12 +412,13 @@ fn printErrMsgToFile(
     const start_loc = tree.tokenLocationPtr(0, first_token);
     const end_loc = tree.tokenLocationPtr(first_token.end, last_token);
 
-    var text_buf = try std.Buffer.initSize(allocator, 0);
-    const out_stream = &text_buf.outStream();
+    var text_buf = std.ArrayList(u8).init(allocator);
+    defer text_buf.deinit();
+    const out_stream = text_buf.outStream();
     try parse_error.render(&tree.tokens, out_stream);
-    const text = text_buf.toOwnedSlice();
+    const text = text_buf.span();
 
-    const stream = &file.outStream();
+    const stream = file.outStream();
     try stream.print("{}:{}:{}: error: {}\n", .{ path, start_loc.line + 1, start_loc.column + 1, text });
 
     if (!color_on) return;
@@ -446,10 +450,10 @@ export fn stage2_DepTokenizer_deinit(self: *stage2_DepTokenizer) void {
 
 export fn stage2_DepTokenizer_next(self: *stage2_DepTokenizer) stage2_DepNextResult {
     const otoken = self.handle.next() catch {
-        const textz = std.Buffer.init(&self.handle.arena.allocator, self.handle.error_text) catch @panic("failed to create .d tokenizer error text");
+        const textz = std.ArrayListSentineled(u8, 0).init(&self.handle.arena.allocator, self.handle.error_text) catch @panic("failed to create .d tokenizer error text");
         return stage2_DepNextResult{
             .type_id = .error_,
-            .textz = textz.toSlice().ptr,
+            .textz = textz.span().ptr,
         };
     };
     const token = otoken orelse {
@@ -458,13 +462,13 @@ export fn stage2_DepTokenizer_next(self: *stage2_DepTokenizer) stage2_DepNextRes
             .textz = undefined,
         };
     };
-    const textz = std.Buffer.init(&self.handle.arena.allocator, token.bytes) catch @panic("failed to create .d tokenizer token text");
+    const textz = std.ArrayListSentineled(u8, 0).init(&self.handle.arena.allocator, token.bytes) catch @panic("failed to create .d tokenizer token text");
     return stage2_DepNextResult{
         .type_id = switch (token.id) {
             .target => .target,
             .prereq => .prereq,
         },
-        .textz = textz.toSlice().ptr,
+        .textz = textz.span().ptr,
     };
 }
 
@@ -571,7 +575,7 @@ fn detectNativeCpuWithLLVM(
     var result = Target.Cpu.baseline(arch);
 
     if (llvm_cpu_name_z) |cpu_name_z| {
-        const llvm_cpu_name = mem.toSliceConst(u8, cpu_name_z);
+        const llvm_cpu_name = mem.spanZ(cpu_name_z);
 
         for (arch.allCpuModels()) |model| {
             const this_llvm_name = model.llvm_name orelse continue;
@@ -592,7 +596,7 @@ fn detectNativeCpuWithLLVM(
     const all_features = arch.allFeaturesList();
 
     if (llvm_cpu_features_opt) |llvm_cpu_features| {
-        var it = mem.tokenize(mem.toSliceConst(u8, llvm_cpu_features), ",");
+        var it = mem.tokenize(mem.spanZ(llvm_cpu_features), ",");
         while (it.next()) |decorated_llvm_feat| {
             var op: enum {
                 add,
@@ -687,12 +691,11 @@ fn stage2CrossTarget(
     mcpu_oz: ?[*:0]const u8,
     dynamic_linker_oz: ?[*:0]const u8,
 ) !CrossTarget {
-    const zig_triple = if (zig_triple_oz) |zig_triple_z| mem.toSliceConst(u8, zig_triple_z) else "native";
-    const mcpu = if (mcpu_oz) |mcpu_z| mem.toSliceConst(u8, mcpu_z) else null;
-    const dynamic_linker = if (dynamic_linker_oz) |dl_z| mem.toSliceConst(u8, dl_z) else null;
+    const mcpu = mem.spanZ(mcpu_oz);
+    const dynamic_linker = mem.spanZ(dynamic_linker_oz);
     var diags: CrossTarget.ParseOptions.Diagnostics = .{};
     const target: CrossTarget = CrossTarget.parse(.{
-        .arch_os_abi = zig_triple,
+        .arch_os_abi = mem.spanZ(zig_triple_oz) orelse "native",
         .cpu_features = mcpu,
         .dynamic_linker = dynamic_linker,
         .diagnostics = &diags,
@@ -739,15 +742,15 @@ fn stage2TargetParse(
 
 // ABI warning
 const Stage2LibCInstallation = extern struct {
-    include_dir: [*:0]const u8,
+    include_dir: [*]const u8,
     include_dir_len: usize,
-    sys_include_dir: [*:0]const u8,
+    sys_include_dir: [*]const u8,
     sys_include_dir_len: usize,
-    crt_dir: [*:0]const u8,
+    crt_dir: [*]const u8,
     crt_dir_len: usize,
-    msvc_lib_dir: [*:0]const u8,
+    msvc_lib_dir: [*]const u8,
     msvc_lib_dir_len: usize,
-    kernel32_lib_dir: [*:0]const u8,
+    kernel32_lib_dir: [*]const u8,
     kernel32_lib_dir_len: usize,
 
     fn initFromStage2(self: *Stage2LibCInstallation, libc: LibCInstallation) void {
@@ -791,19 +794,19 @@ const Stage2LibCInstallation = extern struct {
     fn toStage2(self: Stage2LibCInstallation) LibCInstallation {
         var libc: LibCInstallation = .{};
         if (self.include_dir_len != 0) {
-            libc.include_dir = self.include_dir[0..self.include_dir_len :0];
+            libc.include_dir = self.include_dir[0..self.include_dir_len];
         }
         if (self.sys_include_dir_len != 0) {
-            libc.sys_include_dir = self.sys_include_dir[0..self.sys_include_dir_len :0];
+            libc.sys_include_dir = self.sys_include_dir[0..self.sys_include_dir_len];
         }
         if (self.crt_dir_len != 0) {
-            libc.crt_dir = self.crt_dir[0..self.crt_dir_len :0];
+            libc.crt_dir = self.crt_dir[0..self.crt_dir_len];
         }
         if (self.msvc_lib_dir_len != 0) {
-            libc.msvc_lib_dir = self.msvc_lib_dir[0..self.msvc_lib_dir_len :0];
+            libc.msvc_lib_dir = self.msvc_lib_dir[0..self.msvc_lib_dir_len];
         }
         if (self.kernel32_lib_dir_len != 0) {
-            libc.kernel32_lib_dir = self.kernel32_lib_dir[0..self.kernel32_lib_dir_len :0];
+            libc.kernel32_lib_dir = self.kernel32_lib_dir[0..self.kernel32_lib_dir_len];
         }
         return libc;
     }
@@ -813,7 +816,7 @@ const Stage2LibCInstallation = extern struct {
 export fn stage2_libc_parse(stage1_libc: *Stage2LibCInstallation, libc_file_z: [*:0]const u8) Error {
     stderr_file = std.io.getStdErr();
     stderr = stderr_file.outStream();
-    const libc_file = mem.toSliceConst(u8, libc_file_z);
+    const libc_file = mem.spanZ(libc_file_z);
     var libc = LibCInstallation.parse(std.heap.c_allocator, libc_file, stderr) catch |err| switch (err) {
         error.ParseError => return .SemanticAnalyzeFail,
         error.DiskQuota => return .DiskQuota,
@@ -866,6 +869,7 @@ export fn stage2_libc_find_native(stage1_libc: *Stage2LibCInstallation) Error {
         error.LibCKernel32LibNotFound => return .LibCKernel32LibNotFound,
         error.UnsupportedArchitecture => return .UnsupportedArchitecture,
         error.WindowsSdkNotFound => return .WindowsSdkNotFound,
+        error.ZigIsTheCCompiler => return .ZigIsTheCCompiler,
     };
     stage1_libc.initFromStage2(libc);
     return .None;
@@ -898,7 +902,8 @@ const Stage2Target = extern struct {
     abi: c_int,
     os: c_int,
 
-    is_native: bool,
+    is_native_os: bool,
+    is_native_cpu: bool,
 
     glibc_or_darwin_version: ?*Stage2SemVer,
 
@@ -921,14 +926,14 @@ const Stage2Target = extern struct {
         var dynamic_linker: ?[*:0]u8 = null;
         const target = try crossTargetToTarget(cross_target, &dynamic_linker);
 
-        var cache_hash = try std.Buffer.allocPrint(allocator, "{}\n{}\n", .{
+        var cache_hash = try std.ArrayListSentineled(u8, 0).allocPrint(allocator, "{}\n{}\n", .{
             target.cpu.model.name,
             target.cpu.features.asBytes(),
         });
         defer cache_hash.deinit();
 
         const generic_arch_name = target.cpu.arch.genericName();
-        var cpu_builtin_str_buffer = try std.Buffer.allocPrint(allocator,
+        var cpu_builtin_str_buffer = try std.ArrayListSentineled(u8, 0).allocPrint(allocator,
             \\Cpu{{
             \\    .arch = .{},
             \\    .model = &Target.{}.cpu.{},
@@ -943,7 +948,7 @@ const Stage2Target = extern struct {
         });
         defer cpu_builtin_str_buffer.deinit();
 
-        var llvm_features_buffer = try std.Buffer.initSize(allocator, 0);
+        var llvm_features_buffer = try std.ArrayListSentineled(u8, 0).initSize(allocator, 0);
         defer llvm_features_buffer.deinit();
 
         // Unfortunately we have to do the work twice, because Clang does not support
@@ -958,17 +963,17 @@ const Stage2Target = extern struct {
 
             if (feature.llvm_name) |llvm_name| {
                 const plus_or_minus = "-+"[@boolToInt(is_enabled)];
-                try llvm_features_buffer.appendByte(plus_or_minus);
-                try llvm_features_buffer.append(llvm_name);
-                try llvm_features_buffer.append(",");
+                try llvm_features_buffer.append(plus_or_minus);
+                try llvm_features_buffer.appendSlice(llvm_name);
+                try llvm_features_buffer.appendSlice(",");
             }
 
             if (is_enabled) {
                 // TODO some kind of "zig identifier escape" function rather than
                 // unconditionally using @"" syntax
-                try cpu_builtin_str_buffer.append("        .@\"");
-                try cpu_builtin_str_buffer.append(feature.name);
-                try cpu_builtin_str_buffer.append("\",\n");
+                try cpu_builtin_str_buffer.appendSlice("        .@\"");
+                try cpu_builtin_str_buffer.appendSlice(feature.name);
+                try cpu_builtin_str_buffer.appendSlice("\",\n");
             }
         }
 
@@ -987,16 +992,16 @@ const Stage2Target = extern struct {
             },
         }
 
-        try cpu_builtin_str_buffer.append(
+        try cpu_builtin_str_buffer.appendSlice(
             \\    }),
             \\};
             \\
         );
 
-        assert(mem.endsWith(u8, llvm_features_buffer.toSliceConst(), ","));
+        assert(mem.endsWith(u8, llvm_features_buffer.span(), ","));
         llvm_features_buffer.shrink(llvm_features_buffer.len() - 1);
 
-        var os_builtin_str_buffer = try std.Buffer.allocPrint(allocator,
+        var os_builtin_str_buffer = try std.ArrayListSentineled(u8, 0).allocPrint(allocator,
             \\Os{{
             \\    .tag = .{},
             \\    .version_range = .{{
@@ -1039,7 +1044,7 @@ const Stage2Target = extern struct {
             .emscripten,
             .uefi,
             .other,
-            => try os_builtin_str_buffer.append(" .none = {} }\n"),
+            => try os_builtin_str_buffer.appendSlice(" .none = {} }\n"),
 
             .freebsd,
             .macosx,
@@ -1115,10 +1120,10 @@ const Stage2Target = extern struct {
                 @tagName(target.os.version_range.windows.max),
             }),
         }
-        try os_builtin_str_buffer.append("};\n");
+        try os_builtin_str_buffer.appendSlice("};\n");
 
-        try cache_hash.append(
-            os_builtin_str_buffer.toSlice()[os_builtin_str_ver_start_index..os_builtin_str_buffer.len()],
+        try cache_hash.appendSlice(
+            os_builtin_str_buffer.span()[os_builtin_str_ver_start_index..os_builtin_str_buffer.len()],
         );
 
         const glibc_or_darwin_version = blk: {
@@ -1166,7 +1171,8 @@ const Stage2Target = extern struct {
             .os_builtin_str = os_builtin_str_buffer.toOwnedSlice().ptr,
             .cache_hash = cache_hash_slice.ptr,
             .cache_hash_len = cache_hash_slice.len,
-            .is_native = cross_target.isNative(),
+            .is_native_os = cross_target.isNativeOs(),
+            .is_native_cpu = cross_target.isNativeCpu(),
             .glibc_or_darwin_version = glibc_or_darwin_version,
             .dynamic_linker = dynamic_linker,
             .standard_dynamic_linker_path = std_dl_z,
@@ -1229,10 +1235,10 @@ fn stage2DetectNativePaths(stage1_paths: *Stage2NativePaths) !void {
     var paths = try std.zig.system.NativePaths.detect(std.heap.c_allocator);
     errdefer paths.deinit();
 
-    try convertSlice(paths.include_dirs.toSlice(), &stage1_paths.include_dirs_ptr, &stage1_paths.include_dirs_len);
-    try convertSlice(paths.lib_dirs.toSlice(), &stage1_paths.lib_dirs_ptr, &stage1_paths.lib_dirs_len);
-    try convertSlice(paths.rpaths.toSlice(), &stage1_paths.rpaths_ptr, &stage1_paths.rpaths_len);
-    try convertSlice(paths.warnings.toSlice(), &stage1_paths.warnings_ptr, &stage1_paths.warnings_len);
+    try convertSlice(paths.include_dirs.span(), &stage1_paths.include_dirs_ptr, &stage1_paths.include_dirs_len);
+    try convertSlice(paths.lib_dirs.span(), &stage1_paths.lib_dirs_ptr, &stage1_paths.lib_dirs_len);
+    try convertSlice(paths.rpaths.span(), &stage1_paths.rpaths_ptr, &stage1_paths.rpaths_len);
+    try convertSlice(paths.warnings.span(), &stage1_paths.warnings_ptr, &stage1_paths.warnings_len);
 }
 
 fn convertSlice(slice: [][:0]u8, ptr: *[*][*:0]u8, len: *usize) !void {
@@ -1257,6 +1263,7 @@ pub const ClangArgIterator = extern struct {
     argv_ptr: [*]const [*:0]const u8,
     argv_len: usize,
     next_index: usize,
+    root_args: ?*Args,
 
     // ABI warning
     pub const ZigEquivalent = extern enum {
@@ -1271,16 +1278,33 @@ pub const ClangArgIterator = extern struct {
         pic,
         no_pic,
         nostdlib,
+        nostdlib_cpp,
         shared,
         rdynamic,
         wl,
-        preprocess,
+        pp_or_asm,
         optimize,
         debug,
         sanitize,
+        linker_script,
+        verbose_cmds,
+        for_linker,
+        linker_input_z,
+        lib_dir,
+        mcpu,
+        dep_file,
+        framework_dir,
+        framework,
+        nostdlibinc,
     };
 
-    fn init(argv: []const [*:0]const u8) ClangArgIterator {
+    const Args = struct {
+        next_index: usize,
+        argv_ptr: [*]const [*:0]const u8,
+        argv_len: usize,
+    };
+
+    pub fn init(argv: []const [*:0]const u8) ClangArgIterator {
         return .{
             .next_index = 2, // `zig cc foo` this points to `foo`
             .has_next = argv.len > 2,
@@ -1291,22 +1315,74 @@ pub const ClangArgIterator = extern struct {
             .other_args_len = undefined,
             .argv_ptr = argv.ptr,
             .argv_len = argv.len,
+            .root_args = null,
         };
     }
 
-    fn next(self: *ClangArgIterator) !void {
+    pub fn next(self: *ClangArgIterator) !void {
         assert(self.has_next);
         assert(self.next_index < self.argv_len);
         // In this state we know that the parameter we are looking at is a root parameter
         // rather than an argument to a parameter.
         self.other_args_ptr = self.argv_ptr + self.next_index;
         self.other_args_len = 1; // We adjust this value below when necessary.
-        const arg = mem.span(self.argv_ptr[self.next_index]);
-        self.next_index += 1;
-        defer {
-            if (self.next_index >= self.argv_len) self.has_next = false;
-        }
+        var arg = mem.span(self.argv_ptr[self.next_index]);
+        self.incrementArgIndex();
 
+        if (mem.startsWith(u8, arg, "@")) {
+            if (self.root_args != null) return error.NestedResponseFile;
+
+            // This is a "compiler response file". We must parse the file and treat its
+            // contents as command line parameters.
+            const allocator = std.heap.c_allocator;
+            const max_bytes = 10 * 1024 * 1024; // 10 MiB of command line arguments is a reasonable limit
+            const resp_file_path = arg[1..];
+            const resp_contents = fs.cwd().readFileAlloc(allocator, resp_file_path, max_bytes) catch |err| {
+                std.debug.warn("unable to read response file '{}': {}\n", .{ resp_file_path, @errorName(err) });
+                process.exit(1);
+            };
+            defer allocator.free(resp_contents);
+            // TODO is there a specification for this file format? Let's find it and make this parsing more robust
+            // at the very least I'm guessing this needs to handle quotes and `#` comments.
+            var it = mem.tokenize(resp_contents, " \t\r\n");
+            var resp_arg_list = std.ArrayList([*:0]const u8).init(allocator);
+            defer resp_arg_list.deinit();
+            {
+                errdefer {
+                    for (resp_arg_list.span()) |item| {
+                        allocator.free(mem.span(item));
+                    }
+                }
+                while (it.next()) |token| {
+                    const dupe_token = try mem.dupeZ(allocator, u8, token);
+                    errdefer allocator.free(dupe_token);
+                    try resp_arg_list.append(dupe_token);
+                }
+                const args = try allocator.create(Args);
+                errdefer allocator.destroy(args);
+                args.* = .{
+                    .next_index = self.next_index,
+                    .argv_ptr = self.argv_ptr,
+                    .argv_len = self.argv_len,
+                };
+                self.root_args = args;
+            }
+            const resp_arg_slice = resp_arg_list.toOwnedSlice();
+            self.next_index = 0;
+            self.argv_ptr = resp_arg_slice.ptr;
+            self.argv_len = resp_arg_slice.len;
+
+            if (resp_arg_slice.len == 0) {
+                self.resolveRespFileArgs();
+                return;
+            }
+
+            self.has_next = true;
+            self.other_args_ptr = self.argv_ptr + self.next_index;
+            self.other_args_len = 1; // We adjust this value below when necessary.
+            arg = mem.span(self.argv_ptr[self.next_index]);
+            self.incrementArgIndex();
+        }
         if (!mem.startsWith(u8, arg, "-")) {
             self.zig_equivalent = .positional;
             self.only_arg = arg.ptr;
@@ -1343,7 +1419,7 @@ pub const ClangArgIterator = extern struct {
                         process.exit(1);
                     }
                     self.only_arg = self.argv_ptr[self.next_index];
-                    self.next_index += 1;
+                    self.incrementArgIndex();
                     self.other_args_len += 1;
                     self.zig_equivalent = clang_arg.zig_equivalent;
 
@@ -1365,7 +1441,7 @@ pub const ClangArgIterator = extern struct {
                         process.exit(1);
                     }
                     self.second_arg = self.argv_ptr[self.next_index];
-                    self.next_index += 1;
+                    self.incrementArgIndex();
                     self.other_args_len += 1;
                     self.zig_equivalent = clang_arg.zig_equivalent;
                     break :find_clang_arg;
@@ -1377,7 +1453,7 @@ pub const ClangArgIterator = extern struct {
                     process.exit(1);
                 }
                 self.only_arg = self.argv_ptr[self.next_index];
-                self.next_index += 1;
+                self.incrementArgIndex();
                 self.other_args_len += 1;
                 self.zig_equivalent = clang_arg.zig_equivalent;
                 break :find_clang_arg;
@@ -1397,6 +1473,28 @@ pub const ClangArgIterator = extern struct {
             process.exit(1);
         }
     }
+
+    fn incrementArgIndex(self: *ClangArgIterator) void {
+        self.next_index += 1;
+        self.resolveRespFileArgs();
+    }
+
+    fn resolveRespFileArgs(self: *ClangArgIterator) void {
+        const allocator = std.heap.c_allocator;
+        if (self.next_index >= self.argv_len) {
+            if (self.root_args) |root_args| {
+                self.next_index = root_args.next_index;
+                self.argv_ptr = root_args.argv_ptr;
+                self.argv_len = root_args.argv_len;
+
+                allocator.destroy(root_args);
+                self.root_args = null;
+            }
+            if (self.next_index >= self.argv_len) {
+                self.has_next = false;
+            }
+        }
+    }
 };
 
 export fn stage2_clang_arg_iterator(
@@ -1409,7 +1507,8 @@ export fn stage2_clang_arg_iterator(
 
 export fn stage2_clang_arg_next(it: *ClangArgIterator) Error {
     it.next() catch |err| switch (err) {
-        error.UnknownClangOption => return .UnknownClangOption,
+        error.NestedResponseFile => return .NestedResponseFile,
+        error.OutOfMemory => return .OutOfMemory,
     };
     return .None;
 }

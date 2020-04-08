@@ -341,11 +341,7 @@ pub fn zeroes(comptime T: type) T {
             }
         },
         .Array => |info| {
-            var array: T = undefined;
-            for (array) |*element| {
-                element.* = zeroes(info.child);
-            }
-            return array;
+            return [_]info.child{zeroes(info.child)} ** info.len;
         },
         .Vector,
         .ErrorUnion,
@@ -496,15 +492,8 @@ pub fn eql(comptime T: type, a: []const T, b: []const T) bool {
     return true;
 }
 
-/// Deprecated. Use `spanZ`.
-pub fn toSliceConst(comptime T: type, ptr: [*:0]const T) [:0]const T {
-    return ptr[0..lenZ(ptr) :0];
-}
-
-/// Deprecated. Use `spanZ`.
-pub fn toSlice(comptime T: type, ptr: [*:0]T) [:0]T {
-    return ptr[0..lenZ(ptr) :0];
-}
+pub const toSliceConst = @compileError("deprecated; use std.mem.spanZ");
+pub const toSlice = @compileError("deprecated; use std.mem.spanZ");
 
 /// Takes a pointer to an array, a sentinel-terminated pointer, or a slice, and
 /// returns a slice. If there is a sentinel on the input type, there will be a
@@ -512,36 +501,54 @@ pub fn toSlice(comptime T: type, ptr: [*:0]T) [:0]T {
 /// the constness of the input type. `[*c]` pointers are assumed to be 0-terminated,
 /// and assumed to not allow null.
 pub fn Span(comptime T: type) type {
-    var ptr_info = @typeInfo(T).Pointer;
-    switch (ptr_info.size) {
-        .One => switch (@typeInfo(ptr_info.child)) {
-            .Array => |info| {
-                ptr_info.child = info.child;
-                ptr_info.sentinel = info.sentinel;
-            },
-            else => @compileError("invalid type given to std.mem.Span"),
+    switch (@typeInfo(T)) {
+        .Optional => |optional_info| {
+            return ?Span(optional_info.child);
         },
-        .C => {
-            ptr_info.sentinel = 0;
-            ptr_info.is_allowzero = false;
+        .Pointer => |ptr_info| {
+            var new_ptr_info = ptr_info;
+            switch (ptr_info.size) {
+                .One => switch (@typeInfo(ptr_info.child)) {
+                    .Array => |info| {
+                        new_ptr_info.child = info.child;
+                        new_ptr_info.sentinel = info.sentinel;
+                    },
+                    else => @compileError("invalid type given to std.mem.Span"),
+                },
+                .C => {
+                    new_ptr_info.sentinel = 0;
+                    new_ptr_info.is_allowzero = false;
+                },
+                .Many, .Slice => {},
+            }
+            new_ptr_info.size = .Slice;
+            return @Type(std.builtin.TypeInfo{ .Pointer = new_ptr_info });
         },
-        .Many, .Slice => {},
+        else => @compileError("invalid type given to std.mem.Span"),
     }
-    ptr_info.size = .Slice;
-    return @Type(std.builtin.TypeInfo{ .Pointer = ptr_info });
 }
 
 test "Span" {
     testing.expect(Span(*[5]u16) == []u16);
+    testing.expect(Span(?*[5]u16) == ?[]u16);
     testing.expect(Span(*const [5]u16) == []const u16);
+    testing.expect(Span(?*const [5]u16) == ?[]const u16);
     testing.expect(Span([]u16) == []u16);
+    testing.expect(Span(?[]u16) == ?[]u16);
     testing.expect(Span([]const u8) == []const u8);
+    testing.expect(Span(?[]const u8) == ?[]const u8);
     testing.expect(Span([:1]u16) == [:1]u16);
+    testing.expect(Span(?[:1]u16) == ?[:1]u16);
     testing.expect(Span([:1]const u8) == [:1]const u8);
+    testing.expect(Span(?[:1]const u8) == ?[:1]const u8);
     testing.expect(Span([*:1]u16) == [:1]u16);
+    testing.expect(Span(?[*:1]u16) == ?[:1]u16);
     testing.expect(Span([*:1]const u8) == [:1]const u8);
+    testing.expect(Span(?[*:1]const u8) == ?[:1]const u8);
     testing.expect(Span([*c]u16) == [:0]u16);
+    testing.expect(Span(?[*c]u16) == ?[:0]u16);
     testing.expect(Span([*c]const u8) == [:0]const u8);
+    testing.expect(Span(?[*c]const u8) == ?[:0]const u8);
 }
 
 /// Takes a pointer to an array, a sentinel-terminated pointer, or a slice, and
@@ -552,6 +559,13 @@ test "Span" {
 /// When there is both a sentinel and an array length or slice length, the
 /// length value is used instead of the sentinel.
 pub fn span(ptr: var) Span(@TypeOf(ptr)) {
+    if (@typeInfo(@TypeOf(ptr)) == .Optional) {
+        if (ptr) |non_null| {
+            return span(non_null);
+        } else {
+            return null;
+        }
+    }
     const Result = Span(@TypeOf(ptr));
     const l = len(ptr);
     if (@typeInfo(Result).Pointer.sentinel) |s| {
@@ -566,12 +580,20 @@ test "span" {
     const ptr = @as([*:3]u16, array[0..2 :3]);
     testing.expect(eql(u16, span(ptr), &[_]u16{ 1, 2 }));
     testing.expect(eql(u16, span(&array), &[_]u16{ 1, 2, 3, 4, 5 }));
+    testing.expectEqual(@as(?[:0]u16, null), span(@as(?[*:0]u16, null)));
 }
 
 /// Same as `span`, except when there is both a sentinel and an array
 /// length or slice length, scans the memory for the sentinel value
 /// rather than using the length.
 pub fn spanZ(ptr: var) Span(@TypeOf(ptr)) {
+    if (@typeInfo(@TypeOf(ptr)) == .Optional) {
+        if (ptr) |non_null| {
+            return spanZ(non_null);
+        } else {
+            return null;
+        }
+    }
     const Result = Span(@TypeOf(ptr));
     const l = lenZ(ptr);
     if (@typeInfo(Result).Pointer.sentinel) |s| {
@@ -586,6 +608,7 @@ test "spanZ" {
     const ptr = @as([*:3]u16, array[0..2 :3]);
     testing.expect(eql(u16, spanZ(ptr), &[_]u16{ 1, 2 }));
     testing.expect(eql(u16, spanZ(&array), &[_]u16{ 1, 2, 3, 4, 5 }));
+    testing.expectEqual(@as(?[:0]u16, null), spanZ(@as(?[*:0]u16, null)));
 }
 
 /// Takes a pointer to an array, an array, a sentinel-terminated pointer,
@@ -1118,7 +1141,7 @@ test "writeIntBig and writeIntLittle" {
 /// If `buffer` is empty, the iterator will return null.
 /// If `delimiter_bytes` does not exist in buffer,
 /// the iterator will return `buffer`, null, in that order.
-/// See also the related function `separate`.
+/// See also the related function `split`.
 pub fn tokenize(buffer: []const u8, delimiter_bytes: []const u8) TokenIterator {
     return TokenIterator{
         .index = 0,
@@ -1173,15 +1196,13 @@ test "mem.tokenize (multibyte)" {
 
 /// Returns an iterator that iterates over the slices of `buffer` that
 /// are separated by bytes in `delimiter`.
-/// separate("abc|def||ghi", "|")
+/// split("abc|def||ghi", "|")
 /// will return slices for "abc", "def", "", "ghi", null, in that order.
 /// If `delimiter` does not exist in buffer,
 /// the iterator will return `buffer`, null, in that order.
 /// The delimiter length must not be zero.
 /// See also the related function `tokenize`.
-/// It is planned to rename this function to `split` before 1.0.0, like this:
-/// pub fn split(buffer: []const u8, delimiter: []const u8) SplitIterator {
-pub fn separate(buffer: []const u8, delimiter: []const u8) SplitIterator {
+pub fn split(buffer: []const u8, delimiter: []const u8) SplitIterator {
     assert(delimiter.len != 0);
     return SplitIterator{
         .index = 0,
@@ -1190,30 +1211,32 @@ pub fn separate(buffer: []const u8, delimiter: []const u8) SplitIterator {
     };
 }
 
-test "mem.separate" {
-    var it = separate("abc|def||ghi", "|");
+pub const separate = @compileError("deprecated: renamed to split (behavior remains unchanged)");
+
+test "mem.split" {
+    var it = split("abc|def||ghi", "|");
     testing.expect(eql(u8, it.next().?, "abc"));
     testing.expect(eql(u8, it.next().?, "def"));
     testing.expect(eql(u8, it.next().?, ""));
     testing.expect(eql(u8, it.next().?, "ghi"));
     testing.expect(it.next() == null);
 
-    it = separate("", "|");
+    it = split("", "|");
     testing.expect(eql(u8, it.next().?, ""));
     testing.expect(it.next() == null);
 
-    it = separate("|", "|");
+    it = split("|", "|");
     testing.expect(eql(u8, it.next().?, ""));
     testing.expect(eql(u8, it.next().?, ""));
     testing.expect(it.next() == null);
 
-    it = separate("hello", " ");
+    it = split("hello", " ");
     testing.expect(eql(u8, it.next().?, "hello"));
     testing.expect(it.next() == null);
 }
 
-test "mem.separate (multibyte)" {
-    var it = separate("a, b ,, c, d, e", ", ");
+test "mem.split (multibyte)" {
+    var it = split("a, b ,, c, d, e", ", ");
     testing.expect(eql(u8, it.next().?, "a"));
     testing.expect(eql(u8, it.next().?, "b ,"));
     testing.expect(eql(u8, it.next().?, "c"));
@@ -1735,7 +1758,8 @@ fn BytesAsValueReturnType(comptime T: type, comptime B: type) type {
     if (comptime !trait.is(.Pointer)(B) or
         (meta.Child(B) != [size]u8 and meta.Child(B) != [size:0]u8))
     {
-        @compileError("expected *[N]u8 " ++ ", passed " ++ @typeName(B));
+        comptime var buf: [100]u8 = undefined;
+        @compileError(std.fmt.bufPrint(&buf, "expected *[{}]u8, passed " ++ @typeName(B), .{size}) catch unreachable);
     }
 
     const alignment = comptime meta.alignment(B);

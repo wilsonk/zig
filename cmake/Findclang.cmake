@@ -13,6 +13,7 @@ find_path(CLANG_INCLUDE_DIRS NAMES clang/Frontend/ASTUnit.h
         /usr/lib/llvm-10/include
         /usr/lib/llvm-10.0/include
         /usr/local/llvm100/include
+        /usr/local/llvm10/include
         /mingw64/include)
 
 macro(FIND_AND_ADD_CLANG_LIB _libname_)
@@ -24,6 +25,7 @@ macro(FIND_AND_ADD_CLANG_LIB _libname_)
             /usr/lib/llvm-10/lib
             /usr/lib/llvm-10.0/lib
             /usr/local/llvm100/lib
+            /usr/local/llvm10/lib
             /mingw64/lib
             /c/msys64/mingw64/lib
             c:\\msys64\\mingw64\\lib)
@@ -56,6 +58,6 @@ FIND_AND_ADD_CLANG_LIB(clangCrossTU)
 FIND_AND_ADD_CLANG_LIB(clangIndex)
 
 include(FindPackageHandleStandardArgs)
-find_package_handle_standard_args(CLANG DEFAULT_MSG CLANG_LIBRARIES CLANG_INCLUDE_DIRS)
+find_package_handle_standard_args(clang DEFAULT_MSG CLANG_LIBRARIES CLANG_INCLUDE_DIRS)
 
 mark_as_advanced(CLANG_INCLUDE_DIRS CLANG_LIBRARIES CLANG_LIBDIRS)
