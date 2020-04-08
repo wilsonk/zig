@@ -501,11 +501,8 @@ pub const Target = struct {
 
                 /// Removes the specified feature but not its dependents.
                 pub fn removeFeatureSet(set: *Set, other_set: Set) void {
-                    // TODO should be able to use binary not on @Vector type.
-                    // https://github.com/ziglang/zig/issues/903
-                    for (set.ints) |*int, i| {
-                        int.* &= ~other_set.ints[i];
-                    }
+                    set.ints = @as(@Vector(usize_count, usize), set.ints) &
+                        ~@as(@Vector(usize_count, usize), other_set.ints);
                 }
 
                 pub fn populateDependencies(set: *Set, all_features_list: []const Cpu.Feature) void {
@@ -701,6 +698,7 @@ pub const Target = struct {
                     .bpfeb => ._BPF,
                     .sparcv9 => ._SPARCV9,
                     .s390x => ._S390,
+                    .ve => ._NONE,
                 };
             }
 
@@ -742,6 +740,7 @@ pub const Target = struct {
                     .renderscript32,
                     .renderscript64,
                     .shave,
+                    .ve,
                     => .Little,
 
                     .arc,
@@ -967,15 +966,15 @@ pub const Target = struct {
 
     pub const stack_align = 16;
 
-    pub fn zigTriple(self: Target, allocator: *mem.Allocator) ![:0]u8 {
+    pub fn zigTriple(self: Target, allocator: *mem.Allocator) ![]u8 {
         return std.zig.CrossTarget.fromTarget(self).zigTriple(allocator);
     }
 
-    pub fn linuxTripleSimple(allocator: *mem.Allocator, cpu_arch: Cpu.Arch, os_tag: Os.Tag, abi: Abi) ![:0]u8 {
-        return std.fmt.allocPrint0(allocator, "{}-{}-{}", .{ @tagName(cpu_arch), @tagName(os_tag), @tagName(abi) });
+    pub fn linuxTripleSimple(allocator: *mem.Allocator, cpu_arch: Cpu.Arch, os_tag: Os.Tag, abi: Abi) ![]u8 {
+        return std.fmt.allocPrint(allocator, "{}-{}-{}", .{ @tagName(cpu_arch), @tagName(os_tag), @tagName(abi) });
     }
 
-    pub fn linuxTriple(self: Target, allocator: *mem.Allocator) ![:0]u8 {
+    pub fn linuxTriple(self: Target, allocator: *mem.Allocator) ![]u8 {
         return linuxTripleSimple(allocator, self.cpu.arch, self.os.tag, self.abi);
     }
 
@@ -1320,3 +1319,7 @@ pub const Target = struct {
         }
     }
 };
+
+test "" {
+    std.meta.refAllDecls(Target.Cpu.Arch);
+}

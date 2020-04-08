@@ -62,6 +62,9 @@ option(ZIG_TEST_COVERAGE "Build Zig with test coverage instrumentation" OFF)
 # LLD to the tree. This option does nothing.
 option(ZIG_FORCE_EXTERNAL_LLD "does nothing" OFF)
 
+set(ZIG_TARGET_TRIPLE "native" CACHE STRING "arch-os-abi to output binaries for")
+set(ZIG_EXECUTABLE "" CACHE STRING "(when cross compiling) path to already-built zig binary")
+
 find_package(llvm)
 find_package(clang)
 find_package(lld)
@@ -221,7 +224,7 @@ set(EMBEDDED_SOFTFLOAT_SOURCES
 add_library(embedded_softfloat STATIC ${EMBEDDED_SOFTFLOAT_SOURCES})
 if(MSVC)
     set_target_properties(embedded_softfloat PROPERTIES
-        COMPILE_FLAGS "-std=c99 /w"
+        COMPILE_FLAGS "/w /O2"
     )
 else()
     set_target_properties(embedded_softfloat PROPERTIES
@@ -300,9 +303,10 @@ set(LIBC_FILES_DEST "${ZIG_LIB_DIR}/libc")
 set(LIBUNWIND_FILES_DEST "${ZIG_LIB_DIR}/libunwind")
 set(LIBCXX_FILES_DEST "${ZIG_LIB_DIR}/libcxx")
 set(ZIG_STD_DEST "${ZIG_LIB_DIR}/std")
+set(ZIG_CONFIG_H_OUT "${CMAKE_BINARY_DIR}/config.h")
 configure_file (
     "${CMAKE_SOURCE_DIR}/src/config.h.in"
-    "${CMAKE_BINARY_DIR}/config.h"
+    "${ZIG_CONFIG_H_OUT}"
 )
 
 include_directories(
@@ -312,12 +316,17 @@ include_directories(
 )
 
 # These have to go before the -Wno- flags
-set(EXE_CFLAGS "-std=c++14")
+if(MSVC)
+  set(EXE_CFLAGS "/std:c++14")
+else(MSVC)
+  set(EXE_CFLAGS "-std=c++14")
+endif(MSVC)
+
 if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     if(MSVC)
         set(EXE_CFLAGS "${EXE_CFLAGS} /w")
     else()
-        set(EXE_CFLAGS "${EXE_CFLAGS} -Werror -Wall")
+        set(EXE_CFLAGS "${EXE_CFLAGS} -Werror -Wall -Werror=implicit-fallthrough")
     endif()
 endif()
 
@@ -330,7 +339,11 @@ else()
     endif()
 endif()
 
-set(OPTIMIZED_C_FLAGS "-std=c99 -O3")
+if(MSVC)
+  set(OPTIMIZED_C_FLAGS "/O2")
+else(MSVC)
+  set(OPTIMIZED_C_FLAGS "-std=c99 -O3")
+endif(MSVC)
 
 set(EXE_LDFLAGS " ")
 if(MSVC)
@@ -338,7 +351,7 @@ if(MSVC)
     if(NOT "${CMAKE_BUILD_TYPE}" STREQUAL "Release" AND NOT "${CMAKE_BUILD_TYPE}" STREQUAL "MinSizeRel")
         set(EXE_LDFLAGS "${EXE_LDFLAGS} /debug:fastlink")
     endif()
-elseif(MINGW) 
+elseif(MINGW)
     set(EXE_LDFLAGS "${EXE_LDFLAGS} -Wl,--stack,16777216")
 endif()
 
@@ -352,8 +365,8 @@ if(ZIG_STATIC)
     endif()
 else()
     if(MINGW)
-        set(EXE_LDFLAGS "${EXE_LDFLAGS} -lz3")
-    endif() 
+        set(EXE_LDFLAGS "${EXE_LDFLAGS}")
+    endif()
 endif()
 
 if(ZIG_TEST_COVERAGE)
@@ -416,14 +429,10 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
 else()
     set(LIBSTAGE2_RELEASE_ARG --release-fast --strip)
 endif()
-if(WIN32)
-    set(LIBSTAGE2_WINDOWS_ARGS "-lntdll")
-else()
-    set(LIBSTAGE2_WINDOWS_ARGS "")
-endif()
 
 set(BUILD_LIBSTAGE2_ARGS "build-lib"
     "src-self-hosted/stage2.zig"
+    -target "${ZIG_TARGET_TRIPLE}"
     -mcpu=baseline
     --name zigstage2
     --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
@@ -433,15 +442,24 @@ set(BUILD_LIBSTAGE2_ARGS "build-lib"
     --bundle-compiler-rt
     -fPIC
     -lc
-    ${LIBSTAGE2_WINDOWS_ARGS}
 )
 
-add_custom_target(zig_build_libstage2 ALL
-    COMMAND zig0 ${BUILD_LIBSTAGE2_ARGS}
-    DEPENDS zig0
-    BYPRODUCTS "${LIBSTAGE2}"
-    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-)
+if("${ZIG_TARGET_TRIPLE}" STREQUAL "native")
+  add_custom_target(zig_build_libstage2 ALL
+      COMMAND zig0 ${BUILD_LIBSTAGE2_ARGS}
+      DEPENDS zig0
+      BYPRODUCTS "${LIBSTAGE2}"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+  set(ZIG_EXECUTABLE "${zig_BINARY_DIR}/zig")
+else()
+  add_custom_target(zig_build_libstage2 ALL
+      COMMAND "${ZIG_EXECUTABLE}" ${BUILD_LIBSTAGE2_ARGS}
+      BYPRODUCTS "${LIBSTAGE2}"
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  )
+endif()
+
 add_executable(zig "${ZIG_MAIN_SRC}")
 
 set_target_properties(zig PROPERTIES
@@ -451,7 +469,7 @@ set_target_properties(zig PROPERTIES
 target_link_libraries(zig zigcompiler "${LIBSTAGE2}")
 if(MSVC)
   target_link_libraries(zig ntdll.lib)
-elseif(MINGW) 
+elseif(MINGW)
   target_link_libraries(zig ntdll)
 endif()
 add_dependencies(zig zig_build_libstage2)
@@ -462,6 +480,7 @@ set(ZIG_INSTALL_ARGS "build"
     --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
     "-Dlib-files-only"
     --prefix "${CMAKE_INSTALL_PREFIX}"
+    "-Dconfig_h=${ZIG_CONFIG_H_OUT}"
     install
 )
 
@@ -480,7 +499,7 @@ if(MSVC)
     endif()
 else()
     get_target_property(zig_BINARY_DIR zig BINARY_DIR)
-    install(CODE "set(zig_EXE \"${zig_BINARY_DIR}/zig\")")
+    install(CODE "set(zig_EXE \"${ZIG_EXECUTABLE}\")")
     install(CODE "set(ZIG_INSTALL_ARGS \"${ZIG_INSTALL_ARGS}\")")
     install(CODE "set(CMAKE_SOURCE_DIR \"${CMAKE_SOURCE_DIR}\")")
     install(SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/install.cmake)

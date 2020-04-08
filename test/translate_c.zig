@@ -2375,6 +2375,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     cases.add("compound assignment operators",
         \\void foo(void) {
         \\    int a = 0;
+        \\    unsigned b = 0;
         \\    a += (a += 1);
         \\    a -= (a -= 1);
         \\    a *= (a *= 1);
@@ -2383,10 +2384,15 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    a ^= (a ^= 1);
         \\    a >>= (a >>= 1);
         \\    a <<= (a <<= 1);
+        \\    a /= (a /= 1);
+        \\    a %= (a %= 1);
+        \\    b /= (b /= 1);
+        \\    b %= (b %= 1);
         \\}
     , &[_][]const u8{
         \\pub export fn foo() void {
         \\    var a: c_int = 0;
+        \\    var b: c_uint = @bitCast(c_uint, @as(c_int, 0));
         \\    a += (blk: {
         \\        const ref = &a;
         \\        ref.* = ref.* + @as(c_int, 1);
@@ -2427,6 +2433,26 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\        ref.* = ref.* << @intCast(@import("std").math.Log2Int(c_int), @as(c_int, 1));
         \\        break :blk ref.*;
         \\    }));
+        \\    a = @divTrunc(a, (blk: {
+        \\        const ref = &a;
+        \\        ref.* = @divTrunc(ref.*, @as(c_int, 1));
+        \\        break :blk ref.*;
+        \\    }));
+        \\    a = @rem(a, (blk: {
+        \\        const ref = &a;
+        \\        ref.* = @rem(ref.*, @as(c_int, 1));
+        \\        break :blk ref.*;
+        \\    }));
+        \\    b /= (blk: {
+        \\        const ref = &b;
+        \\        ref.* = ref.* / @bitCast(c_uint, @as(c_int, 1));
+        \\        break :blk ref.*;
+        \\    });
+        \\    b %= (blk: {
+        \\        const ref = &b;
+        \\        ref.* = ref.* % @bitCast(c_uint, @as(c_int, 1));
+        \\        break :blk ref.*;
+        \\    });
         \\}
     });
 
@@ -2807,5 +2833,50 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    var y = arg_y;
         \\    return if (x > y) x else y;
         \\}
+    });
+
+    cases.add("string concatenation in macros",
+        \\#define FOO "hello"
+        \\#define BAR FOO " world"
+        \\#define BAZ "oh, " FOO
+    , &[_][]const u8{
+        \\pub const FOO = "hello";
+    ,
+        \\pub const BAR = FOO ++ " world";
+    ,
+        \\pub const BAZ = "oh, " ++ FOO;
+    });
+
+    cases.add("string concatenation in macros: two defines",
+        \\#define FOO "hello"
+        \\#define BAZ " world"
+        \\#define BAR FOO BAZ
+    , &[_][]const u8{
+        \\pub const FOO = "hello";
+    ,
+        \\pub const BAZ = " world";
+    ,
+        \\pub const BAR = FOO ++ BAZ;
+    });
+
+    cases.add("string concatenation in macros: two strings",
+        \\#define FOO "a" "b"
+        \\#define BAR FOO "c"
+    , &[_][]const u8{
+        \\pub const FOO = "a" ++ "b";
+    ,
+        \\pub const BAR = FOO ++ "c";
+    });
+
+    cases.add("string concatenation in macros: three strings",
+        \\#define FOO "a" "b" "c"
+    , &[_][]const u8{
+        \\pub const FOO = "a" ++ ("b" ++ "c");
+    });
+
+    cases.add("multibyte character literals",
+        \\#define FOO 'abcd'
+    , &[_][]const u8{
+        \\pub const FOO = 0x61626364;
     });
 }

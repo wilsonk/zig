@@ -624,6 +624,7 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
                         case CIntTypeCount:
                             zig_unreachable();
                     }
+                    zig_unreachable();
                 default:
                     switch (id) {
                         case CIntTypeShort:
@@ -642,6 +643,7 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
                             zig_unreachable();
                     }
             }
+            zig_unreachable();
         case OsLinux:
         case OsMacOSX:
         case OsFreeBSD:
@@ -666,6 +668,7 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
                 case CIntTypeCount:
                     zig_unreachable();
             }
+            zig_unreachable();
         case OsUefi:
         case OsWindows:
             switch (id) {
@@ -683,6 +686,7 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
                 case CIntTypeCount:
                     zig_unreachable();
             }
+            zig_unreachable();
         case OsIOS:
             switch (id) {
                 case CIntTypeShort:
@@ -699,6 +703,7 @@ uint32_t target_c_type_size_in_bits(const ZigTarget *target, CIntType id) {
                 case CIntTypeCount:
                     zig_unreachable();
             }
+            zig_unreachable();
         case OsAnanas:
         case OsCloudABI:
         case OsKFreeBSD:
@@ -1207,6 +1212,15 @@ bool target_is_libc_lib_name(const ZigTarget *target, const char *name) {
     if (strcmp(name, "c") == 0)
         return true;
 
+    if (target_abi_is_gnu(target->abi) && target->os == OsWindows) {
+        // mingw-w64
+
+        if (strcmp(name, "m") == 0)
+            return true;
+
+        return false;
+    }
+
     if (target_abi_is_gnu(target->abi) || target_abi_is_musl(target->abi) || target_os_is_darwin(target->os)) {
         if (strcmp(name, "m") == 0)
             return true;
@@ -1224,7 +1238,16 @@ bool target_is_libc_lib_name(const ZigTarget *target, const char *name) {
             return true;
         if (strcmp(name, "dl") == 0)
             return true;
+        if (strcmp(name, "util") == 0)
+            return true;
     }
+
+    return false;
+}
+
+bool target_is_libcpp_lib_name(const ZigTarget *target, const char *name) {
+    if (strcmp(name, "c++") == 0 || strcmp(name, "c++abi") == 0)
+        return true;
 
     return false;
 }
@@ -1239,7 +1262,8 @@ void target_libc_enum(size_t index, ZigTarget *out_target) {
     out_target->os = libcs_available[index].os;
     out_target->abi = libcs_available[index].abi;
     out_target->vendor = ZigLLVM_UnknownVendor;
-    out_target->is_native = false;
+    out_target->is_native_os = false;
+    out_target->is_native_cpu = false;
 }
 
 bool target_has_debug_info(const ZigTarget *target) {
@@ -1276,19 +1300,6 @@ const char *target_arch_musl_name(ZigLLVM_ArchType arch) {
         default:
             zig_unreachable();
     }
-}
-
-bool target_supports_libunwind(const ZigTarget *target) {
-    switch (target->arch) {
-        case ZigLLVM_arm:
-        case ZigLLVM_armeb:
-        case ZigLLVM_riscv32:
-        case ZigLLVM_riscv64:
-            return false;
-        default:
-            return true;
-    }
-    return true;
 }
 
 bool target_libc_needs_crti_crtn(const ZigTarget *target) {
