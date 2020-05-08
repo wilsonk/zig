@@ -106,6 +106,10 @@ enum Error {
     ErrorInvalidAbiVersion,
     ErrorInvalidOperatingSystemVersion,
     ErrorUnknownClangOption,
+    ErrorNestedResponseFile,
+    ErrorZigIsTheCCompiler,
+    ErrorFileBusy,
+    ErrorLocked,
 };
 
 // ABI warning
@@ -280,7 +284,8 @@ struct ZigTarget {
     enum ZigLLVM_EnvironmentType abi;
     Os os;
 
-    bool is_native;
+    bool is_native_os;
+    bool is_native_cpu;
 
     // null means default. this is double-purposed to be darwin min version
     struct Stage2SemVer *glibc_or_darwin_version;
@@ -333,13 +338,24 @@ enum Stage2ClangArg {
     Stage2ClangArgPIC,
     Stage2ClangArgNoPIC,
     Stage2ClangArgNoStdLib,
+    Stage2ClangArgNoStdLibCpp,
     Stage2ClangArgShared,
     Stage2ClangArgRDynamic,
     Stage2ClangArgWL,
-    Stage2ClangArgPreprocess,
+    Stage2ClangArgPreprocessOrAsm,
     Stage2ClangArgOptimize,
     Stage2ClangArgDebug,
     Stage2ClangArgSanitize,
+    Stage2ClangArgLinkerScript,
+    Stage2ClangArgVerboseCmds,
+    Stage2ClangArgForLinker,
+    Stage2ClangArgLinkerInputZ,
+    Stage2ClangArgLibDir,
+    Stage2ClangArgMCpu,
+    Stage2ClangArgDepFile,
+    Stage2ClangArgFrameworkDir,
+    Stage2ClangArgFramework,
+    Stage2ClangArgNoStdLibInc,
 };
 
 // ABI warning
@@ -353,6 +369,7 @@ struct Stage2ClangArgIterator {
     const char **argv_ptr;
     size_t argv_len;
     size_t next_index;
+    size_t root_args;
 };
 
 // ABI warning

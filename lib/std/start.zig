@@ -108,7 +108,7 @@ fn _start() callconv(.Naked) noreturn {
                 : [argc] "=r" (-> [*]usize)
             );
         },
-        .mipsel => {
+        .mips, .mipsel => {
             // Need noat here because LLVM is free to pick any register
             starting_stack_ptr = asm (
                 \\ .set noat
@@ -152,13 +152,7 @@ fn posixCallMainAndExit() noreturn {
         const auxv = @ptrCast([*]std.elf.Auxv, @alignCast(@alignOf(usize), envp.ptr + envp_count + 1));
         std.os.linux.elf_aux_maybe = auxv;
         // Initialize the TLS area
-        const gnu_stack_phdr = std.os.linux.tls.initTLS() orelse @panic("ELF missing stack size");
-
-        if (std.os.linux.tls.tls_image) |tls_img| {
-            const tls_addr = std.os.linux.tls.allocateTLS(tls_img.alloc_size);
-            const tp = std.os.linux.tls.copyTLS(tls_addr);
-            std.os.linux.tls.setThreadPointer(tp);
-        }
+        std.os.linux.tls.initStaticTLS();
 
         // TODO This is disabled because what should we do when linking libc and this code
         // does not execute? And also it's causing a test failure in stack traces in release modes.
@@ -230,8 +224,7 @@ inline fn initEventLoopAndCallMain() u8 {
     // and we want fewer call frames in stack traces.
     return @call(.{ .modifier = .always_inline }, callMain, .{});
 }
-
-async fn callMainAsync(loop: *std.event.Loop) u8 {
+fn callMainAsync(loop: *std.event.Loop) callconv(.Async) u8 {
     // This prevents the event loop from terminating at least until main() has returned.
     loop.beginOneEvent();
     defer loop.finishOneEvent();

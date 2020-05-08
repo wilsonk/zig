@@ -51,8 +51,7 @@ var wasm_page_allocator_state = Allocator{
     .shrinkFn = WasmPageAllocator.shrink,
 };
 
-/// Deprecated. Use `page_allocator`.
-pub const direct_allocator = page_allocator;
+pub const direct_allocator = @compileError("deprecated; use std.heap.page_allocator");
 
 const PageAllocator = struct {
     fn alloc(allocator: *Allocator, n: usize, alignment: u29) error{OutOfMemory}![]u8 {
@@ -1016,7 +1015,7 @@ fn testAllocatorLargeAlignment(allocator: *mem.Allocator) mem.Allocator.Error!vo
     //  very near usize?
     if (mem.page_size << 2 > maxInt(usize)) return;
 
-    const USizeShift = std.meta.IntType(false, std.math.log2(usize.bit_count));
+    const USizeShift = std.meta.Int(false, std.math.log2(usize.bit_count));
     const large_align = @as(u29, mem.page_size << 2);
 
     var align_mask: usize = undefined;

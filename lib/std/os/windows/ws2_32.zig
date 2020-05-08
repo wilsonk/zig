@@ -1,6 +1,6 @@
 usingnamespace @import("bits.zig");
 
-pub const SOCKET = *@OpaqueType();
+pub const SOCKET = *@Type(.Opaque);
 pub const INVALID_SOCKET = @intToPtr(SOCKET, ~@as(usize, 0));
 pub const SOCKET_ERROR = -1;
 
@@ -106,7 +106,7 @@ pub const WSAOVERLAPPED = extern struct {
     hEvent: ?WSAEVENT,
 };
 
-pub const WSAOVERLAPPED_COMPLETION_ROUTINE = extern fn (dwError: DWORD, cbTransferred: DWORD, lpOverlapped: *WSAOVERLAPPED, dwFlags: DWORD) void;
+pub const WSAOVERLAPPED_COMPLETION_ROUTINE = fn (dwError: DWORD, cbTransferred: DWORD, lpOverlapped: *WSAOVERLAPPED, dwFlags: DWORD) callconv(.C) void;
 
 pub const ADDRESS_FAMILY = u16;
 

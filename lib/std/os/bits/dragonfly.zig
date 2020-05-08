@@ -244,6 +244,12 @@ pub const KERN_MAXID = 37;
 
 pub const HOST_NAME_MAX = 255;
 
+// access function
+pub const F_OK = 0; // test for existence of file
+pub const X_OK = 1; // test for execute or search permission
+pub const W_OK = 2; // test for write permission
+pub const R_OK = 4; // test for read permission
+
 pub const O_RDONLY = 0;
 pub const O_NDELAY = O_NONBLOCK;
 pub const O_WRONLY = 1;
@@ -277,7 +283,6 @@ pub const SEEK_END = 2;
 pub const SEEK_DATA = 3;
 pub const SEEK_HOLE = 4;
 
-pub const F_OK = 0;
 pub const F_ULOCK = 0;
 pub const F_LOCK = 1;
 pub const F_TLOCK = 2;
@@ -453,9 +458,9 @@ pub const S_IFSOCK = 49152;
 pub const S_IFWHT = 57344;
 pub const S_IFMT = 61440;
 
-pub const SIG_ERR = @intToPtr(extern fn (i32) void, maxInt(usize));
-pub const SIG_DFL = @intToPtr(extern fn (i32) void, 0);
-pub const SIG_IGN = @intToPtr(extern fn (i32) void, 1);
+pub const SIG_ERR = @intToPtr(fn (i32) callconv(.C) void, maxInt(usize));
+pub const SIG_DFL = @intToPtr(fn (i32) callconv(.C) void, 0);
+pub const SIG_IGN = @intToPtr(fn (i32) callconv(.C) void, 1);
 pub const BADSIG = SIG_ERR;
 pub const SIG_BLOCK = 1;
 pub const SIG_UNBLOCK = 2;
@@ -514,13 +519,13 @@ pub const sigset_t = extern struct {
 pub const sig_atomic_t = c_int;
 pub const Sigaction = extern struct {
     __sigaction_u: extern union {
-        __sa_handler: ?extern fn (c_int) void,
-        __sa_sigaction: ?extern fn (c_int, [*c]siginfo_t, ?*c_void) void,
+        __sa_handler: ?fn (c_int) callconv(.C) void,
+        __sa_sigaction: ?fn (c_int, [*c]siginfo_t, ?*c_void) callconv(.C) void,
     },
     sa_flags: c_int,
     sa_mask: sigset_t,
 };
-pub const sig_t = [*c]extern fn (c_int) void;
+pub const sig_t = [*c]fn (c_int) callconv(.C) void;
 
 pub const sigvec = extern struct {
     sv_handler: [*c]__sighandler_t,
@@ -691,6 +696,11 @@ pub const F_SETLKW = 9;
 pub const F_DUP2FD = 10;
 pub const F_DUPFD_CLOEXEC = 17;
 pub const F_DUP2FD_CLOEXEC = 18;
+
+pub const LOCK_SH = 1;
+pub const LOCK_EX = 2;
+pub const LOCK_UN = 8;
+pub const LOCK_NB = 4;
 
 pub const Flock = extern struct {
     l_start: off_t,

@@ -125,7 +125,7 @@ ScopeLoop *create_loop_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeSuspend *create_suspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeFnDef *create_fndef_scope(CodeGen *g, AstNode *node, Scope *parent, ZigFn *fn_entry);
 Scope *create_comptime_scope(CodeGen *g, AstNode *node, Scope *parent);
-Scope *create_noasync_scope(CodeGen *g, AstNode *node, Scope *parent);
+Scope *create_nosuspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 Scope *create_runtime_scope(CodeGen *g, AstNode *node, Scope *parent, IrInstSrc *is_comptime);
 Scope *create_typeof_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeExpr *create_expr_scope(CodeGen *g, AstNode *node, Scope *parent);
@@ -257,13 +257,8 @@ Error create_c_object_cache(CodeGen *g, CacheHash **out_cache_hash, bool verbose
 LLVMTypeRef get_llvm_type(CodeGen *g, ZigType *type);
 ZigLLVMDIType *get_llvm_di_type(CodeGen *g, ZigType *type);
 
-enum CSourceKind {
-    CSourceKindAsm,
-    CSourceKindC,
-};
-
 void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_path, bool translate_c,
-        CSourceKind source_kind);
+        FileExt source_kind);
 
 void src_assert(bool ok, AstNode *source_node);
 bool is_container(ZigType *type_entry);

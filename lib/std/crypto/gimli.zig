@@ -23,10 +23,12 @@ pub const State = struct {
 
     const Self = @This();
 
+    /// TODO follow the span() convention instead of having this and `toSliceConst`
     pub fn toSlice(self: *Self) []u8 {
         return mem.sliceAsBytes(self.data[0..]);
     }
 
+    /// TODO follow the span() convention instead of having this and `toSlice`
     pub fn toSliceConst(self: *Self) []const u8 {
         return mem.sliceAsBytes(self.data[0..]);
     }
@@ -160,6 +162,9 @@ pub fn hash(out: []u8, in: []const u8) void {
 }
 
 test "hash" {
+    // https://github.com/ziglang/zig/issues/5127
+    if (std.Target.current.cpu.arch == .mips) return error.SkipZigTest;
+
     // a test vector (30) from NIST KAT submission.
     var msg: [58 / 2]u8 = undefined;
     try std.fmt.hexToBytes(&msg, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C");
@@ -305,6 +310,9 @@ pub const Aead = struct {
 };
 
 test "cipher" {
+    // https://github.com/ziglang/zig/issues/5127
+    if (std.Target.current.cpu.arch == .mips) return error.SkipZigTest;
+
     var key: [32]u8 = undefined;
     try std.fmt.hexToBytes(&key, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
     var nonce: [16]u8 = undefined;

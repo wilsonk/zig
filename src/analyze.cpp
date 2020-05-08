@@ -106,7 +106,7 @@ static ScopeExpr *find_expr_scope(Scope *scope) {
             case ScopeIdDecls:
             case ScopeIdFnDef:
             case ScopeIdCompTime:
-            case ScopeIdNoAsync:
+            case ScopeIdNoSuspend:
             case ScopeIdVarDecl:
             case ScopeIdCImport:
             case ScopeIdSuspend:
@@ -227,9 +227,9 @@ Scope *create_comptime_scope(CodeGen *g, AstNode *node, Scope *parent) {
     return &scope->base;
 }
 
-Scope *create_noasync_scope(CodeGen *g, AstNode *node, Scope *parent) {
-    ScopeNoAsync *scope = heap::c_allocator.create<ScopeNoAsync>();
-    init_scope(g, &scope->base, ScopeIdNoAsync, node, parent);
+Scope *create_nosuspend_scope(CodeGen *g, AstNode *node, Scope *parent) {
+    ScopeNoSuspend *scope = heap::c_allocator.create<ScopeNoSuspend>();
+    init_scope(g, &scope->base, ScopeIdNoSuspend, node, parent);
     return &scope->base;
 }
 
@@ -363,6 +363,7 @@ bool type_is_resolved(ZigType *type_entry, ResolveStatus status) {
                 case ResolveStatusLLVMFull:
                     return type_entry->llvm_type != nullptr;
             }
+            zig_unreachable();
         case ZigTypeIdOpaque:
             return status < ResolveStatusSizeKnown;
         case ZigTypeIdPointer:
@@ -381,6 +382,7 @@ bool type_is_resolved(ZigType *type_entry, ResolveStatus status) {
                 case ResolveStatusLLVMFull:
                     return type_entry->llvm_type != nullptr;
             }
+            zig_unreachable();
         case ZigTypeIdMetaType:
         case ZigTypeIdVoid:
         case ZigTypeIdBool:
@@ -576,6 +578,7 @@ ZigType *get_pointer_to_type_extra2(CodeGen *g, ZigType *child_type, bool is_con
     }
     switch (ptr_len) {
         case PtrLenSingle:
+            assert(sentinel == nullptr);
             buf_appendf(&entry->name, "*");
             break;
         case PtrLenUnknown:
@@ -856,10 +859,12 @@ ZigType *get_slice_type(CodeGen *g, ZigType *ptr_type) {
     entry->data.structure.fields[slice_ptr_index]->type_entry = ptr_type;
     entry->data.structure.fields[slice_ptr_index]->src_index = slice_ptr_index;
     entry->data.structure.fields[slice_ptr_index]->gen_index = 0;
+    entry->data.structure.fields[slice_ptr_index]->offset = 0;
     entry->data.structure.fields[slice_len_index]->name = len_field_name;
     entry->data.structure.fields[slice_len_index]->type_entry = g->builtin_types.entry_usize;
     entry->data.structure.fields[slice_len_index]->src_index = slice_len_index;
     entry->data.structure.fields[slice_len_index]->gen_index = 1;
+    entry->data.structure.fields[slice_len_index]->offset = ptr_type->abi_size;
 
     entry->data.structure.fields_by_name.put(ptr_field_name, entry->data.structure.fields[slice_ptr_index]);
     entry->data.structure.fields_by_name.put(len_field_name, entry->data.structure.fields[slice_len_index]);
@@ -1002,7 +1007,7 @@ bool want_first_arg_sret(CodeGen *g, FnTypeId *fn_type_id) {
     {
         X64CABIClass abi_class = type_c_abi_x86_64_class(g, fn_type_id->return_type);
         return abi_class == X64CABIClass_MEMORY || abi_class == X64CABIClass_MEMORY_nobyval;
-    } else if (g->zig_target->arch == ZigLLVM_mipsel) {
+    } else if (g->zig_target->arch == ZigLLVM_mips || g->zig_target->arch == ZigLLVM_mipsel) {
         return false;
     }
     zig_panic("TODO implement C ABI for this architecture. See https://github.com/ziglang/zig/issues/1481");
@@ -1523,8 +1528,6 @@ ZigType *get_generic_fn_type(CodeGen *g, FnTypeId *fn_type_id) {
 }
 
 CallingConvention cc_from_fn_proto(AstNodeFnProto *fn_proto) {
-    if (fn_proto->is_async)
-        return CallingConventionAsync;
     // Compatible with the C ABI
     if (fn_proto->is_extern || fn_proto->is_export)
         return CallingConventionC;
@@ -3496,7 +3499,7 @@ static void resolve_decl_fn(CodeGen *g, TldFn *tld_fn) {
             }
         } else {
             fn_table_entry->inferred_async_node = inferred_async_none;
-            g->external_prototypes.put_unique(tld_fn->base.name, &tld_fn->base);
+            g->external_symbol_names.put_unique(tld_fn->base.name, &tld_fn->base);
         }
 
         Scope *child_scope = fn_table_entry->fndef_scope ? &fn_table_entry->fndef_scope->base : tld_fn->base.parent_scope;
@@ -3615,10 +3618,16 @@ static void add_top_level_decl(CodeGen *g, ScopeDecls *decls_scope, Tld *tld) {
         assert(tld->source_node->type == NodeTypeFnProto);
         is_export = tld->source_node->data.fn_proto.is_export;
 
-        if (!is_export && !tld->source_node->data.fn_proto.is_extern &&
+        if (!tld->source_node->data.fn_proto.is_extern &&
             tld->source_node->data.fn_proto.fn_def_node == nullptr)
         {
             add_node_error(g, tld->source_node, buf_sprintf("non-extern function has no body"));
+            return;
+        }
+        if (!tld->source_node->data.fn_proto.is_extern &&
+            tld->source_node->data.fn_proto.is_var_args)
+        {
+            add_node_error(g, tld->source_node, buf_sprintf("non-extern function is variadic"));
             return;
         }
     } else if (tld->id == TldIdUsingNamespace) {
@@ -3760,7 +3769,7 @@ void scan_decls(CodeGen *g, ScopeDecls *decls_scope, AstNode *node) {
         case NodeTypeCompTime:
             preview_comptime_decl(g, node, decls_scope);
             break;
-        case NodeTypeNoAsync:
+        case NodeTypeNoSuspend:
         case NodeTypeParamDecl:
         case NodeTypeReturnExpr:
         case NodeTypeDefer:
@@ -4044,6 +4053,10 @@ static void resolve_decl_var(CodeGen *g, TldVar *tld_var, bool allow_lazy) {
     if (is_export) {
         validate_export_var_type(g, type, source_node);
         add_var_export(g, tld_var->var, tld_var->var->name, GlobalLinkageIdStrong);
+    }
+
+    if (is_extern) {
+        g->external_symbol_names.put_unique(tld_var->base.name, &tld_var->base);
     }
 
     g->global_vars.append(tld_var);
@@ -4596,7 +4609,9 @@ bool resolve_inferred_error_set(CodeGen *g, ZigType *err_set_type, AstNode *sour
             return false;
         } else if (infer_fn->anal_state == FnAnalStateReady) {
             analyze_fn_body(g, infer_fn);
-            if (err_set_type->data.error_set.incomplete) {
+            if (infer_fn->anal_state == FnAnalStateInvalid ||
+                err_set_type->data.error_set.incomplete)
+            {
                 assert(g->errors.length != 0);
                 return false;
             }
@@ -4672,7 +4687,7 @@ void add_async_error_notes(CodeGen *g, ErrorMsg *msg, ZigFn *fn) {
 static Error analyze_callee_async(CodeGen *g, ZigFn *fn, ZigFn *callee, AstNode *call_node,
         bool must_not_be_async, CallModifier modifier)
 {
-    if (modifier == CallModifierNoAsync)
+    if (modifier == CallModifierNoSuspend)
         return ErrorNone;
     bool callee_is_async = false;
     switch (callee->type_entry->data.fn.fn_type_id.cc) {
@@ -4795,7 +4810,7 @@ static void analyze_fn_async(CodeGen *g, ZigFn *fn, bool resolve_frame) {
     }
     for (size_t i = 0; i < fn->await_list.length; i += 1) {
         IrInstGenAwait *await = fn->await_list.at(i);
-        if (await->is_noasync) continue;
+        if (await->is_nosuspend) continue;
         switch (analyze_callee_async(g, fn, await->target_fn, await->base.base.source_node, must_not_be_async,
                     CallModifierNone))
         {
@@ -5156,6 +5171,7 @@ ZigType *get_vector_type(CodeGen *g, uint32_t len, ZigType *elem_type) {
     }
     entry->data.vector.len = len;
     entry->data.vector.elem_type = elem_type;
+    entry->data.vector.padding = 0;
 
     buf_resize(&entry->name, 0);
     buf_appendf(&entry->name, "@Vector(%u, %s)", len, buf_ptr(&elem_type->name));
@@ -5358,7 +5374,7 @@ static uint32_t hash_const_val(ZigValue *const_val) {
                 return result;
             }
         case ZigTypeIdEnumLiteral:
-            return buf_hash(const_val->data.x_enum_literal) * 2691276464;
+            return buf_hash(const_val->data.x_enum_literal) * (uint32_t)2691276464;
         case ZigTypeIdEnum:
             {
                 uint32_t result = 31643936;
@@ -5426,12 +5442,12 @@ static uint32_t hash_const_val(ZigValue *const_val) {
             return 2709806591;
         case ZigTypeIdOptional:
             if (get_src_ptr_type(const_val->type) != nullptr) {
-                return hash_const_val_ptr(const_val) * 1992916303;
+                return hash_const_val_ptr(const_val) * (uint32_t)1992916303;
             } else if (const_val->type->data.maybe.child_type->id == ZigTypeIdErrorSet) {
-                return hash_const_val_error_set(const_val) * 3147031929;
+                return hash_const_val_error_set(const_val) * (uint32_t)3147031929;
             } else {
                 if (const_val->data.x_optional) {
-                    return hash_const_val(const_val->data.x_optional) * 1992916303;
+                    return hash_const_val(const_val->data.x_optional) * (uint32_t)1992916303;
                 } else {
                     return 4016830364;
                 }
@@ -5766,6 +5782,10 @@ OnePossibleValue type_has_one_possible_value(CodeGen *g, ZigType *type_entry) {
             type_entry->one_possible_value = OnePossibleValueNo;
             for (size_t i = 0; i < type_entry->data.structure.src_field_count; i += 1) {
                 TypeStructField *field = type_entry->data.structure.fields[i];
+                if (field->is_comptime) {
+                    // If this field is comptime then the field can only be one possible value
+                    continue;
+                }
                 OnePossibleValue opv = (field->type_entry != nullptr) ?
                     type_has_one_possible_value(g, field->type_entry) :
                     type_val_resolve_has_one_possible_value(g, field->type_val);
@@ -5822,6 +5842,10 @@ ZigValue *get_the_one_possible_value(CodeGen *g, ZigType *type_entry) {
         result->data.x_struct.fields = alloc_const_vals_ptrs(g, field_count);
         for (size_t i = 0; i < field_count; i += 1) {
             TypeStructField *field = struct_type->data.structure.fields[i];
+            if (field->is_comptime) {
+                copy_const_val(g, result->data.x_struct.fields[i], field->init_val);
+                continue;
+            }
             ZigType *field_type = resolve_struct_field_type(g, field);
             assert(field_type != nullptr);
             result->data.x_struct.fields[i] = get_the_one_possible_value(g, field_type);
@@ -6213,7 +6237,7 @@ static void mark_suspension_point(Scope *scope) {
             case ScopeIdDecls:
             case ScopeIdFnDef:
             case ScopeIdCompTime:
-            case ScopeIdNoAsync:
+            case ScopeIdNoSuspend:
             case ScopeIdCImport:
             case ScopeIdSuspend:
             case ScopeIdTypeOf:
@@ -6446,7 +6470,7 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
     // The funtion call result of foo() must be spilled.
     for (size_t i = 0; i < fn->await_list.length; i += 1) {
         IrInstGenAwait *await = fn->await_list.at(i);
-        if (await->is_noasync) {
+        if (await->is_nosuspend) {
             continue;
         }
         if (await->base.value->special != ConstValSpecialRuntime) {
@@ -7756,9 +7780,13 @@ LinkLib *create_link_lib(Buf *name) {
 
 LinkLib *add_link_lib(CodeGen *g, Buf *name) {
     bool is_libc = buf_eql_str(name, "c");
+    bool is_libcpp = buf_eql_str(name, "c++") || buf_eql_str(name, "c++abi");
 
     if (is_libc && g->libc_link_lib != nullptr)
         return g->libc_link_lib;
+
+    if (is_libcpp && g->libcpp_link_lib != nullptr)
+        return g->libcpp_link_lib;
 
     for (size_t i = 0; i < g->link_libs_list.length; i += 1) {
         LinkLib *existing_lib = g->link_libs_list.at(i);
@@ -7772,6 +7800,8 @@ LinkLib *add_link_lib(CodeGen *g, Buf *name) {
 
     if (is_libc)
         g->libc_link_lib = link_lib;
+    if (is_libcpp)
+        g->libcpp_link_lib = link_lib;
 
     return link_lib;
 }
@@ -9013,7 +9043,7 @@ static void resolve_llvm_types_fn_type(CodeGen *g, ZigType *fn_type) {
     FnTypeId *fn_type_id = &fn_type->data.fn.fn_type_id;
     bool first_arg_return = want_first_arg_sret(g, fn_type_id);
     bool is_async = fn_type_id->cc == CallingConventionAsync;
-    bool is_c_abi = fn_type_id->cc == CallingConventionC;
+    bool is_c_abi = !calling_convention_allows_zig_types(fn_type_id->cc);
     bool prefix_arg_error_return_trace = g->have_err_ret_tracing && fn_type_can_fail(fn_type_id);
     // +1 for maybe making the first argument the return value
     // +1 for maybe first argument the error return trace

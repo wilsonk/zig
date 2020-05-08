@@ -182,11 +182,12 @@
   <body>
     <div id="main-wrapper">
       <div id="index">
-        <a href="https://ziglang.org/documentation/0.1.1">0.1.1</a> |
-        <a href="https://ziglang.org/documentation/0.2.0">0.2.0</a> |
-        <a href="https://ziglang.org/documentation/0.3.0">0.3.0</a> |
-        <a href="https://ziglang.org/documentation/0.4.0">0.4.0</a> |
-        <a href="https://ziglang.org/documentation/0.5.0">0.5.0</a> |
+        <a href="https://ziglang.org/documentation/0.1.1/">0.1.1</a> |
+        <a href="https://ziglang.org/documentation/0.2.0/">0.2.0</a> |
+        <a href="https://ziglang.org/documentation/0.3.0/">0.3.0</a> |
+        <a href="https://ziglang.org/documentation/0.4.0/">0.4.0</a> |
+        <a href="https://ziglang.org/documentation/0.5.0/">0.5.0</a> |
+        <a href="https://ziglang.org/documentation/0.6.0/">0.6.0</a> |
         master
         <h1>Index</h1>
         {#nav#}
@@ -247,8 +248,7 @@ pub fn main() void {
 }
       {#code_end#}
       <p>
-      Note that we also left off the {#syntax#}!{#endsyntax#} from the return type.
-      In Zig, if your main function cannot fail, you must use the {#syntax#}void{#endsyntax#} return type.
+      Note that you can leave off the {#syntax#}!{#endsyntax#} from the return type because {#syntax#}warn{#endsyntax#} cannot fail.
       </p>
       {#see_also|Values|@import|Errors|Root Source File#}
       {#header_close#}
@@ -985,7 +985,7 @@ export fn foo_strict(x: f64) f64 {
 }
 
 export fn foo_optimized(x: f64) f64 {
-    @setFloatMode(builtin.FloatMode.Optimized);
+    @setFloatMode(.Optimized);
     return x + big - big;
 }
       {#code_end#}
@@ -1644,9 +1644,7 @@ x{} x.* x.?
 ! * / % ** *% ||
 + - ++ +% -%
 << >>
-&
-^
-|
+& ^ |
 == != < > <= >=
 and
 or
@@ -1852,8 +1850,8 @@ test "null terminated array" {
       {#header_open|Vectors#}
       <p>
       A vector is a group of {#link|Integers#}, {#link|Floats#}, or {#link|Pointers#} which are operated on
-      in parallel using a single instruction ({#link|SIMD#}). Vector types are created with the builtin
-      function {#link|@Vector#}.
+      in parallel using a single instruction ({#link|SIMD#}). Vector types are created with the builtin function {#link|@Type#},
+      or using the shorthand as {#syntax#}std.meta.Vector{#endsyntax#}.
       </p>
       <p>
       TODO talk about C ABI interop
@@ -1887,7 +1885,7 @@ test "null terminated array" {
               <li>Supports slice syntax: {#syntax#}ptr[start..end]{#endsyntax#}</li>
               <li>Supports pointer arithmetic: {#syntax#}ptr + x{#endsyntax#}, {#syntax#}ptr - x{#endsyntax#}</li>
               <li>{#syntax#}T{#endsyntax#} must have a known size, which means that it cannot be
-              {#syntax#}c_void{#endsyntax#} or any other {#link|@OpaqueType#}.</li>
+              {#syntax#}c_void{#endsyntax#} or any other {#link|opaque type|Opaque Types#}.</li>
             </ul>
           </li>
       </ul>
@@ -2992,7 +2990,7 @@ test "simple union" {
       This turns the union into a <em>tagged</em> union, which makes it eligible
       to use with {#link|switch#} expressions. One can use {#link|@TagType#} to
       obtain the enum type from the union type.
-      Tagged unions coerce to their enum {#link|Type Coercion: unions and enums#}
+      Tagged unions coerce to their tag type: {#link|Type Coercion: unions and enums#}.
       </p>
       {#code_begin|test#}
 const std = @import("std");
@@ -4953,7 +4951,7 @@ const mem = std.mem;
 test "cast *[1][*]const u8 to [*]const ?[*]const u8" {
     const window_name = [1][*]const u8{"window name"};
     const x: [*]const ?[*]const u8 = &window_name;
-    assert(mem.eql(u8, std.mem.toSliceConst(u8, @ptrCast([*:0]const u8, x[0].?)), "window name"));
+    assert(mem.eql(u8, std.mem.spanZ(@ptrCast([*:0]const u8, x[0].?)), "window name"));
 }
       {#code_end#}
       {#header_close#}
@@ -4984,6 +4982,10 @@ test "implicit unsigned integer to signed integer" {
 }
 
 test "float widening" {
+    // Note: there is an open issue preventing this from working on aarch64:
+    // https://github.com/ziglang/zig/issues/3282
+    if (std.Target.current.cpu.arch == .aarch64) return error.SkipZigTest;
+
     var a: f16 = 12.34;
     var b: f32 = a;
     var c: f64 = b;
@@ -5390,7 +5392,7 @@ fn eql_i32(a: i32, b: i32) bool {
       </p>
       <p>
       {#syntax#}void{#endsyntax#} is distinct from {#syntax#}c_void{#endsyntax#}, which is defined like this:
-              {#syntax#}pub const c_void = @OpaqueType();{#endsyntax#}.
+              {#syntax#}pub const c_void = @Type(.Opaque);{#endsyntax#}.
                   {#syntax#}void{#endsyntax#} has a known size of 0 bytes, and {#syntax#}c_void{#endsyntax#} has an unknown, but non-zero, size.
       </p>
       <p>
@@ -6711,7 +6713,7 @@ const assert = std.debug.assert;
 test "async fn pointer in a struct field" {
     var data: i32 = 1;
     const Foo = struct {
-        bar: async fn (*i32) void,
+        bar: fn (*i32) callconv(.Async) void,
     };
     var foo = Foo{ .bar = func };
     var bytes: [64]u8 align(@alignOf(@Frame(func))) = undefined;
@@ -6721,7 +6723,7 @@ test "async fn pointer in a struct field" {
     assert(data == 4);
 }
 
-async fn func(y: *i32) void {
+fn func(y: *i32) void {
     defer y.* += 2;
     y.* += 1;
     suspend;
@@ -7664,36 +7666,13 @@ mem.set(u8, dest, c);{#endsyntax#}</pre>
       </p>
       {#header_close#}
 
-      {#header_open|@OpaqueType#}
-      <pre>{#syntax#}@OpaqueType() type{#endsyntax#}</pre>
-      <p>
-      Creates a new type with an unknown (but non-zero) size and alignment.
-      </p>
-      <p>
-      This is typically used for type safety when interacting with C code that does not expose struct details.
-      Example:
-      </p>
-      {#code_begin|test_err|expected type '*Derp', found '*Wat'#}
-const Derp = @OpaqueType();
-const Wat = @OpaqueType();
-
-extern fn bar(d: *Derp) void;
-fn foo(w: *Wat) callconv(.C) void {
-    bar(w);
-}
-
-test "call foo" {
-    foo(undefined);
-}
-      {#code_end#}
-      {#header_close#}
-
       {#header_open|@panic#}
       <pre>{#syntax#}@panic(message: []const u8) noreturn{#endsyntax#}</pre>
       <p>
       Invokes the panic handler function. By default the panic handler function
       calls the public {#syntax#}panic{#endsyntax#} function exposed in the root source file, or
-          if there is not one specified, invokes the one provided in {#syntax#}std/special/panic.zig{#endsyntax#}.
+      if there is not one specified, the {#syntax#}std.builtin.default_panic{#endsyntax#}
+      function from {#syntax#}std/builtin.zig{#endsyntax#}.
       </p>
       <p>Generally it is better to use {#syntax#}@import("std").debug.panic{#endsyntax#}.
           However, {#syntax#}@panic{#endsyntax#} can be useful for 2 scenarios:
@@ -7931,7 +7910,7 @@ test "@setRuntimeSafety" {
       {#header_close#}
 
       {#header_open|@shuffle#}
-      <pre>{#syntax#}@shuffle(comptime E: type, a: @Vector(a_len, E), b: @Vector(b_len, E), comptime mask: @Vector(mask_len, i32)) @Vector(mask_len, E){#endsyntax#}</pre>
+      <pre>{#syntax#}@shuffle(comptime E: type, a: std.meta.Vector(a_len, E), b: std.meta.Vector(b_len, E), comptime mask: std.meta.Vector(mask_len, i32)) std.meta.Vector(mask_len, E){#endsyntax#}</pre>
       <p>
       Constructs a new {#link|vector|Vectors#} by selecting elements from {#syntax#}a{#endsyntax#} and
       {#syntax#}b{#endsyntax#} based on {#syntax#}mask{#endsyntax#}.
@@ -7987,7 +7966,7 @@ test "@setRuntimeSafety" {
       {#header_close#}
 
       {#header_open|@splat#}
-      <pre>{#syntax#}@splat(comptime len: u32, scalar: var) @Vector(len, @TypeOf(scalar)){#endsyntax#}</pre>
+      <pre>{#syntax#}@splat(comptime len: u32, scalar: var) std.meta.Vector(len, @TypeOf(scalar)){#endsyntax#}</pre>
       <p>
       Produces a vector of length {#syntax#}len{#endsyntax#} where each element is the value
       {#syntax#}scalar{#endsyntax#}:
@@ -7999,7 +7978,7 @@ const assert = std.debug.assert;
 test "vector @splat" {
     const scalar: u32 = 5;
     const result = @splat(4, scalar);
-    comptime assert(@TypeOf(result) == @Vector(4, u32));
+    comptime assert(@TypeOf(result) == std.meta.Vector(4, u32));
     assert(std.mem.eql(u32, &@as([4]u32, result), &[_]u32{ 5, 5, 5, 5 }));
 }
       {#code_end#}
@@ -8166,7 +8145,7 @@ test "vector @splat" {
       {#header_open|@tagName#}
       <pre>{#syntax#}@tagName(value: var) []const u8{#endsyntax#}</pre>
       <p>
-      Converts an enum value or union value to a slice of bytes representing the name.
+      Converts an enum value or union value to a slice of bytes representing the name.</p><p>If the enum is non-exhaustive and the tag value does not map to a name, it invokes safety-checked {#link|Undefined Behavior#}.
       </p>
       {#header_close#}
 
@@ -8210,9 +8189,7 @@ fn List(comptime T: type) type {
       {#code_end#}
       <p>
       When {#syntax#}@This(){#endsyntax#} is used at global scope, it returns a reference to the
-      current import. There is a proposal to remove the import type and use an empty struct
-      type instead. See
-      <a href="https://github.com/ziglang/zig/issues/1047">#1047</a> for details.
+      struct that corresponds to the current file.
       </p>
       {#header_close#}
 
@@ -8271,21 +8248,21 @@ test "integer truncation" {
           <li>{#syntax#}comptime_float{#endsyntax#}</li>
           <li>{#syntax#}@TypeOf(undefined){#endsyntax#}</li>
           <li>{#syntax#}@TypeOf(null){#endsyntax#}</li>
+          <li>{#link|Arrays#}</li>
+          <li>{#link|Optionals#}</li>
+          <li>{#link|Error Union Type#}</li>
+          <li>{#link|Vectors#}</li>
+          <li>{#link|Opaque Types#}</li>
+          <li>AnyFrame</li>
       </ul>
       <p>
       For these types it is a
       <a href="https://github.com/ziglang/zig/issues/2907">TODO in the compiler to implement</a>:
       </p>
       <ul>
-          <li>Array</li>
-          <li>Optional</li>
-          <li>ErrorUnion</li>
           <li>ErrorSet</li>
           <li>Enum</li>
-          <li>Opaque</li>
           <li>FnFrame</li>
-          <li>AnyFrame</li>
-          <li>Vector</li>
           <li>EnumLiteral</li>
       </ul>
       <p>
@@ -8357,17 +8334,28 @@ fn foo(comptime T: type, ptr: *T) T {
       {#syntax#}@unionInit{#endsyntax#} forwards its {#link|result location|Result Location Semantics#} to {#syntax#}init_expr{#endsyntax#}.
       </p>
       {#header_close#}
-
-      {#header_open|@Vector#}
-      <pre>{#syntax#}@Vector(comptime len: u32, comptime ElemType: type) type{#endsyntax#}</pre>
-      <p>
-      This function returns a vector type for {#link|SIMD#}.
-      </p>
-      <p>
-      {#syntax#}ElemType{#endsyntax#} must be an {#link|integer|Integers#}, a {#link|float|Floats#}, or a
-      {#link|pointer|Pointers#}.
-      </p>
       {#header_close#}
+
+      {#header_open|Opaque Types#}
+      {#syntax#}@Type(.Opaque){#endsyntax#} creates a new type with an unknown (but non-zero) size and alignment.
+      </p>
+      <p>
+      This is typically used for type safety when interacting with C code that does not expose struct details.
+      Example:
+      </p>
+      {#code_begin|test_err|expected type '*Derp', found '*Wat'#}
+const Derp = @Type(.Opaque);
+const Wat = @Type(.Opaque);
+
+extern fn bar(d: *Derp) void;
+fn foo(w: *Wat) callconv(.C) void {
+    bar(w);
+}
+
+test "call foo" {
+    foo(undefined);
+}
+      {#code_end#}
       {#header_close#}
 
       {#header_open|Build Mode#}
@@ -9306,7 +9294,7 @@ test "string literal to constant slice" {
       </p>
       <p>
       Sometimes the lifetime of a pointer may be more complicated. For example, when using
-      {#syntax#}std.ArrayList(T).toSlice(){#endsyntax#}, the returned slice has a lifetime that remains
+      {#syntax#}std.ArrayList(T).span(){#endsyntax#}, the returned slice has a lifetime that remains
       valid until the next time the list is resized, such as by appending new elements.
       </p>
       <p>
@@ -9475,7 +9463,7 @@ pub fn main() void {
 const builtin = @import("builtin");
 
 const c = @cImport({
-    @cDefine("NDEBUG", builtin.mode == builtin.Mode.ReleaseFast);
+    @cDefine("NDEBUG", builtin.mode == .ReleaseFast);
     if (something) {
         @cDefine("_GNU_SOURCE", {});
     }
@@ -10073,7 +10061,6 @@ fn readU32Be() u32 {}
       {#header_open|Keyword: pub#}
       <p>The {#syntax#}pub{#endsyntax#} in front of a top level declaration makes the
       declaration available to reference from a different file than the one it is declared in.</p>
-      <p><a href="https://github.com/ziglang/zig/issues/2059">TODO delete pub syntax for fields, or make it do something.</a></p>
       {#see_also|@import#}
       {#header_close#}
       {#header_close#}
@@ -10099,7 +10086,7 @@ TopLevelDecl
      / (KEYWORD_export / KEYWORD_extern STRINGLITERALSINGLE?)? KEYWORD_threadlocal? VarDecl
      / KEYWORD_usingnamespace Expr SEMICOLON
 
-FnProto &lt;- FnCC? KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? LinkSection? EXCLAMATIONMARK? (KEYWORD_var / TypeExpr)
+FnProto &lt;- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? LinkSection? EXCLAMATIONMARK? (KEYWORD_var / TypeExpr)
 
 VarDecl &lt;- (KEYWORD_const / KEYWORD_var) IDENTIFIER (COLON TypeExpr)? ByteAlign? LinkSection? (EQUAL Expr)? SEMICOLON
 
@@ -10265,11 +10252,6 @@ FieldInit &lt;- DOT IDENTIFIER EQUAL Expr
 WhileContinueExpr &lt;- COLON LPAREN AssignExpr RPAREN
 
 LinkSection &lt;- KEYWORD_linksection LPAREN Expr RPAREN
-
-# Fn specific
-FnCC
-    &lt;- KEYWORD_extern
-     / KEYWORD_async
 
 ParamDecl &lt;- (KEYWORD_noalias / KEYWORD_comptime)? (IDENTIFIER COLON)? ParamType
 

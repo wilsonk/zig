@@ -83,6 +83,9 @@ pub extern "kernel32" fn GetCommandLineA() callconv(.Stdcall) LPSTR;
 pub extern "kernel32" fn GetConsoleMode(in_hConsoleHandle: HANDLE, out_lpMode: *DWORD) callconv(.Stdcall) BOOL;
 
 pub extern "kernel32" fn GetConsoleScreenBufferInfo(hConsoleOutput: HANDLE, lpConsoleScreenBufferInfo: *CONSOLE_SCREEN_BUFFER_INFO) callconv(.Stdcall) BOOL;
+pub extern "kernel32" fn FillConsoleOutputCharacterA(hConsoleOutput: HANDLE, cCharacter: TCHAR, nLength: DWORD, dwWriteCoord: COORD, lpNumberOfCharsWritten: LPDWORD) callconv(.Stdcall) BOOL;
+pub extern "kernel32" fn FillConsoleOutputAttribute(hConsoleOutput: HANDLE, wAttribute: WORD, nLength: DWORD, dwWriteCoord: COORD, lpNumberOfAttrsWritten: LPDWORD) callconv(.Stdcall) BOOL;
+pub extern "kernel32" fn SetConsoleCursorPosition(hConsoleOutput: HANDLE, dwCursorPosition: COORD) callconv(.Stdcall) BOOL;
 
 pub extern "kernel32" fn GetCurrentDirectoryW(nBufferLength: DWORD, lpBuffer: ?[*]WCHAR) callconv(.Stdcall) DWORD;
 
@@ -103,7 +106,9 @@ pub extern "kernel32" fn GetFileAttributesW(lpFileName: [*]const WCHAR) callconv
 
 pub extern "kernel32" fn GetModuleFileNameW(hModule: ?HMODULE, lpFilename: [*]u16, nSize: DWORD) callconv(.Stdcall) DWORD;
 
-pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*]const WCHAR) callconv(.Stdcall) ?HMODULE;
+pub extern "kernel32" fn GetModuleHandleA(lpModuleName: ?LPCSTR) callconv(.Stdcall) ?HMODULE;
+
+pub extern "kernel32" fn GetModuleHandleW(lpModuleName: ?[*:0]const WCHAR) callconv(.Stdcall) ?HMODULE;
 
 pub extern "kernel32" fn GetLastError() callconv(.Stdcall) Win32Error;
 

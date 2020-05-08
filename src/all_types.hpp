@@ -19,6 +19,11 @@
 #include "target.hpp"
 #include "tokenizer.hpp"
 
+#ifndef NDEBUG
+#define DBG_MACRO_NO_WARNING
+#include <dbg.h>
+#endif
+
 struct AstNode;
 struct ZigFn;
 struct Scope;
@@ -53,6 +58,16 @@ struct ResultLocBitCast;
 struct ResultLocCast;
 struct ResultLocReturn;
 struct IrExecutableGen;
+
+enum FileExt {
+    FileExtUnknown,
+    FileExtAsm,
+    FileExtC,
+    FileExtCpp,
+    FileExtHeader,
+    FileExtLLVMIr,
+    FileExtLLVMBitCode,
+};
 
 enum PtrLen {
     PtrLenUnknown,
@@ -514,9 +529,10 @@ struct ZigValue {
         RuntimeHintSlice rh_slice;
     } data;
 
-    // uncomment these to find bugs. can't leave them uncommented because of a gcc-9 warning
-    //ZigValue(const ZigValue &other) = delete; // plz zero initialize with {}
+    // uncomment this to find bugs. can't leave it uncommented because of a gcc-9 warning
     //ZigValue& operator= (const ZigValue &other) = delete; // use copy_const_val
+
+    ZigValue(const ZigValue &other) = delete; // plz zero initialize with ZigValue val = {};
 
     // for use in debuggers
     void dump();
@@ -656,7 +672,7 @@ enum NodeType {
     NodeTypeSwitchProng,
     NodeTypeSwitchRange,
     NodeTypeCompTime,
-    NodeTypeNoAsync,
+    NodeTypeNoSuspend,
     NodeTypeBreak,
     NodeTypeContinue,
     NodeTypeAsmExpr,
@@ -702,7 +718,6 @@ struct AstNodeFnProto {
     Buf doc_comments;
 
     FnInline fn_inline;
-    bool is_async;
 
     VisibMod visib_mod;
     bool auto_err_set;
@@ -846,7 +861,7 @@ enum CallModifier {
     CallModifierAsync,
     CallModifierNeverTail,
     CallModifierNeverInline,
-    CallModifierNoAsync,
+    CallModifierNoSuspend,
     CallModifierAlwaysTail,
     CallModifierAlwaysInline,
     CallModifierCompileTime,
@@ -998,7 +1013,7 @@ struct AstNodeCompTime {
     AstNode *expr;
 };
 
-struct AstNodeNoAsync {
+struct AstNodeNoSuspend {
     AstNode *expr;
 };
 
@@ -1209,7 +1224,7 @@ struct AstNode {
         AstNodeSwitchProng switch_prong;
         AstNodeSwitchRange switch_range;
         AstNodeCompTime comptime_expr;
-        AstNodeNoAsync noasync_expr;
+        AstNodeNoSuspend nosuspend_expr;
         AstNodeAsmExpr asm_expr;
         AstNodeFieldAccessExpr field_access_expr;
         AstNodePtrDerefExpr ptr_deref_expr;
@@ -1324,6 +1339,7 @@ struct ZigTypeFloat {
     size_t bit_count;
 };
 
+// Needs to have the same memory layout as ZigTypeVector
 struct ZigTypeArray {
     ZigType *child_type;
     uint64_t len;
@@ -1512,11 +1528,16 @@ struct ZigTypeBoundFn {
     ZigType *fn_type;
 };
 
+// Needs to have the same memory layout as ZigTypeArray
 struct ZigTypeVector {
     // The type must be a pointer, integer, bool, or float
     ZigType *elem_type;
-    uint32_t len;
+    uint64_t len;
+    size_t padding;
 };
+
+// A lot of code is relying on ZigTypeArray and ZigTypeVector having the same layout/size
+static_assert(sizeof(ZigTypeVector) == sizeof(ZigTypeArray), "Size of ZigTypeVector and ZigTypeArray do not match!");
 
 enum ZigTypeId {
     ZigTypeIdInvalid,
@@ -1836,7 +1857,7 @@ enum PanicMsgId {
     PanicMsgIdResumedAnAwaitingFn,
     PanicMsgIdFrameTooSmall,
     PanicMsgIdResumedFnPendingAwait,
-    PanicMsgIdBadNoAsyncCall,
+    PanicMsgIdBadNoSuspendCall,
     PanicMsgIdResumeNotSuspendedFn,
     PanicMsgIdBadSentinel,
     PanicMsgIdShxTooBigRhs,
@@ -1999,6 +2020,12 @@ enum WantCSanitize {
     WantCSanitizeEnabled,
 };
 
+enum OptionalBool {
+    OptionalBoolNull,
+    OptionalBoolFalse,
+    OptionalBoolTrue,
+};
+
 struct CFile {
     ZigList<const char *> args;
     const char *source_path;
@@ -2019,6 +2046,7 @@ struct CodeGen {
     ZigLLVMDICompileUnit *compile_unit;
     ZigLLVMDIFile *compile_unit_file;
     LinkLib *libc_link_lib;
+    LinkLib *libcpp_link_lib;
     LLVMTargetDataRef target_data_ref;
     LLVMTargetMachineRef target_machine;
     ZigLLVMDIFile *dummy_di_file;
@@ -2060,7 +2088,7 @@ struct CodeGen {
     HashMap<Scope *, ZigValue *, fn_eval_hash, fn_eval_eql> memoized_fn_eval_table;
     HashMap<ZigLLVMFnKey, LLVMValueRef, zig_llvm_fn_key_hash, zig_llvm_fn_key_eql> llvm_fn_table;
     HashMap<Buf *, Tld *, buf_hash, buf_eql_buf> exported_symbol_names;
-    HashMap<Buf *, Tld *, buf_hash, buf_eql_buf> external_prototypes;
+    HashMap<Buf *, Tld *, buf_hash, buf_eql_buf> external_symbol_names;
     HashMap<Buf *, ZigValue *, buf_hash, buf_eql_buf> string_literals_table;
     HashMap<const ZigType *, ZigValue *, type_ptr_hash, type_ptr_eql> type_info_cache;
     HashMap<const ZigType *, ZigValue *, type_ptr_hash, type_ptr_eql> one_possible_values;
@@ -2213,6 +2241,7 @@ struct CodeGen {
     bool reported_bad_link_libc_error;
     bool is_dynamic; // shared library rather than static library. dynamic musl rather than static musl.
     bool need_frame_size_prefix_data;
+    bool disable_c_depfile;
 
     //////////////////////////// Participates in Input Parameter Cache Hash
     /////// Note: there is a separate cache hash for builtin.zig, when adding fields,
@@ -2235,12 +2264,17 @@ struct CodeGen {
     size_t version_minor;
     size_t version_patch;
     const char *linker_script;
+    size_t stack_size_override;
 
     BuildMode build_mode;
     OutType out_type;
     const ZigTarget *zig_target;
     TargetSubsystem subsystem; // careful using this directly; see detect_subsystem
     ValgrindSupport valgrind_support;
+    CodeModel code_model;
+    OptionalBool linker_gc_sections;
+    OptionalBool linker_allow_shlib_undefined;
+    OptionalBool linker_bind_global_refs_locally;
     bool strip_debug_symbols;
     bool is_test_build;
     bool is_single_threaded;
@@ -2261,7 +2295,8 @@ struct CodeGen {
     bool emit_asm;
     bool emit_llvm_ir;
     bool test_is_evented;
-    CodeModel code_model;
+    bool linker_z_nodelete;
+    bool linker_z_defs;
 
     Buf *root_out_name;
     Buf *test_filter;
@@ -2270,6 +2305,7 @@ struct CodeGen {
     Buf *zig_std_dir;
     Buf *version_script_path;
     Buf *override_soname;
+    Buf *linker_optimization;
 
     const char **llvm_argv;
     size_t llvm_argv_len;
@@ -2339,7 +2375,7 @@ enum ScopeId {
     ScopeIdRuntime,
     ScopeIdTypeOf,
     ScopeIdExpr,
-    ScopeIdNoAsync,
+    ScopeIdNoSuspend,
 };
 
 struct Scope {
@@ -2376,6 +2412,7 @@ struct ScopeDecls {
 enum LVal {
     LValNone,
     LValPtr,
+    LValAssign,
 };
 
 // This scope comes from a block expression in user code.
@@ -2472,9 +2509,9 @@ struct ScopeCompTime {
     Scope base;
 };
 
-// This scope is created for a noasync expression.
-// NodeTypeNoAsync
-struct ScopeNoAsync {
+// This scope is created for a nosuspend expression.
+// NodeTypeNoSuspend
+struct ScopeNoSuspend {
     Scope base;
 };
 
@@ -2558,11 +2595,8 @@ struct IrBasicBlockSrc {
 
 struct IrBasicBlockGen {
     ZigList<IrInstGen *> instruction_list;
-    IrBasicBlockSrc *parent;
     Scope *scope;
     const char *name_hint;
-    uint32_t index; // index into the basic block list
-    uint32_t ref_count;
     LLVMBasicBlockRef llvm_block;
     LLVMBasicBlockRef llvm_exit_block;
     // The instruction that referenced this basic block and caused us to
@@ -3423,7 +3457,6 @@ struct IrInstSrcOptionalUnwrapPtr {
 
     IrInstSrc *base_ptr;
     bool safety_check_on;
-    bool initializing;
 };
 
 struct IrInstGenOptionalUnwrapPtr {
@@ -3489,8 +3522,6 @@ struct IrInstSrcRef {
     IrInstSrc base;
 
     IrInstSrc *value;
-    bool is_const;
-    bool is_volatile;
 };
 
 struct IrInstGenRef {
@@ -4456,7 +4487,7 @@ struct IrInstSrcAwait {
 
     IrInstSrc *frame;
     ResultLoc *result_loc;
-    bool is_noasync;
+    bool is_nosuspend;
 };
 
 struct IrInstGenAwait {
@@ -4465,7 +4496,7 @@ struct IrInstGenAwait {
     IrInstGen *frame;
     IrInstGen *result_loc;
     ZigFn *target_fn;
-    bool is_noasync;
+    bool is_nosuspend;
 };
 
 struct IrInstSrcResume {

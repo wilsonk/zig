@@ -10,7 +10,7 @@ const windows = os.windows;
 const mem = std.mem;
 const debug = std.debug;
 const BufMap = std.BufMap;
-const Buffer = std.Buffer;
+const ArrayListSentineled = std.ArrayListSentineled;
 const builtin = @import("builtin");
 const Os = builtin.Os;
 const TailQueue = std.TailQueue;
@@ -46,6 +46,10 @@ pub const ChildProcess = struct {
 
     /// Set to change the current working directory when spawning the child process.
     cwd: ?[]const u8,
+    /// Set to change the current working directory when spawning the child process.
+    /// This is not yet implemented for Windows. See https://github.com/ziglang/zig/issues/5190
+    /// Once that is done, `cwd` will be deprecated in favor of this field.
+    cwd_dir: ?fs.Dir = null,
 
     err_pipe: if (builtin.os.tag == .windows) void else [2]os.fd_t,
 
@@ -175,32 +179,15 @@ pub const ChildProcess = struct {
         stderr: []u8,
     };
 
-    /// Spawns a child process, waits for it, collecting stdout and stderr, and then returns.
-    /// If it succeeds, the caller owns result.stdout and result.stderr memory.
-    /// TODO deprecate in favor of exec2
-    pub fn exec(
-        allocator: *mem.Allocator,
-        argv: []const []const u8,
-        cwd: ?[]const u8,
-        env_map: ?*const BufMap,
-        max_output_bytes: usize,
-    ) !ExecResult {
-        return exec2(.{
-            .allocator = allocator,
-            .argv = argv,
-            .cwd = cwd,
-            .env_map = env_map,
-            .max_output_bytes = max_output_bytes,
-        });
-    }
+    pub const exec2 = @compileError("deprecated: exec2 is renamed to exec");
 
     /// Spawns a child process, waits for it, collecting stdout and stderr, and then returns.
     /// If it succeeds, the caller owns result.stdout and result.stderr memory.
-    /// TODO rename to exec
-    pub fn exec2(args: struct {
+    pub fn exec(args: struct {
         allocator: *mem.Allocator,
         argv: []const []const u8,
         cwd: ?[]const u8 = null,
+        cwd_dir: ?fs.Dir = null,
         env_map: ?*const BufMap = null,
         max_output_bytes: usize = 50 * 1024,
         expand_arg0: Arg0Expand = .no_expand,
@@ -212,6 +199,7 @@ pub const ChildProcess = struct {
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
         child.cwd = args.cwd;
+        child.cwd_dir = args.cwd_dir;
         child.env_map = args.env_map;
         child.expand_arg0 = args.expand_arg0;
 
@@ -370,11 +358,12 @@ pub const ChildProcess = struct {
 
         const any_ignore = (self.stdin_behavior == StdIo.Ignore or self.stdout_behavior == StdIo.Ignore or self.stderr_behavior == StdIo.Ignore);
         const dev_null_fd = if (any_ignore)
-            os.openC("/dev/null", os.O_RDWR, 0) catch |err| switch (err) {
+            os.openZ("/dev/null", os.O_RDWR, 0) catch |err| switch (err) {
                 error.PathAlreadyExists => unreachable,
                 error.NoSpaceLeft => unreachable,
                 error.FileTooBig => unreachable,
                 error.DeviceBusy => unreachable,
+                error.FileLocksNotSupported => unreachable,
                 else => |e| return e,
             }
         else
@@ -431,7 +420,9 @@ pub const ChildProcess = struct {
                 os.close(stderr_pipe[1]);
             }
 
-            if (self.cwd) |cwd| {
+            if (self.cwd_dir) |cwd| {
+                os.fchdir(cwd.fd) catch |err| forkChildErrReport(err_pipe[1], err);
+            } else if (self.cwd) |cwd| {
                 os.chdir(cwd) catch |err| forkChildErrReport(err_pipe[1], err);
             }
 
@@ -450,26 +441,17 @@ pub const ChildProcess = struct {
         // we are the parent
         const pid = @intCast(i32, pid_result);
         if (self.stdin_behavior == StdIo.Pipe) {
-            self.stdin = File{
-                .handle = stdin_pipe[1],
-                .io_mode = std.io.mode,
-            };
+            self.stdin = File{ .handle = stdin_pipe[1] };
         } else {
             self.stdin = null;
         }
         if (self.stdout_behavior == StdIo.Pipe) {
-            self.stdout = File{
-                .handle = stdout_pipe[0],
-                .io_mode = std.io.mode,
-            };
+            self.stdout = File{ .handle = stdout_pipe[0] };
         } else {
             self.stdout = null;
         }
         if (self.stderr_behavior == StdIo.Pipe) {
-            self.stderr = File{
-                .handle = stderr_pipe[0],
-                .io_mode = std.io.mode,
-            };
+            self.stderr = File{ .handle = stderr_pipe[0] };
         } else {
             self.stderr = null;
         }
@@ -693,26 +675,17 @@ pub const ChildProcess = struct {
         };
 
         if (g_hChildStd_IN_Wr) |h| {
-            self.stdin = File{
-                .handle = h,
-                .io_mode = io.mode,
-            };
+            self.stdin = File{ .handle = h };
         } else {
             self.stdin = null;
         }
         if (g_hChildStd_OUT_Rd) |h| {
-            self.stdout = File{
-                .handle = h,
-                .io_mode = io.mode,
-            };
+            self.stdout = File{ .handle = h };
         } else {
             self.stdout = null;
         }
         if (g_hChildStd_ERR_Rd) |h| {
-            self.stderr = File{
-                .handle = h,
-                .io_mode = io.mode,
-            };
+            self.stderr = File{ .handle = h };
         } else {
             self.stderr = null;
         }
@@ -775,38 +748,36 @@ fn windowsCreateProcess(app_name: [*:0]u16, cmd_line: [*:0]u16, envp_ptr: ?[*]u1
 }
 
 /// Caller must dealloc.
-/// Guarantees a null byte at result[result.len].
-fn windowsCreateCommandLine(allocator: *mem.Allocator, argv: []const []const u8) ![]u8 {
-    var buf = try Buffer.initSize(allocator, 0);
+fn windowsCreateCommandLine(allocator: *mem.Allocator, argv: []const []const u8) ![:0]u8 {
+    var buf = try ArrayListSentineled(u8, 0).initSize(allocator, 0);
     defer buf.deinit();
-
-    var buf_stream = buf.outStream();
+    const buf_stream = buf.outStream();
 
     for (argv) |arg, arg_i| {
-        if (arg_i != 0) try buf.appendByte(' ');
+        if (arg_i != 0) try buf_stream.writeByte(' ');
         if (mem.indexOfAny(u8, arg, " \t\n\"") == null) {
-            try buf.append(arg);
+            try buf_stream.writeAll(arg);
             continue;
         }
-        try buf.appendByte('"');
+        try buf_stream.writeByte('"');
         var backslash_count: usize = 0;
         for (arg) |byte| {
             switch (byte) {
                 '\\' => backslash_count += 1,
                 '"' => {
                     try buf_stream.writeByteNTimes('\\', backslash_count * 2 + 1);
-                    try buf.appendByte('"');
+                    try buf_stream.writeByte('"');
                     backslash_count = 0;
                 },
                 else => {
                     try buf_stream.writeByteNTimes('\\', backslash_count);
-                    try buf.appendByte(byte);
+                    try buf_stream.writeByte(byte);
                     backslash_count = 0;
                 },
             }
         }
         try buf_stream.writeByteNTimes('\\', backslash_count * 2);
-        try buf.appendByte('"');
+        try buf_stream.writeByte('"');
     }
 
     return buf.toOwnedSlice();
@@ -849,13 +820,13 @@ fn forkChildErrReport(fd: i32, err: ChildProcess.SpawnError) noreturn {
     os.exit(1);
 }
 
-const ErrInt = std.meta.IntType(false, @sizeOf(anyerror) * 8);
+const ErrInt = std.meta.Int(false, @sizeOf(anyerror) * 8);
 
 fn writeIntFd(fd: i32, value: ErrInt) !void {
     const file = File{
         .handle = fd,
-        .io_mode = .blocking,
-        .async_block_allowed = File.async_block_allowed_yes,
+        .capable_io_mode = .blocking,
+        .intended_io_mode = .blocking,
     };
     file.outStream().writeIntNative(u64, @intCast(u64, value)) catch return error.SystemResources;
 }
@@ -863,8 +834,8 @@ fn writeIntFd(fd: i32, value: ErrInt) !void {
 fn readIntFd(fd: i32) !ErrInt {
     const file = File{
         .handle = fd,
-        .io_mode = .blocking,
-        .async_block_allowed = File.async_block_allowed_yes,
+        .capable_io_mode = .blocking,
+        .intended_io_mode = .blocking,
     };
     return @intCast(ErrInt, file.inStream().readIntNative(u64) catch return error.SystemResources);
 }

@@ -1,6 +1,75 @@
 const tests = @import("tests.zig");
 
 pub fn addCases(cases: *tests.CompareOutputContext) void {
+    {
+        const check_panic_msg =
+            \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+            \\    if (std.mem.eql(u8, message, "index out of bounds")) {
+            \\        std.process.exit(126); // good
+            \\    }
+            \\    std.process.exit(0); // test failed
+            \\}
+        ;
+
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf = [4]u8{'a','b','c',0};
+            \\    const slice = buf[0..4 :0];
+            \\}
+        );
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf = [4]u8{'a','b','c',0};
+            \\    const slice = buf[0..:0];
+            \\}
+        );
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf_zero = [0]u8{};
+            \\    const slice = buf_zero[0..0 :0];
+            \\}
+        );
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf_zero = [0]u8{};
+            \\    const slice = buf_zero[0..:0];
+            \\}
+        );
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf_sentinel = [2:0]u8{'a','b'};
+            \\    @ptrCast(*[3]u8, &buf_sentinel)[2] = 0;
+            \\    const slice = buf_sentinel[0..3 :0];
+            \\}
+        );
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf_slice: []const u8 = &[3]u8{ 'a', 'b', 0 };
+            \\    const slice = buf_slice[0..3 :0];
+            \\}
+        );
+        cases.addRuntimeSafety("slicing operator with sentinel",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\pub fn main() void {
+            \\    var buf_slice: []const u8 = &[3]u8{ 'a', 'b', 0 };
+            \\    const slice = buf_slice[0.. :0];
+            \\}
+        );
+    }
+
     cases.addRuntimeSafety("shift left by huge amount",
         \\const std = @import("std");
         \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
@@ -165,12 +234,12 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\}
     );
 
-    cases.addRuntimeSafety("noasync function call, callee suspends",
+    cases.addRuntimeSafety("nosuspend function call, callee suspends",
         \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
         \\    @import("std").os.exit(126);
         \\}
         \\pub fn main() void {
-        \\    _ = noasync add(101, 100);
+        \\    _ = nosuspend add(101, 100);
         \\}
         \\fn add(a: i32, b: i32) i32 {
         \\    if (a > 100) {
@@ -213,7 +282,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    var ptr = other;
         \\    var frame = @asyncCall(&bytes, {}, ptr);
         \\}
-        \\async fn other() void {
+        \\fn other() callconv(.Async) void {
         \\    suspend;
         \\}
     );
@@ -403,11 +472,11 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    @import("std").os.exit(126);
         \\}
         \\pub fn main() void {
-        \\    var a: @Vector(4, i32) = [_]i32{ 1, 2, 2147483643, 4 };
-        \\    var b: @Vector(4, i32) = [_]i32{ 5, 6, 7, 8 };
+        \\    var a: @import("std").meta.Vector(4, i32) = [_]i32{ 1, 2, 2147483643, 4 };
+        \\    var b: @import("std").meta.Vector(4, i32) = [_]i32{ 5, 6, 7, 8 };
         \\    const x = add(a, b);
         \\}
-        \\fn add(a: @Vector(4, i32), b: @Vector(4, i32)) @Vector(4, i32) {
+        \\fn add(a: @import("std").meta.Vector(4, i32), b: @import("std").meta.Vector(4, i32)) @import("std").meta.Vector(4, i32) {
         \\    return a + b;
         \\}
     );
@@ -417,11 +486,11 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    @import("std").os.exit(126);
         \\}
         \\pub fn main() void {
-        \\    var a: @Vector(4, u32) = [_]u32{ 1, 2, 8, 4 };
-        \\    var b: @Vector(4, u32) = [_]u32{ 5, 6, 7, 8 };
+        \\    var a: @import("std").meta.Vector(4, u32) = [_]u32{ 1, 2, 8, 4 };
+        \\    var b: @import("std").meta.Vector(4, u32) = [_]u32{ 5, 6, 7, 8 };
         \\    const x = sub(b, a);
         \\}
-        \\fn sub(a: @Vector(4, u32), b: @Vector(4, u32)) @Vector(4, u32) {
+        \\fn sub(a: @import("std").meta.Vector(4, u32), b: @import("std").meta.Vector(4, u32)) @import("std").meta.Vector(4, u32) {
         \\    return a - b;
         \\}
     );
@@ -431,11 +500,11 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    @import("std").os.exit(126);
         \\}
         \\pub fn main() void {
-        \\    var a: @Vector(4, u8) = [_]u8{ 1, 2, 200, 4 };
-        \\    var b: @Vector(4, u8) = [_]u8{ 5, 6, 2, 8 };
+        \\    var a: @import("std").meta.Vector(4, u8) = [_]u8{ 1, 2, 200, 4 };
+        \\    var b: @import("std").meta.Vector(4, u8) = [_]u8{ 5, 6, 2, 8 };
         \\    const x = mul(b, a);
         \\}
-        \\fn mul(a: @Vector(4, u8), b: @Vector(4, u8)) @Vector(4, u8) {
+        \\fn mul(a: @import("std").meta.Vector(4, u8), b: @import("std").meta.Vector(4, u8)) @import("std").meta.Vector(4, u8) {
         \\    return a * b;
         \\}
     );
@@ -445,10 +514,10 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    @import("std").os.exit(126);
         \\}
         \\pub fn main() void {
-        \\    var a: @Vector(4, i16) = [_]i16{ 1, -32768, 200, 4 };
+        \\    var a: @import("std").meta.Vector(4, i16) = [_]i16{ 1, -32768, 200, 4 };
         \\    const x = neg(a);
         \\}
-        \\fn neg(a: @Vector(4, i16)) @Vector(4, i16) {
+        \\fn neg(a: @import("std").meta.Vector(4, i16)) @import("std").meta.Vector(4, i16) {
         \\    return -a;
         \\}
     );
@@ -501,6 +570,21 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    if (x == 32767) return error.Whatever;
         \\}
         \\fn div(a: i16, b: i16) i16 {
+        \\    return @divTrunc(a, b);
+        \\}
+    );
+
+    cases.addRuntimeSafety("signed integer division overflow - vectors",
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    @import("std").os.exit(126);
+        \\}
+        \\pub fn main() !void {
+        \\    var a: @import("std").meta.Vector(4, i16) = [_]i16{ 1, 2, -32768, 4 };
+        \\    var b: @import("std").meta.Vector(4, i16) = [_]i16{ 1, 2, -1, 4 };
+        \\    const x = div(a, b);
+        \\    if (x[2] == 32767) return error.Whatever;
+        \\}
+        \\fn div(a: @import("std").meta.Vector(4, i16), b: @import("std").meta.Vector(4, i16)) @import("std").meta.Vector(4, i16) {
         \\    return @divTrunc(a, b);
         \\}
     );
@@ -569,6 +653,20 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\}
     );
 
+    cases.addRuntimeSafety("integer division by zero - vectors",
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    @import("std").os.exit(126);
+        \\}
+        \\pub fn main() void {
+        \\    var a: @import("std").meta.Vector(4, i32) = [4]i32{111, 222, 333, 444};
+        \\    var b: @import("std").meta.Vector(4, i32) = [4]i32{111, 0, 333, 444};
+        \\    const x = div0(a, b);
+        \\}
+        \\fn div0(a: @import("std").meta.Vector(4, i32), b: @import("std").meta.Vector(4, i32)) @import("std").meta.Vector(4, i32) {
+        \\    return @divTrunc(a, b);
+        \\}
+    );
+
     cases.addRuntimeSafety("exact division failure",
         \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
         \\    @import("std").os.exit(126);
@@ -578,6 +676,20 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    if (x == 0) return error.Whatever;
         \\}
         \\fn divExact(a: i32, b: i32) i32 {
+        \\    return @divExact(a, b);
+        \\}
+    );
+
+    cases.addRuntimeSafety("exact division failure - vectors",
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    @import("std").os.exit(126);
+        \\}
+        \\pub fn main() !void {
+        \\    var a: @import("std").meta.Vector(4, i32) = [4]i32{111, 222, 333, 444};
+        \\    var b: @import("std").meta.Vector(4, i32) = [4]i32{111, 222, 333, 441};
+        \\    const x = divExact(a, b);
+        \\}
+        \\fn divExact(a: @import("std").meta.Vector(4, i32), b: @import("std").meta.Vector(4, i32)) @import("std").meta.Vector(4, i32) {
         \\    return @divExact(a, b);
         \\}
     );
@@ -762,16 +874,16 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    return &failing_frame;
         \\}
         \\
-        \\async fn failing() anyerror!void {
+        \\fn failing() anyerror!void {
         \\    suspend;
         \\    return second();
         \\}
         \\
-        \\async fn second() anyerror!void {
+        \\fn second() callconv(.Async) anyerror!void {
         \\    return error.Fail;
         \\}
         \\
-        \\async fn printTrace(p: anyframe->anyerror!void) void {
+        \\fn printTrace(p: anyframe->anyerror!void) void {
         \\    (await p) catch unreachable;
         \\}
     );
