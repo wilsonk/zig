@@ -1565,7 +1565,7 @@ value == null{#endsyntax#}</pre>
 const array1 = [_]u32{1,2};
 const array2 = [_]u32{3,4};
 const together = array1 ++ array2;
-mem.eql(u32, together, &[_]u32{1,2,3,4}){#endsyntax#}</pre>
+mem.eql(u32, &together, &[_]u32{1,2,3,4}){#endsyntax#}</pre>
           </td>
         </tr>
         <tr>
@@ -9988,6 +9988,13 @@ coding style.
       conventions.
       </p>
       <p>
+      File names fall into two categories: types and namespaces. If the file
+      (implicity a struct) has top level fields, it should be named like any
+      other struct with fields using {#syntax#}TitleCase{#endsyntax#}. Otherwise,
+      it should use {#syntax#}snake_case{#endsyntax#}. Directory names should be
+      {#syntax#}snake_case{#endsyntax#}.
+      </p>
+      <p>
       These are general rules of thumb; if it makes sense to do something different,
       do what makes sense. For example, if there is an established convention such as
       {#syntax#}ENOENT{#endsyntax#}, follow the established convention.
@@ -9996,6 +10003,7 @@ coding style.
       {#header_open|Examples#}
       {#code_begin|syntax#}
 const namespace_name = @import("dir_name/file_name.zig");
+const TypeName = @import("dir_name/TypeName.zig");
 var global_var: i32 = undefined;
 const const_name = 42;
 const primitive_type_alias = f32;
@@ -10096,6 +10104,7 @@ ContainerField &lt;- IDENTIFIER (COLON TypeExpr)? (EQUAL Expr)?
 Statement
     &lt;- KEYWORD_comptime? VarDecl
      / KEYWORD_comptime BlockExprStatement
+     / KEYWORD_nosuspend BlockExprStatement
      / KEYWORD_suspend (SEMICOLON / BlockExprStatement)
      / KEYWORD_defer BlockExprStatement
      / KEYWORD_errdefer BlockExprStatement
@@ -10152,6 +10161,7 @@ PrimaryExpr
      / IfExpr
      / KEYWORD_break BreakLabel? Expr?
      / KEYWORD_comptime Expr
+     / KEYWORD_nosuspend Expr
      / KEYWORD_continue BreakLabel?
      / KEYWORD_resume Expr
      / KEYWORD_return Expr?
@@ -10514,6 +10524,7 @@ KEYWORD_for         &lt;- 'for'         end_of_word
 KEYWORD_if          &lt;- 'if'          end_of_word
 KEYWORD_inline      &lt;- 'inline'      end_of_word
 KEYWORD_noalias     &lt;- 'noalias'     end_of_word
+KEYWORD_nosuspend   &lt;- 'nosuspend'   end_of_word
 KEYWORD_null        &lt;- 'null'        end_of_word
 KEYWORD_or          &lt;- 'or'          end_of_word
 KEYWORD_orelse      &lt;- 'orelse'      end_of_word
