@@ -105,6 +105,7 @@ pub const Builder = struct {
         Bool,
         Int,
         Float,
+        Enum,
         String,
         List,
     };
@@ -450,6 +451,27 @@ pub const Builder = struct {
             },
             TypeId.Int => panic("TODO integer options to build script", .{}),
             TypeId.Float => panic("TODO float options to build script", .{}),
+            TypeId.Enum => switch (entry.value.value) {
+                UserValue.Flag => {
+                    warn("Expected -D{} to be a string, but received a boolean.\n", .{name});
+                    self.markInvalidUserInput();
+                    return null;
+                },
+                UserValue.Scalar => |s| {
+                    if (std.meta.stringToEnum(T, s)) |enum_lit| {
+                        return enum_lit;
+                    } else {
+                        warn("Expected -D{} to be of type {}.\n", .{ name, @typeName(T) });
+                        self.markInvalidUserInput();
+                        return null;
+                    }
+                },
+                UserValue.List => {
+                    warn("Expected -D{} to be a string, but received a list.\n", .{name});
+                    self.markInvalidUserInput();
+                    return null;
+                },
+            },
             TypeId.String => switch (entry.value.value) {
                 UserValue.Flag => {
                     warn("Expected -D{} to be a string, but received a boolean.\n", .{name});
@@ -681,6 +703,7 @@ pub const Builder = struct {
             .Int => .Int,
             .Float => .Float,
             .Bool => .Bool,
+            .Enum => .Enum,
             else => switch (T) {
                 []const u8 => .String,
                 []const []const u8 => .List,
@@ -698,6 +721,7 @@ pub const Builder = struct {
             .Bool => "bool",
             .Int => "int",
             .Float => "float",
+            .Enum => "enum",
             .String => "string",
             .List => "list",
         };
@@ -1678,6 +1702,16 @@ pub const LibExeObjStep = struct {
 
     pub fn addBuildOption(self: *LibExeObjStep, comptime T: type, name: []const u8, value: T) void {
         const out = self.build_options_contents.outStream();
+        switch (@typeInfo(T)) {
+            .Enum => |enum_info| {
+                out.print("const {} = enum {{\n", .{@typeName(T)}) catch unreachable;
+                inline for (enum_info.fields) |field| {
+                    out.print("    {},\n", .{ field.name }) catch unreachable;
+                }
+                out.print("}};\n", .{}) catch unreachable;
+            },
+            else => {},
+        }
         out.print("pub const {} = {};\n", .{ name, value }) catch unreachable;
     }
 
@@ -1774,6 +1808,22 @@ pub const LibExeObjStep = struct {
                 self.frameworks.put(entry.key) catch unreachable;
             }
         }
+    }
+
+    fn makePackageCmd(self: *LibExeObjStep, pkg: Pkg, zig_args: *ArrayList([]const u8)) error{OutOfMemory}!void {
+        const builder = self.builder;
+
+        try zig_args.append("--pkg-begin");
+        try zig_args.append(pkg.name);
+        try zig_args.append(builder.pathFromRoot(pkg.path));
+
+        if (pkg.dependencies) |dependencies| {
+            for (dependencies) |sub_pkg| {
+                try self.makePackageCmd(sub_pkg, zig_args);
+            }
+        }
+
+        try zig_args.append("--pkg-end");
     }
 
     fn make(step: *Step) !void {
@@ -2042,21 +2092,9 @@ pub const LibExeObjStep = struct {
                 try zig_args.append("--test-cmd-bin");
             },
         }
+
         for (self.packages.span()) |pkg| {
-            try zig_args.append("--pkg-begin");
-            try zig_args.append(pkg.name);
-            try zig_args.append(builder.pathFromRoot(pkg.path));
-
-            if (pkg.dependencies) |dependencies| {
-                for (dependencies) |sub_pkg| {
-                    try zig_args.append("--pkg-begin");
-                    try zig_args.append(sub_pkg.name);
-                    try zig_args.append(builder.pathFromRoot(sub_pkg.path));
-                    try zig_args.append("--pkg-end");
-                }
-            }
-
-            try zig_args.append("--pkg-end");
+            try self.makePackageCmd(pkg, &zig_args);
         }
 
         for (self.include_dirs.span()) |include_dir| {

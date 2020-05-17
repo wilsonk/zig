@@ -2150,10 +2150,9 @@ fn renderParamDecl(
         try renderToken(tree, stream, name_token, indent, start_col, Space.None);
         try renderToken(tree, stream, tree.nextToken(name_token), indent, start_col, Space.Space); // :
     }
-    if (param_decl.var_args_token) |var_args_token| {
-        try renderToken(tree, stream, var_args_token, indent, start_col, space);
-    } else {
-        try renderExpression(allocator, stream, tree, indent, start_col, param_decl.type_node, space);
+    switch (param_decl.param_type) {
+        .var_args => |token|  try renderToken(tree, stream, token, indent, start_col, space),
+        .var_type, .type_expr => |node| try renderExpression(allocator, stream, tree, indent, start_col, node, space),
     }
 }
 
@@ -2333,8 +2332,10 @@ fn renderTokenOffset(
     }
 
     while (true) {
-        assert(loc.line != 0);
-        const newline_count = if (loc.line == 1) @as(u8, 1) else @as(u8, 2);
+        // translate-c doesn't generate correct newlines
+        // in generated code (loc.line == 0) so treat that case
+        // as though there was meant to be a newline between the tokens
+        const newline_count = if (loc.line <= 1) @as(u8, 1) else @as(u8, 2);
         try stream.writeByteNTimes('\n', newline_count);
         try stream.writeByteNTimes(' ', indent);
         try stream.writeAll(mem.trimRight(u8, tree.tokenSlicePtr(next_token), " "));
