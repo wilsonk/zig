@@ -203,7 +203,20 @@ const Function = struct {
 
             if (func_inst.val.cast(Value.Payload.Function)) |func_val| {
                 const func = func_val.func;
-                return self.fail(inst.base.src, "TODO implement calling function", .{});
+                const got = &self.bin_file.program_headers.items[self.bin_file.phdr_got_index.?];
+                const ptr_bits = self.target.cpu.arch.ptrBitWidth();
+                const ptr_bytes: u64 = @divExact(ptr_bits, 8);
+                const got_addr = @intCast(u32, got.p_vaddr + func.owner_decl.link.offset_table_index * ptr_bytes);
+                // ff 14 25 xx xx xx xx    call [addr]
+                try self.code.resize(self.code.items.len + 7);
+                self.code.items[self.code.items.len - 7 ..][0..3].* = [3]u8{ 0xff, 0x14, 0x25 };
+                mem.writeIntLittle(u32, self.code.items[self.code.items.len - 4 ..][0..4], got_addr);
+                const return_type = func.fn_type.fnReturnType();
+                switch (return_type.zigTypeTag()) {
+                    .Void => return MCValue{ .none = {} },
+                    .NoReturn => return MCValue{ .unreach = {} },
+                    else => return self.fail(inst.base.src, "TODO implement fn call with non-void return value", .{}),
+                }
             } else {
                 return self.fail(inst.base.src, "TODO implement calling weird function values", .{});
             }
@@ -465,7 +478,7 @@ const Function = struct {
                         return self.fail(src, "TODO decide whether to implement non-64-bit loads", .{});
                     }
                     const src_reg = @intToEnum(Reg(arch), @intCast(u8, r));
-                    // This is a varient of 8B /r. Since we're using 64-bit moves, we require a REX.
+                    // This is a variant of 8B /r. Since we're using 64-bit moves, we require a REX.
                     // This is thus three bytes: REX 0x8B R/M.
                     // If the destination is extended, the R field must be 1.
                     // If the *source* is extended, the B field must be 1.
