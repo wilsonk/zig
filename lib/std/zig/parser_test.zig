@@ -210,6 +210,19 @@ test "recovery: invalid comptime" {
     });
 }
 
+test "recovery: missing block after for/while loops" {
+    try testError(
+        \\test "" { while (foo) }
+    , &[_]Error{
+        .ExpectedBlockOrAssignment,
+    });
+    try testError(
+        \\test "" { for (foo) |bar| }
+    , &[_]Error{
+        .ExpectedBlockOrAssignment,
+    });
+}
+
 test "zig fmt: if statment" {
     try testCanonical(
         \\test "" {
@@ -943,9 +956,6 @@ test "zig fmt: same-line doc comment on variable declaration" {
 }
 
 test "zig fmt: if-else with comment before else" {
-    // TODO investigate why this fails in wasm.
-    if (builtin.cpu.arch == .wasm32) return error.SkipZigTest;
-
     try testCanonical(
         \\comptime {
         \\    // cexp(finite|nan +- i inf|nan) = nan + i nan
@@ -1560,8 +1570,6 @@ test "zig fmt: comment after if before another if" {
 }
 
 test "zig fmt: line comment between if block and else keyword" {
-    // TODO investigate why this fails in wasm.
-    if (builtin.cpu.arch == .wasm32) return error.SkipZigTest;
     try testCanonical(
         \\test "aoeu" {
         \\    // cexp(finite|nan +- i inf|nan) = nan + i nan

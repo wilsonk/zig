@@ -14,12 +14,15 @@ pub const Error = error{ParseError} || Allocator.Error;
 /// Result should be freed with tree.deinit() when there are
 /// no more references to any of the tokens or nodes.
 pub fn parse(gpa: *Allocator, source: []const u8) Allocator.Error!*Tree {
-    // TODO optimization idea: ensureCapacity on the tokens list and
-    // then appendAssumeCapacity inside the loop.
     var token_ids = std.ArrayList(Token.Id).init(gpa);
     defer token_ids.deinit();
     var token_locs = std.ArrayList(Token.Loc).init(gpa);
     defer token_locs.deinit();
+
+    // Empirically, the zig std lib has an 8:1 ratio of source bytes to token count.
+    const estimated_token_count = source.len / 8;
+    try token_ids.ensureCapacity(estimated_token_count);
+    try token_locs.ensureCapacity(estimated_token_count);
 
     var tokenizer = std.zig.Tokenizer.init(source);
     while (true) {
@@ -875,34 +878,32 @@ const Parser = struct {
             return node;
         }
 
-        if (try p.parseAssignExpr()) |assign_expr| {
-            for_prefix.body = assign_expr;
+        for_prefix.body = try p.expectNode(parseAssignExpr, .{
+            .ExpectedBlockOrAssignment = .{ .token = p.tok_i },
+        });
 
-            if (p.eatToken(.Semicolon) != null) return node;
+        if (p.eatToken(.Semicolon) != null) return node;
 
-            if (p.eatToken(.Keyword_else)) |else_token| {
-                const statement_node = try p.expectNode(parseStatement, .{
-                    .ExpectedStatement = .{ .token = p.tok_i },
-                });
-
-                const else_node = try p.arena.allocator.create(Node.Else);
-                else_node.* = .{
-                    .else_token = else_token,
-                    .payload = null,
-                    .body = statement_node,
-                };
-                for_prefix.@"else" = else_node;
-                return node;
-            }
-
-            try p.errors.append(p.gpa, .{
-                .ExpectedSemiOrElse = .{ .token = p.tok_i },
+        if (p.eatToken(.Keyword_else)) |else_token| {
+            const statement_node = try p.expectNode(parseStatement, .{
+                .ExpectedStatement = .{ .token = p.tok_i },
             });
 
+            const else_node = try p.arena.allocator.create(Node.Else);
+            else_node.* = .{
+                .else_token = else_token,
+                .payload = null,
+                .body = statement_node,
+            };
+            for_prefix.@"else" = else_node;
             return node;
         }
 
-        return null;
+        try p.errors.append(p.gpa, .{
+            .ExpectedSemiOrElse = .{ .token = p.tok_i },
+        });
+
+        return node;
     }
 
     /// WhileStatement
@@ -936,36 +937,35 @@ const Parser = struct {
             return node;
         }
 
-        if (try p.parseAssignExpr()) |assign_expr_node| {
-            while_prefix.body = assign_expr_node;
 
-            if (p.eatToken(.Semicolon) != null) return node;
+        while_prefix.body = try p.expectNode(parseAssignExpr, .{
+            .ExpectedBlockOrAssignment = .{ .token = p.tok_i },
+        });
 
-            if (p.eatToken(.Keyword_else)) |else_token| {
-                const payload = try p.parsePayload();
+        if (p.eatToken(.Semicolon) != null) return node;
 
-                const statement_node = try p.expectNode(parseStatement, .{
-                    .ExpectedStatement = .{ .token = p.tok_i },
-                });
+        if (p.eatToken(.Keyword_else)) |else_token| {
+            const payload = try p.parsePayload();
 
-                const else_node = try p.arena.allocator.create(Node.Else);
-                else_node.* = .{
-                    .else_token = else_token,
-                    .payload = payload,
-                    .body = statement_node,
-                };
-                while_prefix.@"else" = else_node;
-                return node;
-            }
-
-            try p.errors.append(p.gpa, .{
-                .ExpectedSemiOrElse = .{ .token = p.tok_i },
+            const statement_node = try p.expectNode(parseStatement, .{
+                .ExpectedStatement = .{ .token = p.tok_i },
             });
 
+            const else_node = try p.arena.allocator.create(Node.Else);
+            else_node.* = .{
+                .else_token = else_token,
+                .payload = payload,
+                .body = statement_node,
+            };
+            while_prefix.@"else" = else_node;
             return node;
         }
 
-        return null;
+        try p.errors.append(p.gpa, .{
+            .ExpectedSemiOrElse = .{ .token = p.tok_i },
+        });
+
+        return node;
     }
 
     /// BlockExprStatement

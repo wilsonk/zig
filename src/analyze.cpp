@@ -1921,6 +1921,21 @@ static ZigType *analyze_fn_type(CodeGen *g, AstNode *proto_node, Scope *child_sc
     }
 
     if (fn_proto->align_expr != nullptr) {
+        if (target_is_wasm(g->zig_target)) {
+            // In Wasm, specifying alignment of function pointers makes little sense
+            // since function pointers are in fact indices to a Wasm table, therefore
+            // any alignment check on those is invalid. This can cause unexpected
+            // behaviour when checking expected alignment with `@ptrToInt(fn_ptr)`
+            // or similar. This commit proposes to make `align` expressions a
+            // compile error when compiled to Wasm architecture.
+            // 
+            // Some references:
+            // [1] [Mozilla: WebAssembly Tables](https://developer.mozilla.org/en-US/docs/WebAssembly/Understanding_the_text_format#WebAssembly_tables)
+            // [2] [Sunfishcode's Wasm Ref Manual](https://github.com/sunfishcode/wasm-reference-manual/blob/master/WebAssembly.md#indirect-call)
+            add_node_error(g, fn_proto->align_expr,
+                buf_sprintf("align(N) expr is not allowed on function prototypes in wasm32/wasm64"));
+            return g->builtin_types.entry_invalid;
+        }
         if (!analyze_const_align(g, child_scope, fn_proto->align_expr, &fn_type_id.alignment)) {
             return g->builtin_types.entry_invalid;
         }
@@ -9418,15 +9433,16 @@ ZigLLVMDIType *get_llvm_di_type(CodeGen *g, ZigType *type) {
     return type->llvm_di_type;
 }
 
-void src_assert(bool ok, AstNode *source_node) {
+void src_assert_impl(bool ok, AstNode *source_node, char const *file, unsigned int line) {
     if (ok) return;
     if (source_node == nullptr) {
-        fprintf(stderr, "when analyzing (unknown source location): ");
+        fprintf(stderr, "when analyzing (unknown source location) ");
     } else {
-        fprintf(stderr, "when analyzing %s:%u:%u: ",
+        fprintf(stderr, "when analyzing %s:%u:%u ",
             buf_ptr(source_node->owner->data.structure.root_struct->path),
             (unsigned)source_node->line + 1, (unsigned)source_node->column + 1);
     }
+    fprintf(stderr, "in compiler source at %s:%u: ", file, line);
     const char *msg = "assertion failed. This is a bug in the Zig compiler.";
     stage2_panic(msg, strlen(msg));
 }
