@@ -53,7 +53,7 @@ pub const LineInfo = struct {
 /// Tries to write to stderr, unbuffered, and ignores any error returned.
 /// Does not append a newline.
 var stderr_file: File = undefined;
-var stderr_file_out_stream: File.OutStream = undefined;
+var stderr_file_writer: File.Writer = undefined;
 
 var stderr_stream: ?*File.OutStream = null;
 var stderr_mutex = std.Mutex.init();
@@ -70,8 +70,8 @@ pub fn getStderrStream() *File.OutStream {
         return st;
     } else {
         stderr_file = io.getStdErr();
-        stderr_file_out_stream = stderr_file.outStream();
-        const st = &stderr_file_out_stream;
+        stderr_file_writer = stderr_file.outStream();
+        const st = &stderr_file_writer;
         stderr_stream = st;
         return st;
     }
@@ -670,10 +670,12 @@ pub fn openSelfDebugInfo(allocator: *mem.Allocator) anyerror!DebugInfo {
     }
 }
 
+/// This takes ownership of coff_file: users of this function should not close
+/// it themselves, even on error.
 /// TODO resources https://github.com/ziglang/zig/issues/4353
-fn openCoffDebugInfo(allocator: *mem.Allocator, coff_file_path: [:0]const u16) !ModuleDebugInfo {
+/// TODO it's weird to take ownership even on error, rework this code.
+fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInfo {
     nosuspend {
-        const coff_file = try std.fs.openFileAbsoluteW(coff_file_path, .{ .intended_io_mode = .blocking });
         errdefer coff_file.close();
 
         const coff_obj = try allocator.create(coff.Coff);
@@ -851,10 +853,13 @@ fn chopSlice(ptr: []const u8, offset: u64, size: u64) ![]const u8 {
     return ptr[start..end];
 }
 
+/// This takes ownership of elf_file: users of this function should not close
+/// it themselves, even on error.
 /// TODO resources https://github.com/ziglang/zig/issues/4353
-pub fn openElfDebugInfo(allocator: *mem.Allocator, elf_file_path: []const u8) !ModuleDebugInfo {
+/// TODO it's weird to take ownership even on error, rework this code.
+pub fn readElfDebugInfo(allocator: *mem.Allocator, elf_file: File) !ModuleDebugInfo {
     nosuspend {
-        const mapped_mem = try mapWholeFile(elf_file_path);
+        const mapped_mem = try mapWholeFile(elf_file);
         const hdr = @ptrCast(*const elf.Ehdr, &mapped_mem[0]);
         if (!mem.eql(u8, hdr.e_ident[0..4], "\x7fELF")) return error.InvalidElfMagic;
         if (hdr.e_ident[elf.EI_VERSION] != 1) return error.InvalidElfVersion;
@@ -921,8 +926,11 @@ pub fn openElfDebugInfo(allocator: *mem.Allocator, elf_file_path: []const u8) !M
 }
 
 /// TODO resources https://github.com/ziglang/zig/issues/4353
-fn openMachODebugInfo(allocator: *mem.Allocator, macho_file_path: []const u8) !ModuleDebugInfo {
-    const mapped_mem = try mapWholeFile(macho_file_path);
+/// This takes ownership of coff_file: users of this function should not close
+/// it themselves, even on error.
+/// TODO it's weird to take ownership even on error, rework this code.
+fn readMachODebugInfo(allocator: *mem.Allocator, macho_file: File) !ModuleDebugInfo {
+    const mapped_mem = try mapWholeFile(macho_file);
 
     const hdr = @ptrCast(
         *const macho.mach_header_64,
@@ -995,7 +1003,7 @@ fn openMachODebugInfo(allocator: *mem.Allocator, macho_file_path: []const u8) !M
     // Even though lld emits symbols in ascending order, this debug code
     // should work for programs linked in any valid way.
     // This sort is so that we can binary search later.
-    std.sort.sort(MachoSymbol, symbols, MachoSymbol.addressLessThan);
+    std.sort.sort(MachoSymbol, symbols, {}, MachoSymbol.addressLessThan);
 
     return ModuleDebugInfo{
         .base_address = undefined,
@@ -1050,14 +1058,16 @@ const MachoSymbol = struct {
         return self.nlist.n_value;
     }
 
-    fn addressLessThan(lhs: MachoSymbol, rhs: MachoSymbol) bool {
+    fn addressLessThan(context: void, lhs: MachoSymbol, rhs: MachoSymbol) bool {
         return lhs.address() < rhs.address();
     }
 };
 
-fn mapWholeFile(path: []const u8) ![]align(mem.page_size) const u8 {
+/// `file` is expected to have been opened with .intended_io_mode == .blocking.
+/// Takes ownership of file, even on error.
+/// TODO it's weird to take ownership even on error, rework this code.
+fn mapWholeFile(file: File) ![]align(mem.page_size) const u8 {
     nosuspend {
-        const file = try fs.cwd().openFile(path, .{ .intended_io_mode = .blocking });
         defer file.close();
 
         const file_len = try math.cast(usize, try file.getEndPos());
@@ -1140,10 +1150,11 @@ pub const DebugInfo = struct {
                     errdefer self.allocator.destroy(obj_di);
 
                     const macho_path = mem.spanZ(std.c._dyld_get_image_name(i));
-                    obj_di.* = openMachODebugInfo(self.allocator, macho_path) catch |err| switch (err) {
+                    const macho_file = fs.cwd().openFile(macho_path, .{ .intended_io_mode = .blocking }) catch |err| switch (err) {
                         error.FileNotFound => return error.MissingDebugInfo,
                         else => return err,
                     };
+                    obj_di.* = try readMachODebugInfo(self.allocator, macho_file);
                     obj_di.base_address = base_address;
 
                     try self.address_map.putNoClobber(base_address, obj_di);
@@ -1221,10 +1232,11 @@ pub const DebugInfo = struct {
                 const obj_di = try self.allocator.create(ModuleDebugInfo);
                 errdefer self.allocator.destroy(obj_di);
 
-                obj_di.* = openCoffDebugInfo(self.allocator, name_buffer[0 .. len + 4 :0]) catch |err| switch (err) {
+                const coff_file = fs.openFileAbsoluteW(name_buffer[0 .. len + 4 :0], .{}) catch |err| switch (err) {
                     error.FileNotFound => return error.MissingDebugInfo,
                     else => return err,
                 };
+                obj_di.* = try readCoffDebugInfo(self.allocator, coff_file);
                 obj_di.base_address = seg_start;
 
                 try self.address_map.putNoClobber(seg_start, obj_di);
@@ -1280,20 +1292,21 @@ pub const DebugInfo = struct {
             return obj_di;
         }
 
-        const elf_path = if (ctx.name.len > 0)
-            ctx.name
-        else blk: {
-            var buf: [fs.MAX_PATH_BYTES]u8 = undefined;
-            break :blk try fs.selfExePath(&buf);
-        };
-
         const obj_di = try self.allocator.create(ModuleDebugInfo);
         errdefer self.allocator.destroy(obj_di);
 
-        obj_di.* = openElfDebugInfo(self.allocator, elf_path) catch |err| switch (err) {
+        // TODO https://github.com/ziglang/zig/issues/5525
+        const copy = if (ctx.name.len > 0)
+            fs.cwd().openFile(ctx.name, .{ .intended_io_mode = .blocking })
+        else
+            fs.openSelfExe(.{ .intended_io_mode = .blocking });
+
+        const elf_file = copy catch |err| switch (err) {
             error.FileNotFound => return error.MissingDebugInfo,
             else => return err,
         };
+
+        obj_di.* = try readElfDebugInfo(self.allocator, elf_file);
         obj_di.base_address = ctx.base_address;
 
         try self.address_map.putNoClobber(ctx.base_address, obj_di);
@@ -1329,7 +1342,8 @@ pub const ModuleDebugInfo = switch (builtin.os.tag) {
         }
 
         fn loadOFile(self: *@This(), o_file_path: []const u8) !DW.DwarfInfo {
-            const mapped_mem = try mapWholeFile(o_file_path);
+            const o_file = try fs.cwd().openFile(o_file_path, .{ .intended_io_mode = .blocking });
+            const mapped_mem = try mapWholeFile(o_file);
 
             const hdr = @ptrCast(
                 *const macho.mach_header_64,

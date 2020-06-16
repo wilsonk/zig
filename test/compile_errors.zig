@@ -7461,4 +7461,65 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         };
         break :x tc;
     });
+
+    cases.add("compare optional to non-optional with invalid types",
+        \\export fn inconsistentChildType() void {
+        \\    var x: ?i32 = undefined;
+        \\    const y: comptime_int = 10;
+        \\    _ = (x == y);
+        \\}
+        \\
+        \\export fn optionalToOptional() void {
+        \\    var x: ?i32 = undefined;
+        \\    var y: ?i32 = undefined;
+        \\    _ = (x == y);
+        \\}
+        \\
+        \\export fn optionalVector() void {
+        \\    var x: ?@Vector(10, i32) = undefined;
+        \\    var y: @Vector(10, i32) = undefined;
+        \\    _ = (x == y);
+        \\}
+        \\
+        \\export fn invalidChildType() void {
+        \\    var x: ?[3]i32 = undefined;
+        \\    var y: [3]i32 = undefined;
+        \\    _ = (x == y);
+        \\}
+    , &[_][]const u8{
+        ":4:12: error: cannot compare types '?i32' and 'comptime_int'",
+        ":4:12: note: optional child type 'i32' must be the same as non-optional type 'comptime_int'",
+        ":10:12: error: cannot compare types '?i32' and '?i32'",
+        ":10:12: note: optional to optional comparison is only supported for optional pointer types",
+        ":16:12: error: TODO add comparison of optional vector",
+        ":22:12: error: cannot compare types '?[3]i32' and '[3]i32'",
+        ":22:12: note: operator not supported for type '[3]i32'",
+    });
+
+    cases.add("slice cannot have its bytes reinterpreted",
+        \\export fn foo() void {
+        \\    const bytes = [1]u8{ 0xfa } ** 16;
+        \\    var value = @ptrCast(*const []const u8, &bytes).*;
+        \\}
+    , &[_][]const u8{
+        ":3:52: error: slice '[]const u8' cannot have its bytes reinterpreted",
+    });
+
+    cases.add("wasmMemorySize is a compile error in non-Wasm targets",
+        \\export fn foo() void {
+        \\    _ = @wasmMemorySize(0);
+        \\    return;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:9: error: @wasmMemorySize is a wasm32 feature only",
+    });
+
+    cases.add("wasmMemoryGrow is a compile error in non-Wasm targets",
+        \\export fn foo() void {
+        \\    _ = @wasmMemoryGrow(0, 1);
+        \\    return;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:9: error: @wasmMemoryGrow is a wasm32 feature only",
+    });
 }
