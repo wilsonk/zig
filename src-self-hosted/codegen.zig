@@ -10,6 +10,7 @@ const Module = @import("Module.zig");
 const ErrorMsg = Module.ErrorMsg;
 const Target = std.Target;
 const Allocator = mem.Allocator;
+const trace = @import("tracy.zig").trace;
 
 pub const Result = union(enum) {
     /// The `code` parameter passed to `generateSymbol` has the value appended.
@@ -29,6 +30,9 @@ pub fn generateSymbol(
     /// A Decl that this symbol depends on had a semantic analysis failure.
     AnalysisFail,
 }!Result {
+    const tracy = trace(@src());
+    defer tracy.end();
+
     switch (typed_value.ty.zigTypeTag()) {
         .Fn => {
             const module_fn = typed_value.val.cast(Value.Payload.Function).?.func;
@@ -170,6 +174,9 @@ const Function = struct {
 
     fn genFuncInst(self: *Function, inst: *ir.Inst) !MCValue {
         switch (inst.tag) {
+            .add => return self.genAdd(inst.cast(ir.Inst.Add).?),
+            .arg => return self.genArg(inst.src),
+            .block => return self.genBlock(inst.cast(ir.Inst.Block).?),
             .breakpoint => return self.genBreakpoint(inst.src),
             .call => return self.genCall(inst.cast(ir.Inst.Call).?),
             .unreach => return MCValue{ .unreach = {} },
@@ -178,11 +185,25 @@ const Function = struct {
             .ptrtoint => return self.genPtrToInt(inst.cast(ir.Inst.PtrToInt).?),
             .bitcast => return self.genBitCast(inst.cast(ir.Inst.BitCast).?),
             .ret => return self.genRet(inst.cast(ir.Inst.Ret).?),
+            .retvoid => return self.genRetVoid(inst.cast(ir.Inst.RetVoid).?),
             .cmp => return self.genCmp(inst.cast(ir.Inst.Cmp).?),
             .condbr => return self.genCondBr(inst.cast(ir.Inst.CondBr).?),
             .isnull => return self.genIsNull(inst.cast(ir.Inst.IsNull).?),
             .isnonnull => return self.genIsNonNull(inst.cast(ir.Inst.IsNonNull).?),
         }
+    }
+
+    fn genAdd(self: *Function, inst: *ir.Inst.Add) !MCValue {
+        switch (self.target.cpu.arch) {
+            else => return self.fail(inst.base.src, "TODO implement add for {}", .{self.target.cpu.arch}),
+        }
+    }
+
+    fn genArg(self: *Function, src: usize) !MCValue {
+        switch (self.target.cpu.arch) {
+            else => return self.fail(src, "TODO implement function parameters for {}", .{self.target.cpu.arch}),
+        }
+        return .none;
     }
 
     fn genBreakpoint(self: *Function, src: usize) !MCValue {
@@ -213,7 +234,7 @@ const Function = struct {
                         try self.code.resize(self.code.items.len + 7);
                         self.code.items[self.code.items.len - 7 ..][0..3].* = [3]u8{ 0xff, 0x14, 0x25 };
                         mem.writeIntLittle(u32, self.code.items[self.code.items.len - 4 ..][0..4], got_addr);
-                        const return_type = func.fn_type.fnReturnType();
+                        const return_type = func.owner_decl.typed_value.most_recent.typed_value.ty.fnReturnType();
                         switch (return_type.zigTypeTag()) {
                             .Void => return MCValue{ .none = {} },
                             .NoReturn => return MCValue{ .unreach = {} },
@@ -230,14 +251,26 @@ const Function = struct {
         }
     }
 
-    fn genRet(self: *Function, inst: *ir.Inst.Ret) !MCValue {
+    fn ret(self: *Function, src: usize, mcv: MCValue) !MCValue {
+        if (mcv != .none) {
+            return self.fail(src, "TODO implement return with non-void operand", .{});
+        }
         switch (self.target.cpu.arch) {
             .i386, .x86_64 => {
                 try self.code.append(0xc3); // ret
             },
-            else => return self.fail(inst.base.src, "TODO implement return for {}", .{self.target.cpu.arch}),
+            else => return self.fail(src, "TODO implement return for {}", .{self.target.cpu.arch}),
         }
         return .unreach;
+    }
+
+    fn genRet(self: *Function, inst: *ir.Inst.Ret) !MCValue {
+        const operand = try self.resolveInst(inst.args.operand);
+        return self.ret(inst.base.src, operand);
+    }
+
+    fn genRetVoid(self: *Function, inst: *ir.Inst.RetVoid) !MCValue {
+        return self.ret(inst.base.src, .none);
     }
 
     fn genCmp(self: *Function, inst: *ir.Inst.Cmp) !MCValue {
@@ -282,6 +315,12 @@ const Function = struct {
                 }
             },
             else => return self.fail(src, "TODO implement relative forward jump for {}", .{self.target.cpu.arch}),
+        }
+    }
+
+    fn genBlock(self: *Function, inst: *ir.Inst.Block) !MCValue {
+        switch (self.target.cpu.arch) {
+            else => return self.fail(inst.base.src, "TODO implement codegen Block for {}", .{self.target.cpu.arch}),
         }
     }
 
