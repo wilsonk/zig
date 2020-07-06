@@ -20,7 +20,7 @@ pub const Error = error{OutOfMemory};
 const TypeError = Error || error{UnsupportedType};
 const TransError = TypeError || error{UnsupportedTranslation};
 
-const DeclTable = std.HashMap(usize, []const u8, addrHash, addrEql);
+const DeclTable = std.HashMap(usize, []const u8, addrHash, addrEql, false);
 
 fn addrHash(x: usize) u32 {
     switch (@typeInfo(usize).Int.bits) {
@@ -776,8 +776,8 @@ fn checkForBuiltinTypedef(checked_name: []const u8) ?[]const u8 {
 }
 
 fn transTypeDef(c: *Context, typedef_decl: *const ZigClangTypedefNameDecl, top_level_visit: bool) Error!?*ast.Node {
-    if (c.decl_table.get(@ptrToInt(ZigClangTypedefNameDecl_getCanonicalDecl(typedef_decl)))) |kv|
-        return transCreateNodeIdentifier(c, kv.value); // Avoid processing this decl twice
+    if (c.decl_table.get(@ptrToInt(ZigClangTypedefNameDecl_getCanonicalDecl(typedef_decl)))) |name|
+        return transCreateNodeIdentifier(c, name); // Avoid processing this decl twice
     const rp = makeRestorePoint(c);
 
     const typedef_name = try c.str(ZigClangNamedDecl_getName_bytes_begin(@ptrCast(*const ZigClangNamedDecl, typedef_decl)));
@@ -818,8 +818,8 @@ fn transCreateNodeTypedef(rp: RestorePoint, typedef_decl: *const ZigClangTypedef
 }
 
 fn transRecordDecl(c: *Context, record_decl: *const ZigClangRecordDecl) Error!?*ast.Node {
-    if (c.decl_table.get(@ptrToInt(ZigClangRecordDecl_getCanonicalDecl(record_decl)))) |kv|
-        return try transCreateNodeIdentifier(c, kv.value); // Avoid processing this decl twice
+    if (c.decl_table.get(@ptrToInt(ZigClangRecordDecl_getCanonicalDecl(record_decl)))) |name|
+        return try transCreateNodeIdentifier(c, name); // Avoid processing this decl twice
     const record_loc = ZigClangRecordDecl_getLocation(record_decl);
 
     var bare_name = try c.str(ZigClangNamedDecl_getName_bytes_begin(@ptrCast(*const ZigClangNamedDecl, record_decl)));
@@ -969,7 +969,7 @@ fn transRecordDecl(c: *Context, record_decl: *const ZigClangRecordDecl) Error!?*
 
 fn transEnumDecl(c: *Context, enum_decl: *const ZigClangEnumDecl) Error!?*ast.Node {
     if (c.decl_table.get(@ptrToInt(ZigClangEnumDecl_getCanonicalDecl(enum_decl)))) |name|
-        return try transCreateNodeIdentifier(c, name.value); // Avoid processing this decl twice
+        return try transCreateNodeIdentifier(c, name); // Avoid processing this decl twice
     const rp = makeRestorePoint(c);
     const enum_loc = ZigClangEnumDecl_getLocation(enum_decl);
 
@@ -2130,7 +2130,7 @@ fn transInitListExprRecord(
         var raw_name = try rp.c.str(ZigClangNamedDecl_getName_bytes_begin(@ptrCast(*const ZigClangNamedDecl, field_decl)));
         if (ZigClangFieldDecl_isAnonymousStructOrUnion(field_decl)) {
             const name = rp.c.decl_table.get(@ptrToInt(ZigClangFieldDecl_getCanonicalDecl(field_decl))).?;
-            raw_name = try mem.dupe(rp.c.arena, u8, name.value);
+            raw_name = try mem.dupe(rp.c.arena, u8, name);
         }
         const field_name_tok = try appendIdentifier(rp.c, raw_name);
 
@@ -2855,7 +2855,7 @@ fn transMemberExpr(rp: RestorePoint, scope: *Scope, stmt: *const ZigClangMemberE
             const field_decl = @ptrCast(*const struct_ZigClangFieldDecl, member_decl);
             if (ZigClangFieldDecl_isAnonymousStructOrUnion(field_decl)) {
                 const name = rp.c.decl_table.get(@ptrToInt(ZigClangFieldDecl_getCanonicalDecl(field_decl))).?;
-                break :blk try mem.dupe(rp.c.arena, u8, name.value);
+                break :blk try mem.dupe(rp.c.arena, u8, name);
             }
         }
         const decl = @ptrCast(*const ZigClangNamedDecl, member_decl);
@@ -3268,7 +3268,14 @@ fn transCreateCompoundAssign(
     const lhs = ZigClangCompoundAssignOperator_getLHS(stmt);
     const rhs = ZigClangCompoundAssignOperator_getRHS(stmt);
     const loc = ZigClangCompoundAssignOperator_getBeginLoc(stmt);
-    const is_signed = cIsSignedInteger(getExprQualType(rp.c, lhs));
+    const lhs_qt = getExprQualType(rp.c, lhs);
+    const rhs_qt = getExprQualType(rp.c, rhs);
+    const is_signed = cIsSignedInteger(lhs_qt);
+    const requires_int_cast = blk: {
+        const are_integers = cIsInteger(lhs_qt) and cIsInteger(rhs_qt);
+        const are_same_sign = cIsSignedInteger(lhs_qt) == cIsSignedInteger(rhs_qt);
+        break :blk are_integers and !are_same_sign;
+    };
     if (used == .unused) {
         // common case
         // c: lhs += rhs
@@ -3295,15 +3302,18 @@ fn transCreateCompoundAssign(
 
         const lhs_node = try transExpr(rp, scope, lhs, .used, .l_value);
         const eq_token = try appendToken(rp.c, assign_tok_id, assign_bytes);
-        var rhs_node = if (is_shift)
+        var rhs_node = if (is_shift or requires_int_cast)
             try transExprCoercing(rp, scope, rhs, .used, .r_value)
         else
             try transExpr(rp, scope, rhs, .used, .r_value);
 
-        if (is_shift) {
+        if (is_shift or requires_int_cast) {
             const cast_node = try rp.c.createBuiltinCall("@intCast", 2);
-            const rhs_type = try qualTypeToLog2IntRef(rp, getExprQualType(rp.c, rhs), loc);
-            cast_node.params()[0] = rhs_type;
+            const cast_to_type = if (is_shift)
+                try qualTypeToLog2IntRef(rp, getExprQualType(rp.c, rhs), loc)
+            else
+                try transQualType(rp, getExprQualType(rp.c, lhs), loc);
+            cast_node.params()[0] = cast_to_type;
             _ = try appendToken(rp.c, .Comma, ",");
             cast_node.params()[1] = rhs_node;
             cast_node.rparen_token = try appendToken(rp.c, .RParen, ")");
@@ -3358,10 +3368,13 @@ fn transCreateCompoundAssign(
         const bin_token = try appendToken(rp.c, bin_tok_id, bin_bytes);
         var rhs_node = try transExpr(rp, scope, rhs, .used, .r_value);
 
-        if (is_shift) {
+        if (is_shift or requires_int_cast) {
             const cast_node = try rp.c.createBuiltinCall("@intCast", 2);
-            const rhs_type = try qualTypeToLog2IntRef(rp, getExprQualType(rp.c, rhs), loc);
-            cast_node.params()[0] = rhs_type;
+            const cast_to_type = if (is_shift)
+                try qualTypeToLog2IntRef(rp, getExprQualType(rp.c, rhs), loc)
+            else
+                try transQualType(rp, getExprQualType(rp.c, lhs), loc);
+            cast_node.params()[0] = cast_to_type;
             _ = try appendToken(rp.c, .Comma, ",");
             cast_node.params()[1] = rhs_node;
             cast_node.rparen_token = try appendToken(rp.c, .RParen, ")");
@@ -6027,8 +6040,8 @@ fn getContainer(c: *Context, node: *ast.Node) ?*ast.Node {
     } else if (node.id == .PrefixOp) {
         return node;
     } else if (node.cast(ast.Node.Identifier)) |ident| {
-        if (c.global_scope.sym_table.get(tokenSlice(c, ident.token))) |kv| {
-            if (kv.value.cast(ast.Node.VarDecl)) |var_decl|
+        if (c.global_scope.sym_table.get(tokenSlice(c, ident.token))) |value| {
+            if (value.cast(ast.Node.VarDecl)) |var_decl|
                 return getContainer(c, var_decl.init_node.?);
         }
     } else if (node.cast(ast.Node.InfixOp)) |infix| {
@@ -6051,8 +6064,8 @@ fn getContainer(c: *Context, node: *ast.Node) ?*ast.Node {
 
 fn getContainerTypeOf(c: *Context, ref: *ast.Node) ?*ast.Node {
     if (ref.cast(ast.Node.Identifier)) |ident| {
-        if (c.global_scope.sym_table.get(tokenSlice(c, ident.token))) |kv| {
-            if (kv.value.cast(ast.Node.VarDecl)) |var_decl| {
+        if (c.global_scope.sym_table.get(tokenSlice(c, ident.token))) |value| {
+            if (value.cast(ast.Node.VarDecl)) |var_decl| {
                 if (var_decl.type_node) |ty|
                     return getContainer(c, ty);
             }
@@ -6091,8 +6104,7 @@ fn getFnProto(c: *Context, ref: *ast.Node) ?*ast.Node.FnProto {
 }
 
 fn addMacros(c: *Context) !void {
-    var macro_it = c.global_scope.macro_table.iterator();
-    while (macro_it.next()) |kv| {
+    for (c.global_scope.macro_table.items()) |kv| {
         if (getFnProto(c, kv.value)) |proto_node| {
             // If a macro aliases a global variable which is a function pointer, we conclude that
             // the macro is intended to represent a function that assumes the function pointer

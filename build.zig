@@ -34,25 +34,11 @@ pub fn build(b: *Builder) !void {
 
     const test_step = b.step("test", "Run all the tests");
 
-    const config_h_text = if (b.option(
-        []const u8,
-        "config_h",
-        "Path to the generated config.h",
-    )) |config_h_path|
-        try std.fs.cwd().readFileAlloc(b.allocator, toNativePathSep(b, config_h_path), max_config_h_bytes)
-    else
-        try findAndReadConfigH(b);
-
     var test_stage2 = b.addTest("src-self-hosted/test.zig");
     test_stage2.setBuildMode(.Debug); // note this is only the mode of the test harness
     test_stage2.addPackagePath("stage2_tests", "test/stage2/test.zig");
 
     const fmt_build_zig = b.addFmt(&[_][]const u8{"build.zig"});
-
-    var exe = b.addExecutable("zig", "src-self-hosted/main.zig");
-    exe.setBuildMode(mode);
-    test_step.dependOn(&exe.step);
-    b.default_step.dependOn(&exe.step);
 
     const skip_release = b.option(bool, "skip-release", "Main test suite skips release builds") orelse false;
     const skip_release_small = b.option(bool, "skip-release-small", "Main test suite skips release-small builds") orelse skip_release;
@@ -63,29 +49,43 @@ pub fn build(b: *Builder) !void {
 
     const only_install_lib_files = b.option(bool, "lib-files-only", "Only install library files") orelse false;
     const enable_llvm = b.option(bool, "enable-llvm", "Build self-hosted compiler with LLVM backend enabled") orelse false;
-    if (enable_llvm) {
-        var ctx = parseConfigH(b, config_h_text);
-        ctx.llvm = try findLLVM(b, ctx.llvm_config_exe);
+    const config_h_path_option = b.option([]const u8, "config_h", "Path to the generated config.h");
 
-        try configureStage2(b, exe, ctx);
-    }
     if (!only_install_lib_files) {
-        exe.install();
-    }
-    const tracy = b.option([]const u8, "tracy", "Enable Tracy integration. Supply path to Tracy source");
-    const link_libc = b.option(bool, "force-link-libc", "Force self-hosted compiler to link libc") orelse false;
-    if (link_libc) exe.linkLibC();
+        var exe = b.addExecutable("zig", "src-self-hosted/main.zig");
+        exe.setBuildMode(mode);
+        test_step.dependOn(&exe.step);
+        b.default_step.dependOn(&exe.step);
 
-    exe.addBuildOption(bool, "enable_tracy", tracy != null);
-    if (tracy) |tracy_path| {
-        const client_cpp = fs.path.join(
-            b.allocator,
-            &[_][]const u8{ tracy_path, "TracyClient.cpp" },
-        ) catch unreachable;
-        exe.addIncludeDir(tracy_path);
-        exe.addCSourceFile(client_cpp, &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" });
-        exe.linkSystemLibraryName("c++");
-        exe.linkLibC();
+        if (enable_llvm) {
+            const config_h_text = if (config_h_path_option) |config_h_path|
+                try std.fs.cwd().readFileAlloc(b.allocator, toNativePathSep(b, config_h_path), max_config_h_bytes)
+            else
+                try findAndReadConfigH(b);
+
+            var ctx = parseConfigH(b, config_h_text);
+            ctx.llvm = try findLLVM(b, ctx.llvm_config_exe);
+
+            try configureStage2(b, exe, ctx);
+        }
+        if (!only_install_lib_files) {
+            exe.install();
+        }
+        const tracy = b.option([]const u8, "tracy", "Enable Tracy integration. Supply path to Tracy source");
+        const link_libc = b.option(bool, "force-link-libc", "Force self-hosted compiler to link libc") orelse false;
+        if (link_libc) exe.linkLibC();
+
+        exe.addBuildOption(bool, "enable_tracy", tracy != null);
+        if (tracy) |tracy_path| {
+            const client_cpp = fs.path.join(
+                b.allocator,
+                &[_][]const u8{ tracy_path, "TracyClient.cpp" },
+            ) catch unreachable;
+            exe.addIncludeDir(tracy_path);
+            exe.addCSourceFile(client_cpp, &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" });
+            exe.linkSystemLibraryName("c++");
+            exe.linkLibC();
+        }
     }
 
     b.installDirectory(InstallDirectoryOptions{
