@@ -2,6 +2,47 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.addTest("invalid pointer with @Type",
+        \\export fn entry() void {
+        \\    _ = @Type(.{ .Pointer = .{
+        \\        .size = .One,
+        \\        .is_const = false,
+        \\        .is_volatile = false,
+        \\        .alignment = 1,
+        \\        .child = u8,
+        \\        .is_allowzero = false,
+        \\        .sentinel = 0,
+        \\    }});
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:16: error: sentinels are only allowed on slices and unknown-length pointers",
+    });
+
+    cases.addTest("int/float conversion to comptime_int/float",
+        \\export fn foo() void {
+        \\    var a: f32 = 2;
+        \\    _ = @floatToInt(comptime_int, a);
+        \\}
+        \\export fn bar() void {
+        \\    var a: u32 = 2;
+        \\    _ = @intToFloat(comptime_float, a);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:35: error: unable to evaluate constant expression",
+        "tmp.zig:3:9: note: referenced here",
+        "tmp.zig:7:37: error: unable to evaluate constant expression",
+        "tmp.zig:7:9: note: referenced here",
+    });
+
+    cases.add("extern variable has no type",
+        \\extern var foo;
+        \\pub export fn entry() void {
+        \\    foo;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:1:1: error: unable to infer variable type",
+    });
+
     cases.add("@src outside function",
         \\comptime {
         \\    @src();
@@ -17,7 +58,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\fn foo() Foo {
         \\    return .{ .x = 42 };
         \\}
-        \\fn bar(val: var) Foo {
+        \\fn bar(val: anytype) Foo {
         \\    return .{ .x = val };
         \\}
         \\export fn entry() void {
@@ -81,19 +122,13 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var a: u32 = 2;
         \\    _ = @floatToInt(u32, a);
         \\}
-        \\export fn qux() void {
-        \\    var a: u32 = 2;
-        \\    _ = @intCast(comptime_int, a);
-        \\}
     , &[_][]const u8{
-        "tmp.zig:3:32: error: expected type 'comptime_int', found 'u32'",
+        "tmp.zig:3:32: error: unable to evaluate constant expression",
         "tmp.zig:3:9: note: referenced here",
         "tmp.zig:7:21: error: expected float type, found 'u32'",
         "tmp.zig:7:9: note: referenced here",
         "tmp.zig:11:26: error: expected float type, found 'u32'",
         "tmp.zig:11:9: note: referenced here",
-        "tmp.zig:15:32: error: expected type 'comptime_int', found 'u32'",
-        "tmp.zig:15:9: note: referenced here",
     });
 
     cases.addTest("invalid float casts",
@@ -109,19 +144,13 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var a: f32 = 2;
         \\    _ = @intToFloat(f32, a);
         \\}
-        \\export fn qux() void {
-        \\    var a: f32 = 2;
-        \\    _ = @floatCast(comptime_float, a);
-        \\}
     , &[_][]const u8{
-        "tmp.zig:3:36: error: expected type 'comptime_float', found 'f32'",
+        "tmp.zig:3:36: error: unable to evaluate constant expression",
         "tmp.zig:3:9: note: referenced here",
         "tmp.zig:7:21: error: expected integer type, found 'f32'",
         "tmp.zig:7:9: note: referenced here",
         "tmp.zig:11:26: error: expected int type, found 'f32'",
         "tmp.zig:11:9: note: referenced here",
-        "tmp.zig:15:36: error: expected type 'comptime_float', found 'f32'",
-        "tmp.zig:15:9: note: referenced here",
     });
 
     cases.addTest("invalid assignments",
@@ -1021,7 +1050,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    storev(&v[i], 42);
         \\}
         \\
-        \\fn storev(ptr: var, val: i32) void {
+        \\fn storev(ptr: anytype, val: i32) void {
         \\    ptr.* = val;
         \\}
     , &[_][]const u8{
@@ -1036,7 +1065,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var x = loadv(&v[i]);
         \\}
         \\
-        \\fn loadv(ptr: var) i32 {
+        \\fn loadv(ptr: anytype) i32 {
         \\    return ptr.*;
         \\}
     , &[_][]const u8{
@@ -1819,7 +1848,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    while (true) {}
         \\}
     , &[_][]const u8{
-        "error: expected type 'fn([]const u8, ?*std.builtin.StackTrace) noreturn', found 'fn([]const u8,var) var'",
+        "error: expected type 'fn([]const u8, ?*std.builtin.StackTrace) noreturn', found 'fn([]const u8,anytype) anytype'",
         "note: only one of the functions is generic",
     });
 
@@ -2019,11 +2048,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("export generic function",
-        \\export fn foo(num: var) i32 {
+        \\export fn foo(num: anytype) i32 {
         \\    return 0;
         \\}
     , &[_][]const u8{
-        "tmp.zig:1:15: error: parameter of type 'var' not allowed in function with calling convention 'C'",
+        "tmp.zig:1:15: error: parameter of type 'anytype' not allowed in function with calling convention 'C'",
     });
 
     cases.add("C pointer to c_void",
@@ -2823,7 +2852,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("missing parameter name of generic function",
-        \\fn dump(var) void {}
+        \\fn dump(anytype) void {}
         \\export fn entry() void {
         \\    var a: u8 = 9;
         \\    dump(a);
@@ -2846,13 +2875,13 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("generic fn as parameter without comptime keyword",
-        \\fn f(_: fn (var) void) void {}
-        \\fn g(_: var) void {}
+        \\fn f(_: fn (anytype) void) void {}
+        \\fn g(_: anytype) void {}
         \\export fn entry() void {
         \\    f(g);
         \\}
     , &[_][]const u8{
-        "tmp.zig:1:9: error: parameter of type 'fn(var) var' must be declared comptime",
+        "tmp.zig:1:9: error: parameter of type 'fn(anytype) anytype' must be declared comptime",
     });
 
     cases.add("optional pointer to void in extern struct",
@@ -3152,7 +3181,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
 
     cases.add("var makes structs required to be comptime known",
         \\export fn entry() void {
-        \\   const S = struct{v: var};
+        \\   const S = struct{v: anytype};
         \\   var s = S{.v=@as(i32, 10)};
         \\}
     , &[_][]const u8{
@@ -6059,10 +6088,10 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("calling a generic function only known at runtime",
-        \\var foos = [_]fn(var) void { foo1, foo2 };
+        \\var foos = [_]fn(anytype) void { foo1, foo2 };
         \\
-        \\fn foo1(arg: var) void {}
-        \\fn foo2(arg: var) void {}
+        \\fn foo1(arg: anytype) void {}
+        \\fn foo2(arg: anytype) void {}
         \\
         \\pub fn main() !void {
         \\    foos[0](true);
@@ -6907,12 +6936,12 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("getting return type of generic function",
-        \\fn generic(a: var) void {}
+        \\fn generic(a: anytype) void {}
         \\comptime {
         \\    _ = @TypeOf(generic).ReturnType;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:25: error: ReturnType has not been resolved because 'fn(var) var' is generic",
+        "tmp.zig:3:25: error: ReturnType has not been resolved because 'fn(anytype) anytype' is generic",
     });
 
     cases.add("unsupported modifier at start of asm output constraint",
@@ -7480,7 +7509,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add("issue #5221: invalid struct init type referenced by @typeInfo and passed into function",
-        \\fn ignore(comptime param: var) void {}
+        \\fn ignore(comptime param: anytype) void {}
         \\
         \\export fn foo() void {
         \\    const MyStruct = struct {
