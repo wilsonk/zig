@@ -62,29 +62,30 @@ pub fn addCases(ctx: *TestContext) !void {
         \\	register size_t rax_constant __asm__("rax") = 231;
         \\	register size_t rdi_constant __asm__("rdi") = 0;
         \\	__asm volatile ("syscall" :: ""(rax_constant), ""(rdi_constant));
+        \\	return;
         \\}
         \\
     );
-    //ctx.c("basic return", linux_x64,
-    //    \\fn main() u8 {
-    //    \\	return 103;
-    //    \\}
-    //    \\
-    //    \\export fn _start() noreturn {
-    //    \\	_ = main();
-    //    \\}
-    //,
-    //    \\#include <stdint.h>
-    //    \\
-    //    \\uint8_t main(void);
-    //    \\
-    //    \\noreturn void _start(void) {
-    //    \\	(void)main();
-    //    \\}
-    //    \\
-    //    \\uint8_t main(void) {
-    //    \\	return 103;
-    //    \\}
-    //    \\
-    //);
+    ctx.c("basic return", linux_x64,
+        \\fn main() u8 {
+        \\	return 103;
+        \\}
+        \\
+        \\export fn _start() noreturn {
+        \\	_ = main();
+        \\}
+    ,
+        \\#include <stdint.h>
+        \\
+        \\uint8_t main(void);
+        \\
+        \\noreturn void _start(void) {
+        \\	(void)main();
+        \\}
+        \\
+        \\uint8_t main(void) {
+        \\	return 103;
+        \\}
+        \\
+    );
 }

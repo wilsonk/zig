@@ -18505,7 +18505,7 @@ static IrInstGen *ir_analyze_instruction_decl_var(IrAnalyze *ira, IrInstSrcDeclV
     if (decl_var_instruction->var_type != nullptr) {
         var_type = decl_var_instruction->var_type->child;
         ZigType *proposed_type = ir_resolve_type(ira, var_type);
-        explicit_type = validate_var_type(ira->codegen, var_type->base.source_node, proposed_type);
+        explicit_type = validate_var_type(ira->codegen, &var->decl_node->data.variable_declaration, proposed_type);
         if (type_is_invalid(explicit_type)) {
             var->var_type = ira->codegen->builtin_types.entry_invalid;
             return ira->codegen->invalid_inst_gen;
@@ -20182,7 +20182,7 @@ static IrInstGen *ir_analyze_fn_call(IrAnalyze *ira, IrInst* source_instr,
             }
 
             IrInstGen *first_arg;
-            if (!first_arg_known_bare && handle_is_ptr(ira->codegen, first_arg_ptr->value->type->data.pointer.child_type)) {
+            if (!first_arg_known_bare) {
                 first_arg = first_arg_ptr;
             } else {
                 first_arg = ir_get_deref(ira, &first_arg_ptr->base, first_arg_ptr, nullptr);
@@ -20317,7 +20317,7 @@ static IrInstGen *ir_analyze_fn_call(IrAnalyze *ira, IrInst* source_instr,
             }
 
             IrInstGen *first_arg;
-            if (!first_arg_known_bare && handle_is_ptr(ira->codegen, first_arg_ptr->value->type->data.pointer.child_type)) {
+            if (!first_arg_known_bare) {
                 first_arg = first_arg_ptr;
             } else {
                 first_arg = ir_get_deref(ira, &first_arg_ptr->base, first_arg_ptr, nullptr);
@@ -20522,9 +20522,7 @@ static IrInstGen *ir_analyze_fn_call(IrAnalyze *ira, IrInst* source_instr,
             return ira->codegen->invalid_inst_gen;
 
         IrInstGen *first_arg;
-        if (param_type->id == ZigTypeIdPointer &&
-            handle_is_ptr(ira->codegen, first_arg_ptr->value->type->data.pointer.child_type))
-        {
+        if (param_type->id == ZigTypeIdPointer) {
             first_arg = first_arg_ptr;
         } else {
             first_arg = ir_get_deref(ira, &first_arg_ptr->base, first_arg_ptr, nullptr);
@@ -25548,7 +25546,7 @@ static Error ir_make_type_info_value(IrAnalyze *ira, IrInst* source_instr, ZigTy
                 result->special = ConstValSpecialStatic;
                 result->type = ir_type_info_get_type(ira, "Struct", nullptr);
 
-                ZigValue **fields = alloc_const_vals_ptrs(ira->codegen, 3);
+                ZigValue **fields = alloc_const_vals_ptrs(ira->codegen, 4);
                 result->data.x_struct.fields = fields;
 
                 // layout: ContainerLayout
@@ -25628,6 +25626,12 @@ static Error ir_make_type_info_value(IrAnalyze *ira, IrInst* source_instr, ZigTy
                 {
                     return err;
                 }
+
+                // is_tuple: bool
+                ensure_field_index(result->type, "is_tuple", 3);
+                fields[3]->special = ConstValSpecialStatic;
+                fields[3]->type = ira->codegen->builtin_types.entry_bool;
+                fields[3]->data.x_bool = is_tuple(type_entry);
 
                 break;
             }
@@ -26733,6 +26737,12 @@ static IrInstGen *ir_analyze_instruction_float_cast(IrAnalyze *ira, IrInstSrcFlo
         } else {
             return ira->codegen->invalid_inst_gen;
         }
+    }
+
+    if (target->value->type->id != ZigTypeIdFloat) {
+        ir_add_error(ira, &instruction->target->base, buf_sprintf("expected float type, found '%s'",
+                    buf_ptr(&target->value->type->name)));
+        return ira->codegen->invalid_inst_gen;
     }
 
     if (instr_is_comptime(target) || dest_type->id == ZigTypeIdComptimeFloat) {

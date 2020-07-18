@@ -34,7 +34,8 @@ pub const Inst = struct {
 
     /// These names are used directly as the instruction names in the text format.
     pub const Tag = enum {
-        /// Function parameter value.
+        /// Function parameter value. These must be first in a function's main block,
+        /// in respective order with the parameters.
         arg,
         /// A labeled block of code, which can return a value.
         block,
@@ -56,6 +57,7 @@ pub const Inst = struct {
         declval,
         /// Same as declval but the parameter is a `*Module.Decl` rather than a name.
         declval_in_module,
+        boolnot,
         /// String Literal. Makes an anonymous Decl and then takes a pointer to it.
         str,
         int,
@@ -81,6 +83,53 @@ pub const Inst = struct {
         condbr,
         isnull,
         isnonnull,
+
+        /// Returns whether the instruction is one of the control flow "noreturn" types.
+        /// Function calls do not count.
+        pub fn isNoReturn(tag: Tag) bool {
+            return switch (tag) {
+                .arg,
+                .block,
+                .breakpoint,
+                .call,
+                .@"const",
+                .declref,
+                .declref_str,
+                .declval,
+                .declval_in_module,
+                .str,
+                .int,
+                .inttype,
+                .ptrtoint,
+                .fieldptr,
+                .deref,
+                .as,
+                .@"asm",
+                .@"fn",
+                .fntype,
+                .@"export",
+                .primitive,
+                .intcast,
+                .bitcast,
+                .elemptr,
+                .add,
+                .sub,
+                .cmp,
+                .isnull,
+                .isnonnull,
+                .boolnot,
+                => false,
+
+                .condbr,
+                .@"unreachable",
+                .@"return",
+                .returnvoid,
+                .@"break",
+                .breakvoid,
+                .compileerror,
+                => true,
+            };
+        }
     };
 
     pub fn TagToType(tag: Tag) type {
@@ -97,6 +146,7 @@ pub const Inst = struct {
             .declval_in_module => DeclValInModule,
             .compileerror => CompileError,
             .@"const" => Const,
+            .boolnot => BoolNot,
             .str => Str,
             .int => Int,
             .inttype => IntType,
@@ -135,9 +185,7 @@ pub const Inst = struct {
         pub const base_tag = Tag.arg;
         base: Inst,
 
-        positionals: struct {
-            index: usize,
-        },
+        positionals: struct {},
         kw_args: struct {},
     };
 
@@ -249,6 +297,16 @@ pub const Inst = struct {
 
         positionals: struct {
             typed_value: TypedValue,
+        },
+        kw_args: struct {},
+    };
+
+    pub const BoolNot = struct {
+        pub const base_tag = Tag.boolnot;
+        base: Inst,
+
+        positionals: struct {
+            operand: *Inst,
         },
         kw_args: struct {},
     };
@@ -702,45 +760,13 @@ const Writer = struct {
         stream: anytype,
         inst: *Inst,
     ) (@TypeOf(stream).Error || error{OutOfMemory})!void {
-        // TODO I tried implementing this with an inline for loop and hit a compiler bug
-        switch (inst.tag) {
-            .arg => return self.writeInstToStreamGeneric(stream, .arg, inst),
-            .block => return self.writeInstToStreamGeneric(stream, .block, inst),
-            .@"break" => return self.writeInstToStreamGeneric(stream, .@"break", inst),
-            .breakpoint => return self.writeInstToStreamGeneric(stream, .breakpoint, inst),
-            .breakvoid => return self.writeInstToStreamGeneric(stream, .breakvoid, inst),
-            .call => return self.writeInstToStreamGeneric(stream, .call, inst),
-            .declref => return self.writeInstToStreamGeneric(stream, .declref, inst),
-            .declref_str => return self.writeInstToStreamGeneric(stream, .declref_str, inst),
-            .declval => return self.writeInstToStreamGeneric(stream, .declval, inst),
-            .declval_in_module => return self.writeInstToStreamGeneric(stream, .declval_in_module, inst),
-            .compileerror => return self.writeInstToStreamGeneric(stream, .compileerror, inst),
-            .@"const" => return self.writeInstToStreamGeneric(stream, .@"const", inst),
-            .str => return self.writeInstToStreamGeneric(stream, .str, inst),
-            .int => return self.writeInstToStreamGeneric(stream, .int, inst),
-            .inttype => return self.writeInstToStreamGeneric(stream, .inttype, inst),
-            .ptrtoint => return self.writeInstToStreamGeneric(stream, .ptrtoint, inst),
-            .fieldptr => return self.writeInstToStreamGeneric(stream, .fieldptr, inst),
-            .deref => return self.writeInstToStreamGeneric(stream, .deref, inst),
-            .as => return self.writeInstToStreamGeneric(stream, .as, inst),
-            .@"asm" => return self.writeInstToStreamGeneric(stream, .@"asm", inst),
-            .@"unreachable" => return self.writeInstToStreamGeneric(stream, .@"unreachable", inst),
-            .@"return" => return self.writeInstToStreamGeneric(stream, .@"return", inst),
-            .returnvoid => return self.writeInstToStreamGeneric(stream, .returnvoid, inst),
-            .@"fn" => return self.writeInstToStreamGeneric(stream, .@"fn", inst),
-            .@"export" => return self.writeInstToStreamGeneric(stream, .@"export", inst),
-            .primitive => return self.writeInstToStreamGeneric(stream, .primitive, inst),
-            .fntype => return self.writeInstToStreamGeneric(stream, .fntype, inst),
-            .intcast => return self.writeInstToStreamGeneric(stream, .intcast, inst),
-            .bitcast => return self.writeInstToStreamGeneric(stream, .bitcast, inst),
-            .elemptr => return self.writeInstToStreamGeneric(stream, .elemptr, inst),
-            .add => return self.writeInstToStreamGeneric(stream, .add, inst),
-            .sub => return self.writeInstToStreamGeneric(stream, .sub, inst),
-            .cmp => return self.writeInstToStreamGeneric(stream, .cmp, inst),
-            .condbr => return self.writeInstToStreamGeneric(stream, .condbr, inst),
-            .isnull => return self.writeInstToStreamGeneric(stream, .isnull, inst),
-            .isnonnull => return self.writeInstToStreamGeneric(stream, .isnonnull, inst),
+        inline for (@typeInfo(Inst.Tag).Enum.fields) |enum_field| {
+            const expected_tag = @field(Inst.Tag, enum_field.name);
+            if (inst.tag == expected_tag) {
+                return self.writeInstToStreamGeneric(stream, expected_tag, inst);
+            }
         }
+        unreachable; // all tags handled
     }
 
     fn writeInstToStreamGeneric(
@@ -1324,15 +1350,17 @@ const EmitZIR = struct {
         for (src_decls.items) |ir_decl| {
             switch (ir_decl.analysis) {
                 .unreferenced => continue,
+
                 .complete => {},
+                .codegen_failure => {}, // We still can emit the ZIR.
+                .codegen_failure_retryable => {}, // We still can emit the ZIR.
+
                 .in_progress => unreachable,
                 .outdated => unreachable,
 
                 .sema_failure,
                 .sema_failure_retryable,
-                .codegen_failure,
                 .dependency_failure,
-                .codegen_failure_retryable,
                 => if (self.old_module.failed_decls.get(ir_decl)) |err_msg| {
                     const fail_inst = try self.arena.allocator.create(Inst.CompileError);
                     fail_inst.* = .{
@@ -1612,6 +1640,22 @@ const EmitZIR = struct {
         };
         for (body.instructions) |inst| {
             const new_inst = switch (inst.tag) {
+                .not => blk: {
+                    const old_inst = inst.cast(ir.Inst.Not).?;
+                    assert(inst.ty.zigTypeTag() == .Bool);
+                    const new_inst = try self.arena.allocator.create(Inst.BoolNot);
+                    new_inst.* = .{
+                        .base = .{
+                            .src = inst.src,
+                            .tag = Inst.BoolNot.base_tag,
+                        },
+                        .positionals = .{
+                            .operand = try self.resolveInst(new_body, old_inst.args.operand),
+                        },
+                        .kw_args = .{},
+                    };
+                    break :blk &new_inst.base;
+                },
                 .add => blk: {
                     const old_inst = inst.cast(ir.Inst.Add).?;
                     const new_inst = try self.arena.allocator.create(Inst.Add);
@@ -1652,7 +1696,7 @@ const EmitZIR = struct {
                             .src = inst.src,
                             .tag = Inst.Arg.base_tag,
                         },
-                        .positionals = .{ .index = old_inst.args.index },
+                        .positionals = .{},
                         .kw_args = .{},
                     };
                     break :blk &new_inst.base;
