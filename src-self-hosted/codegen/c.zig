@@ -90,11 +90,11 @@ fn genFn(file: *C, decl: *Decl) !void {
     const instructions = func.analysis.success.instructions;
     if (instructions.len > 0) {
         for (instructions) |inst| {
-            try writer.writeAll("\n\t");
+            try writer.writeAll("\n    ");
             switch (inst.tag) {
-                .assembly => try genAsm(file, inst.cast(Inst.Assembly).?, decl),
-                .call => try genCall(file, inst.cast(Inst.Call).?, decl),
-                .ret => try genRet(file, inst.cast(Inst.Ret).?, decl, tv.ty.fnReturnType()),
+                .assembly => try genAsm(file, inst.castTag(.assembly).?, decl),
+                .call => try genCall(file, inst.castTag(.call).?, decl),
+                .ret => try genRet(file, inst.castTag(.ret).?, decl, tv.ty.fnReturnType()),
                 .retvoid => try file.main.writer().print("return;", .{}),
                 else => |e| return file.fail(decl.src(), "TODO implement C codegen for {}", .{e}),
             }
@@ -105,28 +105,14 @@ fn genFn(file: *C, decl: *Decl) !void {
     try writer.writeAll("}\n\n");
 }
 
-fn genRet(file: *C, inst: *Inst.Ret, decl: *Decl, expected_return_type: Type) !void {
-    const writer = file.main.writer();
-    const ret_value = inst.args.operand;
-    const value = ret_value.value().?;
-    if (expected_return_type.eql(ret_value.ty))
-        return file.fail(decl.src(), "TODO return {}", .{expected_return_type})
-    else if (expected_return_type.isInt() and ret_value.ty.tag() == .comptime_int)
-        if (value.intFitsInType(expected_return_type, file.options.target))
-            if (expected_return_type.intInfo(file.options.target).bits <= 64)
-                try writer.print("return {};", .{value.toUnsignedInt()})
-            else
-                return file.fail(decl.src(), "TODO return ints > 64 bits", .{})
-        else
-            return file.fail(decl.src(), "comptime int {} does not fit in {}", .{ value.toUnsignedInt(), expected_return_type })
-    else
-        return file.fail(decl.src(), "return type mismatch: expected {}, found {}", .{ expected_return_type, ret_value.ty });
+fn genRet(file: *C, inst: *Inst.UnOp, decl: *Decl, expected_return_type: Type) !void {
+    return file.fail(decl.src(), "TODO return {}", .{expected_return_type});
 }
 
 fn genCall(file: *C, inst: *Inst.Call, decl: *Decl) !void {
     const writer = file.main.writer();
     const header = file.header.writer();
-    if (inst.args.func.cast(Inst.Constant)) |func_inst| {
+    if (inst.func.castTag(.constant)) |func_inst| {
         if (func_inst.val.cast(Value.Payload.Function)) |func_val| {
             const target = func_val.func.owner_decl;
             const target_ty = target.typed_value.most_recent.typed_value.ty;
@@ -144,7 +130,7 @@ fn genCall(file: *C, inst: *Inst.Call, decl: *Decl) !void {
         } else {
             return file.fail(decl.src(), "TODO non-function call target?", .{});
         }
-        if (inst.args.args.len != 0) {
+        if (inst.args.len != 0) {
             return file.fail(decl.src(), "TODO function arguments", .{});
         }
     } else {
@@ -152,18 +138,17 @@ fn genCall(file: *C, inst: *Inst.Call, decl: *Decl) !void {
     }
 }
 
-fn genAsm(file: *C, inst: *Inst.Assembly, decl: *Decl) !void {
-    const as = inst.args;
+fn genAsm(file: *C, as: *Inst.Assembly, decl: *Decl) !void {
     const writer = file.main.writer();
     for (as.inputs) |i, index| {
         if (i[0] == '{' and i[i.len - 1] == '}') {
             const reg = i[1 .. i.len - 1];
             const arg = as.args[index];
-            if (arg.cast(Inst.Constant)) |c| {
+            if (arg.castTag(.constant)) |c| {
                 if (c.val.tag() == .int_u64) {
                     try writer.writeAll("register ");
                     try renderType(file, writer, arg.ty, decl.src());
-                    try writer.print(" {}_constant __asm__(\"{}\") = {};\n\t", .{ reg, reg, c.val.toUnsignedInt() });
+                    try writer.print(" {}_constant __asm__(\"{}\") = {};\n    ", .{ reg, reg, c.val.toUnsignedInt() });
                 } else {
                     return file.fail(decl.src(), "TODO inline asm {} args", .{c.val.tag()});
                 }
@@ -190,7 +175,7 @@ fn genAsm(file: *C, inst: *Inst.Assembly, decl: *Decl) !void {
                 if (index > 0) {
                     try writer.writeAll(", ");
                 }
-                if (arg.cast(Inst.Constant)) |c| {
+                if (arg.castTag(.constant)) |c| {
                     try writer.print("\"\"({}_constant)", .{reg});
                 } else {
                     // This is blocked by the earlier test
