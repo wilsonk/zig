@@ -215,30 +215,61 @@ pub fn CreateEventExW(attributes: ?*SECURITY_ATTRIBUTES, nameW: [*:0]const u16, 
     }
 }
 
+pub const DeviceIoControlError = error{Unexpected};
+
+/// A Zig wrapper around `NtDeviceIoControlFile` and `NtFsControlFile` syscalls.
+/// It implements similar behavior to `DeviceIoControl` and is meant to serve
+/// as a direct substitute for that call.
+/// TODO work out if we need to expose other arguments to the underlying syscalls.
 pub fn DeviceIoControl(
     h: HANDLE,
-    ioControlCode: DWORD,
+    ioControlCode: ULONG,
     in: ?[]const u8,
     out: ?[]u8,
-    overlapped: ?*OVERLAPPED,
-) !DWORD {
-    var bytes: DWORD = undefined;
-    if (kernel32.DeviceIoControl(
-        h,
-        ioControlCode,
-        if (in) |i| i.ptr else null,
-        if (in) |i| @intCast(u32, i.len) else 0,
-        if (out) |o| o.ptr else null,
-        if (out) |o| @intCast(u32, o.len) else 0,
-        &bytes,
-        overlapped,
-    ) == 0) {
-        switch (kernel32.GetLastError()) {
-            .IO_PENDING => if (overlapped == null) unreachable,
-            else => |err| return unexpectedError(err),
+) DeviceIoControlError!void {
+    // Logic from: https://doxygen.reactos.org/d3/d74/deviceio_8c.html
+    const is_fsctl = (ioControlCode >> 16) == FILE_DEVICE_FILE_SYSTEM;
+
+    var io: IO_STATUS_BLOCK = undefined;
+    const in_ptr = if (in) |i| i.ptr else null;
+    const in_len = if (in) |i| @intCast(ULONG, i.len) else 0;
+    const out_ptr = if (out) |o| o.ptr else null;
+    const out_len = if (out) |o| @intCast(ULONG, o.len) else 0;
+
+    const rc = blk: {
+        if (is_fsctl) {
+            break :blk ntdll.NtFsControlFile(
+                h,
+                null,
+                null,
+                null,
+                &io,
+                ioControlCode,
+                in_ptr,
+                in_len,
+                out_ptr,
+                out_len,
+            );
+        } else {
+            break :blk ntdll.NtDeviceIoControlFile(
+                h,
+                null,
+                null,
+                null,
+                &io,
+                ioControlCode,
+                in_ptr,
+                in_len,
+                out_ptr,
+                out_len,
+            );
         }
+    };
+    switch (rc) {
+        .SUCCESS => {},
+        .INVALID_PARAMETER => unreachable,
+        else => return unexpectedStatus(rc),
     }
-    return bytes;
 }
 
 pub fn GetOverlappedResult(h: HANDLE, overlapped: *OVERLAPPED, wait: bool) !DWORD {
@@ -727,8 +758,7 @@ pub fn CreateSymbolicLinkW(
     @memcpy(buffer[@sizeOf(SYMLINK_DATA)..], @ptrCast([*]const u8, target_path), target_path.len * 2);
     const paths_start = @sizeOf(SYMLINK_DATA) + target_path.len * 2;
     @memcpy(buffer[paths_start..].ptr, @ptrCast([*]const u8, target_path), target_path.len * 2);
-    // TODO replace with NtDeviceIoControl
-    _ = try DeviceIoControl(symlink_handle, FSCTL_SET_REPARSE_POINT, buffer[0..buf_len], null, null);
+    _ = try DeviceIoControl(symlink_handle, FSCTL_SET_REPARSE_POINT, buffer[0..buf_len], null);
 }
 
 pub const ReadLinkError = error{
@@ -806,7 +836,7 @@ pub fn ReadLinkW(dir: ?HANDLE, sub_path_w: [*:0]const u16, out_buffer: []u8) Rea
     defer CloseHandle(result_handle);
 
     var reparse_buf: [MAXIMUM_REPARSE_DATA_BUFFER_SIZE]u8 = undefined;
-    _ = try DeviceIoControl(result_handle, FSCTL_GET_REPARSE_POINT, null, reparse_buf[0..], null);
+    _ = try DeviceIoControl(result_handle, FSCTL_GET_REPARSE_POINT, null, reparse_buf[0..]);
 
     const reparse_struct = @ptrCast(*const REPARSE_DATA_BUFFER, @alignCast(@alignOf(REPARSE_DATA_BUFFER), &reparse_buf[0]));
     switch (reparse_struct.ReparseTag) {
