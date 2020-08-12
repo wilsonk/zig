@@ -65,6 +65,7 @@ pub const Inst = struct {
         cmp_neq,
         condbr,
         constant,
+        dbg_stmt,
         isnonnull,
         isnull,
         /// Read a value from a pointer.
@@ -86,8 +87,8 @@ pub const Inst = struct {
                 .alloc,
                 .retvoid,
                 .unreach,
-                .arg,
                 .breakpoint,
+                .dbg_stmt,
                 => NoOp,
 
                 .ref,
@@ -113,6 +114,7 @@ pub const Inst = struct {
                 .store,
                 => BinOp,
 
+                .arg => Arg,
                 .assembly => Assembly,
                 .block => Block,
                 .br => Br,
@@ -247,6 +249,20 @@ pub const Inst = struct {
                 return self.rhs;
             i -= 1;
 
+            return null;
+        }
+    };
+
+    pub const Arg = struct {
+        pub const base_tag = Tag.arg;
+
+        base: Inst,
+        name: [*:0]const u8,
+
+        pub fn operandCount(self: *const Arg) usize {
+            return 0;
+        }
+        pub fn getOperand(self: *const Arg, index: usize) ?*Inst {
             return null;
         }
     };

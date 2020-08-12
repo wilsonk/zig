@@ -107,6 +107,8 @@ pub const Inst = struct {
         condbr,
         /// Special case, has no textual representation.
         @"const",
+        /// Declares the beginning of a statement. Used for debug info.
+        dbg_stmt,
         /// Represents a pointer to a global decl by name.
         declref,
         /// Represents a pointer to a global decl by string name.
@@ -209,8 +211,8 @@ pub const Inst = struct {
 
         pub fn Type(tag: Tag) type {
             return switch (tag) {
-                .arg,
                 .breakpoint,
+                .dbg_stmt,
                 .returnvoid,
                 .alloc_inferred,
                 .ret_ptr,
@@ -265,6 +267,7 @@ pub const Inst = struct {
                 .xor,
                 => BinOp,
 
+                .arg => Arg,
                 .block => Block,
                 .@"break" => Break,
                 .breakvoid => BreakVoid,
@@ -324,6 +327,7 @@ pub const Inst = struct {
                 .coerce_result_block_ptr,
                 .coerce_to_ptr_elem,
                 .@"const",
+                .dbg_stmt,
                 .declref,
                 .declref_str,
                 .declval,
@@ -423,6 +427,16 @@ pub const Inst = struct {
         positionals: struct {
             lhs: *Inst,
             rhs: *Inst,
+        },
+        kw_args: struct {},
+    };
+
+    pub const Arg = struct {
+        pub const base_tag = Tag.arg;
+        base: Inst,
+
+        positionals: struct {
+            name: []const u8,
         },
         kw_args: struct {},
     };
@@ -1839,10 +1853,10 @@ const EmitZIR = struct {
             const new_inst = switch (inst.tag) {
                 .constant => unreachable, // excluded from function bodies
 
-                .arg => try self.emitNoOp(inst.src, .arg),
                 .breakpoint => try self.emitNoOp(inst.src, .breakpoint),
                 .unreach => try self.emitNoOp(inst.src, .@"unreachable"),
                 .retvoid => try self.emitNoOp(inst.src, .returnvoid),
+                .dbg_stmt => try self.emitNoOp(inst.src, .dbg_stmt),
 
                 .not => try self.emitUnOp(inst.src, new_body, inst.castTag(.not).?, .boolnot),
                 .ret => try self.emitUnOp(inst.src, new_body, inst.castTag(.ret).?, .@"return"),
@@ -1875,6 +1889,22 @@ const EmitZIR = struct {
                         },
                         .positionals = .{
                             .operand = (try self.emitType(inst.src, inst.ty)).inst,
+                        },
+                        .kw_args = .{},
+                    };
+                    break :blk &new_inst.base;
+                },
+
+                .arg => blk: {
+                    const old_inst = inst.castTag(.arg).?;
+                    const new_inst = try self.arena.allocator.create(Inst.Arg);
+                    new_inst.* = .{
+                        .base = .{
+                            .src = inst.src,
+                            .tag = .arg,
+                        },
+                        .positionals = .{
+                            .name = try self.arena.allocator.dupe(u8, mem.spanZ(old_inst.name)),
                         },
                         .kw_args = .{},
                     };

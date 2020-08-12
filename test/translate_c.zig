@@ -3,6 +3,16 @@ const std = @import("std");
 const CrossTarget = std.zig.CrossTarget;
 
 pub fn addCases(cases: *tests.TranslateCContext) void {
+    cases.add("alignof",
+        \\int main() {
+        \\    int a = _Alignof(int);
+        \\}
+    , &[_][]const u8{
+        \\pub export fn main() c_int {
+        \\    var a: c_int = @bitCast(c_int, @truncate(c_uint, @alignOf(c_int)));
+        \\}
+    });
+
     cases.add("initializer list macro",
         \\typedef struct Color {
         \\    unsigned char r;
@@ -89,10 +99,10 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub export fn foo() void {
-        \\    while (@as(c_int, 0) != 0) while (@as(c_int, 0) != 0) {};
-        \\    while (true) while (@as(c_int, 0) != 0) {};
+        \\    while (false) while (false) {};
+        \\    while (true) while (false) {};
         \\    while (true) while (true) {
-        \\        if (!(@as(c_int, 0) != 0)) break;
+        \\        if (!false) break;
         \\    };
         \\}
     });
@@ -1250,11 +1260,11 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\void __attribute__((cdecl)) foo4(float *a);
         \\void __attribute__((thiscall)) foo5(float *a);
     , &[_][]const u8{
-        \\pub fn foo1(a: [*c]f32) callconv(.Fastcall) void;
-        \\pub fn foo2(a: [*c]f32) callconv(.Stdcall) void;
-        \\pub fn foo3(a: [*c]f32) callconv(.Vectorcall) void;
+        \\pub extern fn foo1(a: [*c]f32) callconv(.Fastcall) void;
+        \\pub extern fn foo2(a: [*c]f32) callconv(.Stdcall) void;
+        \\pub extern fn foo3(a: [*c]f32) callconv(.Vectorcall) void;
         \\pub extern fn foo4(a: [*c]f32) void;
-        \\pub fn foo5(a: [*c]f32) callconv(.Thiscall) void;
+        \\pub extern fn foo5(a: [*c]f32) callconv(.Thiscall) void;
     });
 
     cases.addWithTarget("Calling convention", CrossTarget.parse(.{
@@ -1264,8 +1274,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\void __attribute__((pcs("aapcs"))) foo1(float *a);
         \\void __attribute__((pcs("aapcs-vfp"))) foo2(float *a);
     , &[_][]const u8{
-        \\pub fn foo1(a: [*c]f32) callconv(.AAPCS) void;
-        \\pub fn foo2(a: [*c]f32) callconv(.AAPCSVFP) void;
+        \\pub extern fn foo1(a: [*c]f32) callconv(.AAPCS) void;
+        \\pub extern fn foo2(a: [*c]f32) callconv(.AAPCSVFP) void;
     });
 
     cases.addWithTarget("Calling convention", CrossTarget.parse(.{
@@ -1274,7 +1284,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     }) catch unreachable,
         \\void __attribute__((aarch64_vector_pcs)) foo1(float *a);
     , &[_][]const u8{
-        \\pub fn foo1(a: [*c]f32) callconv(.Vectorcall) void;
+        \\pub extern fn foo1(a: [*c]f32) callconv(.Vectorcall) void;
     });
 
     cases.add("Parameterless function prototypes",
@@ -1624,8 +1634,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
     , &[_][]const u8{
         \\pub export fn foo() c_int {
         \\    var a: c_int = 5;
-        \\    while (@as(c_int, 2) != 0) a = 2;
-        \\    while (@as(c_int, 4) != 0) {
+        \\    while (true) a = 2;
+        \\    while (true) {
         \\        var a_1: c_int = 4;
         \\        a_1 = 9;
         \\        _ = @as(c_int, 6);
@@ -1634,11 +1644,11 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    while (true) {
         \\        var a_1: c_int = 2;
         \\        a_1 = 12;
-        \\        if (!(@as(c_int, 4) != 0)) break;
+        \\        if (!true) break;
         \\    }
         \\    while (true) {
         \\        a = 7;
-        \\        if (!(@as(c_int, 4) != 0)) break;
+        \\        if (!true) break;
         \\    }
         \\}
     });
@@ -1669,8 +1679,12 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
 
     cases.add("shadowing primitive types",
         \\unsigned anyerror = 2;
+        \\#define noreturn _Noreturn
     , &[_][]const u8{
         \\pub export var anyerror_1: c_uint = @bitCast(c_uint, @as(c_int, 2));
+        ,
+
+        \\pub const noreturn_2 = @compileError("unable to translate C expr: unexpected token .Keyword_noreturn");
     });
 
     cases.add("floats",
@@ -1692,8 +1706,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub export fn bar() c_int {
-        \\    if ((if (@as(c_int, 2) != 0) @as(c_int, 5) else (if (@as(c_int, 5) != 0) @as(c_int, 4) else @as(c_int, 6))) != 0) _ = @as(c_int, 2);
-        \\    return if (@as(c_int, 2) != 0) @as(c_int, 5) else if (@as(c_int, 5) != 0) @as(c_int, 4) else @as(c_int, 6);
+        \\    if ((if (true) @as(c_int, 5) else (if (true) @as(c_int, 4) else @as(c_int, 6))) != 0) _ = @as(c_int, 2);
+        \\    return if (true) @as(c_int, 5) else if (true) @as(c_int, 4) else @as(c_int, 6);
         \\}
     });
 
@@ -2204,7 +2218,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub export fn foo() c_int {
-        \\    if (@as(c_int, 2) != 0) {
+        \\    if (true) {
         \\        var a: c_int = 2;
         \\    }
         \\    if ((blk: {
@@ -2738,8 +2752,8 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\}
     , &[_][]const u8{
         \\pub fn foo() callconv(.C) void {
-        \\    if (@as(c_int, 1) != 0) while (true) {
-        \\        if (!(@as(c_int, 0) != 0)) break;
+        \\    if (true) while (true) {
+        \\        if (!false) break;
         \\    };
         \\}
     });

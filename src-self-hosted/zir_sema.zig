@@ -41,6 +41,7 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .coerce_to_ptr_elem => return analyzeInstCoerceToPtrElem(mod, scope, old_inst.castTag(.coerce_to_ptr_elem).?),
         .compileerror => return analyzeInstCompileError(mod, scope, old_inst.castTag(.compileerror).?),
         .@"const" => return analyzeInstConst(mod, scope, old_inst.castTag(.@"const").?),
+        .dbg_stmt => return analyzeInstDbgStmt(mod, scope, old_inst.castTag(.dbg_stmt).?),
         .declref => return analyzeInstDeclRef(mod, scope, old_inst.castTag(.declref).?),
         .declref_str => return analyzeInstDeclRefStr(mod, scope, old_inst.castTag(.declref_str).?),
         .declval => return analyzeInstDeclVal(mod, scope, old_inst.castTag(.declval).?),
@@ -407,7 +408,7 @@ fn analyzeInstCompileError(mod: *Module, scope: *Scope, inst: *zir.Inst.CompileE
     return mod.fail(scope, inst.base.src, "{}", .{inst.positionals.msg});
 }
 
-fn analyzeInstArg(mod: *Module, scope: *Scope, inst: *zir.Inst.NoOp) InnerError!*Inst {
+fn analyzeInstArg(mod: *Module, scope: *Scope, inst: *zir.Inst.Arg) InnerError!*Inst {
     const b = try mod.requireRuntimeBlock(scope, inst.base.src);
     const fn_ty = b.func.?.owner_decl.typed_value.most_recent.typed_value.ty;
     const param_index = b.instructions.items.len;
@@ -419,7 +420,8 @@ fn analyzeInstArg(mod: *Module, scope: *Scope, inst: *zir.Inst.NoOp) InnerError!
         });
     }
     const param_type = fn_ty.fnParamType(param_index);
-    return mod.addNoOp(b, inst.base.src, param_type, .arg);
+    const name = try scope.arena().dupeZ(u8, inst.positionals.name);
+    return mod.addArg(b, inst.base.src, param_type, name);
 }
 
 fn analyzeInstBlock(mod: *Module, scope: *Scope, inst: *zir.Inst.Block) InnerError!*Inst {
@@ -485,6 +487,11 @@ fn analyzeInstBreakVoid(mod: *Module, scope: *Scope, inst: *zir.Inst.BreakVoid) 
     const block = inst.positionals.block;
     const void_inst = try mod.constVoid(scope, inst.base.src);
     return analyzeBreak(mod, scope, inst.base.src, block, void_inst);
+}
+
+fn analyzeInstDbgStmt(mod: *Module, scope: *Scope, inst: *zir.Inst.NoOp) InnerError!*Inst {
+    const b = try mod.requireRuntimeBlock(scope, inst.base.src);
+    return mod.addNoOp(b, inst.base.src, Type.initTag(.void), .dbg_stmt);
 }
 
 fn analyzeInstDeclRefStr(mod: *Module, scope: *Scope, inst: *zir.Inst.DeclRefStr) InnerError!*Inst {
