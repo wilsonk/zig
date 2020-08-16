@@ -61,7 +61,8 @@ const Scope = struct {
         pending_block: Block,
         cases: []*ast.Node,
         case_index: usize,
-        has_default: bool = false,
+        switch_label: ?[]const u8,
+        default_label: ?[]const u8,
     };
 
     /// Used for the scope of condition expressions, for example `if (cond)`.
@@ -73,7 +74,7 @@ const Scope = struct {
 
         fn getBlockScope(self: *Condition, c: *Context) !*Block {
             if (self.block) |*b| return b;
-            self.block = try Block.init(c, &self.base, "blk");
+            self.block = try Block.init(c, &self.base, true);
             return &self.block.?;
         }
 
@@ -93,21 +94,22 @@ const Scope = struct {
         mangle_count: u32 = 0,
         lbrace: ast.TokenIndex,
 
-        fn init(c: *Context, parent: *Scope, label: ?[]const u8) !Block {
-            return Block{
+        fn init(c: *Context, parent: *Scope, labeled: bool) !Block {
+            var blk = Block{
                 .base = .{
                     .id = .Block,
                     .parent = parent,
                 },
                 .statements = std.ArrayList(*ast.Node).init(c.gpa),
                 .variables = AliasList.init(c.gpa),
-                .label = if (label) |l| blk: {
-                    const ll = try appendIdentifier(c, l);
-                    _ = try appendToken(c, .Colon, ":");
-                    break :blk ll;
-                } else null,
+                .label = null,
                 .lbrace = try appendToken(c, .LBrace, "{"),
             };
+            if (labeled) {
+                blk.label = try appendIdentifier(c, try blk.makeMangledName(c, "blk"));
+                _ = try appendToken(c, .Colon, ":");
+            }
+            return blk;
         }
 
         fn deinit(self: *Block) void {
@@ -116,19 +118,31 @@ const Scope = struct {
             self.* = undefined;
         }
 
-        fn complete(self: *Block, c: *Context) !*ast.Node.Block {
+        fn complete(self: *Block, c: *Context) !*ast.Node {
             // We reserve 1 extra statement if the parent is a Loop. This is in case of
             // do while, we want to put `if (cond) break;` at the end.
             const alloc_len = self.statements.items.len + @boolToInt(self.base.parent.?.id == .Loop);
-            const node = try ast.Node.Block.alloc(c.arena, alloc_len);
-            node.* = .{
-                .statements_len = self.statements.items.len,
-                .lbrace = self.lbrace,
-                .rbrace = try appendToken(c, .RBrace, "}"),
-                .label = self.label,
-            };
-            mem.copy(*ast.Node, node.statements(), self.statements.items);
-            return node;
+            const rbrace = try appendToken(c, .RBrace, "}");
+            if (self.label) |label| {
+                const node = try ast.Node.LabeledBlock.alloc(c.arena, alloc_len);
+                node.* = .{
+                    .statements_len = self.statements.items.len,
+                    .lbrace = self.lbrace,
+                    .rbrace = rbrace,
+                    .label = label,
+                };
+                mem.copy(*ast.Node, node.statements(), self.statements.items);
+                return &node.base;
+            } else {
+                const node = try ast.Node.Block.alloc(c.arena, alloc_len);
+                node.* = .{
+                    .statements_len = self.statements.items.len,
+                    .lbrace = self.lbrace,
+                    .rbrace = rbrace,
+                };
+                mem.copy(*ast.Node, node.statements(), self.statements.items);
+                return &node.base;
+            }
         }
 
         /// Given the desired name, return a name that does not shadow anything from outer scopes.
@@ -318,15 +332,9 @@ pub const Context = struct {
         return node;
     }
 
-    fn createBlock(c: *Context, label: ?[]const u8, statements_len: ast.NodeIndex) !*ast.Node.Block {
-        const label_node = if (label) |l| blk: {
-            const ll = try appendIdentifier(c, l);
-            _ = try appendToken(c, .Colon, ":");
-            break :blk ll;
-        } else null;
+    fn createBlock(c: *Context, statements_len: ast.NodeIndex) !*ast.Node.Block {
         const block_node = try ast.Node.Block.alloc(c.arena, statements_len);
         block_node.* = .{
-            .label = label_node,
             .lbrace = try appendToken(c, .LBrace, "{"),
             .statements_len = statements_len,
             .rbrace = undefined,
@@ -577,7 +585,7 @@ fn visitFnDecl(c: *Context, fn_decl: *const ZigClangFunctionDecl) Error!void {
 
     // actual function definition with body
     const body_stmt = ZigClangFunctionDecl_getBody(fn_decl);
-    var block_scope = try Scope.Block.init(rp.c, &c.global_scope.base, null);
+    var block_scope = try Scope.Block.init(rp.c, &c.global_scope.base, false);
     defer block_scope.deinit();
     var scope = &block_scope.base;
 
@@ -626,8 +634,48 @@ fn visitFnDecl(c: *Context, fn_decl: *const ZigClangFunctionDecl) Error!void {
         error.UnsupportedType,
         => return failDecl(c, fn_decl_loc, fn_name, "unable to translate function", .{}),
     };
+    // add return statement if the function didn't have one
+    blk: {
+        const fn_ty = @ptrCast(*const ZigClangFunctionType, fn_type);
+
+        if (ZigClangFunctionType_getNoReturnAttr(fn_ty)) break :blk;
+        const return_qt = ZigClangFunctionType_getReturnType(fn_ty);
+        if (isCVoid(return_qt)) break :blk;
+
+        if (block_scope.statements.items.len > 0) {
+            var last = block_scope.statements.items[block_scope.statements.items.len - 1];
+            while (true) {
+                switch (last.tag) {
+                    .Block, .LabeledBlock => {
+                        const stmts = last.blockStatements();
+                        if (stmts.len == 0) break;
+
+                        last = stmts[stmts.len - 1];
+                    },
+                    // no extra return needed
+                    .Return => break :blk,
+                    else => break,
+                }
+            }
+        }
+
+        const return_expr = try ast.Node.ControlFlowExpression.create(rp.c.arena, .{
+            .ltoken = try appendToken(rp.c, .Keyword_return, "return"),
+            .tag = .Return,
+        }, .{
+            .rhs = transZeroInitExpr(rp, scope, fn_decl_loc, ZigClangQualType_getTypePtr(return_qt)) catch |err| switch (err) {
+                error.OutOfMemory => |e| return e,
+                error.UnsupportedTranslation,
+                error.UnsupportedType,
+                => return failDecl(c, fn_decl_loc, fn_name, "unable to create a return value for function", .{}),
+            },
+        });
+        _ = try appendToken(rp.c, .Semicolon, ";");
+        try block_scope.statements.append(&return_expr.base);
+    }
+
     const body_node = try block_scope.complete(rp.c);
-    proto_node.setTrailer("body_node", &body_node.base);
+    proto_node.setTrailer("body_node", body_node);
     return addTopLevelDecl(c, fn_name, &proto_node.base);
 }
 
@@ -931,7 +979,7 @@ fn transRecordDecl(c: *Context, record_decl: *const ZigClangRecordDecl) Error!?*
                 else => |e| return e,
             };
 
-            const align_expr = blk: {
+            const align_expr = blk_2: {
                 const alignment = ZigClangFieldDecl_getAlignedAttribute(field_decl, rp.c.clang_context);
                 if (alignment != 0) {
                     _ = try appendToken(rp.c, .Keyword_align, "align");
@@ -940,9 +988,9 @@ fn transRecordDecl(c: *Context, record_decl: *const ZigClangRecordDecl) Error!?*
                     const expr = try transCreateNodeInt(rp.c, alignment / 8);
                     _ = try appendToken(rp.c, .RParen, ")");
 
-                    break :blk expr;
+                    break :blk_2 expr;
                 }
-                break :blk null;
+                break :blk_2 null;
             };
 
             const field_node = try c.arena.create(ast.Node.ContainerField);
@@ -1073,9 +1121,9 @@ fn transEnumDecl(c: *Context, enum_decl: *const ZigClangEnumDecl) Error!?*ast.No
 
             const field_name_tok = try appendIdentifier(c, field_name);
 
-            const int_node = if (!pure_enum) blk: {
+            const int_node = if (!pure_enum) blk_2: {
                 _ = try appendToken(c, .Colon, "=");
-                break :blk try transCreateNodeAPInt(c, ZigClangEnumConstantDecl_getInitVal(enum_const));
+                break :blk_2 try transCreateNodeAPInt(c, ZigClangEnumConstantDecl_getInitVal(enum_const));
             } else
                 null;
 
@@ -1233,7 +1281,7 @@ fn transStmt(
         .WhileStmtClass => return transWhileLoop(rp, scope, @ptrCast(*const ZigClangWhileStmt, stmt)),
         .DoStmtClass => return transDoWhileLoop(rp, scope, @ptrCast(*const ZigClangDoStmt, stmt)),
         .NullStmtClass => {
-            const block = try rp.c.createBlock(null, 0);
+            const block = try rp.c.createBlock(0);
             block.rbrace = try appendToken(rp.c, .RBrace, "}");
             return &block.base;
         },
@@ -1307,14 +1355,14 @@ fn transBinaryOperator(
             const rhs = try transExpr(rp, &block_scope.base, ZigClangBinaryOperator_getRHS(stmt), .used, .r_value);
             if (expr) {
                 _ = try appendToken(rp.c, .Semicolon, ";");
-                const break_node = try transCreateNodeBreakToken(rp.c, block_scope.label, rhs);
+                const break_node = try transCreateNodeBreak(rp.c, block_scope.label, rhs);
                 try block_scope.statements.append(&break_node.base);
                 const block_node = try block_scope.complete(rp.c);
                 const rparen = try appendToken(rp.c, .RParen, ")");
                 const grouped_expr = try rp.c.arena.create(ast.Node.GroupedExpression);
                 grouped_expr.* = .{
                     .lparen = lparen,
-                    .expr = &block_node.base,
+                    .expr = block_node,
                     .rparen = rparen,
                 };
                 return maybeSuppressResult(rp, scope, result_used, &grouped_expr.base);
@@ -1476,11 +1524,10 @@ fn transCompoundStmtInline(
 }
 
 fn transCompoundStmt(rp: RestorePoint, scope: *Scope, stmt: *const ZigClangCompoundStmt) TransError!*ast.Node {
-    var block_scope = try Scope.Block.init(rp.c, scope, null);
+    var block_scope = try Scope.Block.init(rp.c, scope, false);
     defer block_scope.deinit();
     try transCompoundStmtInline(rp, &block_scope.base, stmt, &block_scope);
-    const node = try block_scope.complete(rp.c);
-    return &node.base;
+    return try block_scope.complete(rp.c);
 }
 
 fn transCStyleCastExprClass(
@@ -2388,7 +2435,7 @@ fn transZeroInitExpr(
     ty: *const ZigClangType,
 ) TransError!*ast.Node {
     switch (ZigClangType_getTypeClass(ty)) {
-        .Builtin => blk: {
+        .Builtin => {
             const builtin_ty = @ptrCast(*const ZigClangBuiltinType, ty);
             switch (ZigClangBuiltinType_getKind(builtin_ty)) {
                 .Bool => return try transCreateNodeBoolLiteral(rp.c, false),
@@ -2547,7 +2594,7 @@ fn transDoWhileLoop(
         // zig:   if (!cond) break;
         // zig: }
         const node = try transStmt(rp, &loop_scope, ZigClangDoStmt_getBody(stmt), .unused, .r_value);
-        break :blk node.cast(ast.Node.Block).?;
+        break :blk node.castTag(.Block).?;
     } else blk: {
         // the C statement is without a block, so we need to create a block to contain it.
         // c: do
@@ -2558,7 +2605,7 @@ fn transDoWhileLoop(
         // zig:   if (!cond) break;
         // zig: }
         new = true;
-        const block = try rp.c.createBlock(null, 2);
+        const block = try rp.c.createBlock(2);
         block.statements_len = 1; // over-allocated so we can add another below
         block.statements()[0] = try transStmt(rp, &loop_scope, ZigClangDoStmt_getBody(stmt), .unused, .r_value);
         break :blk block;
@@ -2587,7 +2634,7 @@ fn transForLoop(
     defer if (block_scope) |*bs| bs.deinit();
 
     if (ZigClangForStmt_getInit(stmt)) |init| {
-        block_scope = try Scope.Block.init(rp.c, scope, null);
+        block_scope = try Scope.Block.init(rp.c, scope, false);
         loop_scope.parent = &block_scope.?.base;
         const init_node = try transStmt(rp, &block_scope.?.base, init, .unused, .r_value);
         try block_scope.?.statements.append(init_node);
@@ -2617,8 +2664,7 @@ fn transForLoop(
     while_node.body = try transStmt(rp, &loop_scope, ZigClangForStmt_getBody(stmt), .unused, .r_value);
     if (block_scope) |*bs| {
         try bs.statements.append(&while_node.base);
-        const node = try bs.complete(rp.c);
-        return &node.base;
+        return try bs.complete(rp.c);
     } else {
         _ = try appendToken(rp.c, .Semicolon, ";");
         return &while_node.base;
@@ -2673,17 +2719,19 @@ fn transSwitch(
         .cases = switch_node.cases(),
         .case_index = 0,
         .pending_block = undefined,
+        .default_label = null,
+        .switch_label = null,
     };
 
     // tmp block that all statements will go before being picked up by a case or default
-    var block_scope = try Scope.Block.init(rp.c, &switch_scope.base, null);
+    var block_scope = try Scope.Block.init(rp.c, &switch_scope.base, false);
     defer block_scope.deinit();
 
     // Note that we do not defer a deinit here; the switch_scope.pending_block field
     // has its own memory management. This resource is freed inside `transCase` and
     // then the final pending_block is freed at the bottom of this function with
     // pending_block.deinit().
-    switch_scope.pending_block = try Scope.Block.init(rp.c, scope, null);
+    switch_scope.pending_block = try Scope.Block.init(rp.c, scope, false);
     try switch_scope.pending_block.statements.append(&switch_node.base);
 
     const last = try transStmt(rp, &block_scope.base, ZigClangSwitchStmt_getBody(stmt), .unused, .r_value);
@@ -2698,11 +2746,19 @@ fn transSwitch(
         switch_scope.pending_block.statements.appendAssumeCapacity(n);
     }
 
-    switch_scope.pending_block.label = try appendIdentifier(rp.c, "__switch");
-    _ = try appendToken(rp.c, .Colon, ":");
-    if (!switch_scope.has_default) {
+    if (switch_scope.default_label == null) {
+        switch_scope.switch_label = try block_scope.makeMangledName(rp.c, "switch");
+    }
+    if (switch_scope.switch_label) |l| {
+        switch_scope.pending_block.label = try appendIdentifier(rp.c, l);
+        _ = try appendToken(rp.c, .Colon, ":");
+    }
+    if (switch_scope.default_label == null) {
         const else_prong = try transCreateNodeSwitchCase(rp.c, try transCreateNodeSwitchElse(rp.c));
-        else_prong.expr = &(try transCreateNodeBreak(rp.c, "__switch", null)).base;
+        else_prong.expr = blk: {
+            var br = try CtrlFlow.init(rp.c, .Break, switch_scope.switch_label.?);
+            break :blk &(try br.finish(null)).base;
+        };
         _ = try appendToken(rp.c, .Comma, ",");
 
         if (switch_scope.case_index >= switch_scope.cases.len)
@@ -2716,7 +2772,7 @@ fn transSwitch(
 
     const result_node = try switch_scope.pending_block.complete(rp.c);
     switch_scope.pending_block.deinit();
-    return &result_node.base;
+    return result_node;
 }
 
 fn transCase(
@@ -2726,7 +2782,7 @@ fn transCase(
 ) TransError!*ast.Node {
     const block_scope = scope.findBlockScope(rp.c) catch unreachable;
     const switch_scope = scope.getSwitch();
-    const label = try std.fmt.allocPrint(rp.c.arena, "__case_{}", .{switch_scope.case_index - @boolToInt(switch_scope.has_default)});
+    const label = try block_scope.makeMangledName(rp.c, "case");
     _ = try appendToken(rp.c, .Semicolon, ";");
 
     const expr = if (ZigClangCaseStmt_getRHS(stmt)) |rhs| blk: {
@@ -2746,7 +2802,10 @@ fn transCase(
         try transExpr(rp, scope, ZigClangCaseStmt_getLHS(stmt), .used, .r_value);
 
     const switch_prong = try transCreateNodeSwitchCase(rp.c, expr);
-    switch_prong.expr = &(try transCreateNodeBreak(rp.c, label, null)).base;
+    switch_prong.expr = blk: {
+        var br = try CtrlFlow.init(rp.c, .Break, label);
+        break :blk &(try br.finish(null)).base;
+    };
     _ = try appendToken(rp.c, .Comma, ",");
 
     if (switch_scope.case_index >= switch_scope.cases.len)
@@ -2763,9 +2822,9 @@ fn transCase(
 
     const pending_node = try switch_scope.pending_block.complete(rp.c);
     switch_scope.pending_block.deinit();
-    switch_scope.pending_block = try Scope.Block.init(rp.c, scope, null);
+    switch_scope.pending_block = try Scope.Block.init(rp.c, scope, false);
 
-    try switch_scope.pending_block.statements.append(&pending_node.base);
+    try switch_scope.pending_block.statements.append(pending_node);
 
     return transStmt(rp, scope, ZigClangCaseStmt_getSubStmt(stmt), .unused, .r_value);
 }
@@ -2777,12 +2836,14 @@ fn transDefault(
 ) TransError!*ast.Node {
     const block_scope = scope.findBlockScope(rp.c) catch unreachable;
     const switch_scope = scope.getSwitch();
-    const label = "__default";
-    switch_scope.has_default = true;
+    switch_scope.default_label = try block_scope.makeMangledName(rp.c, "default");
     _ = try appendToken(rp.c, .Semicolon, ";");
 
     const else_prong = try transCreateNodeSwitchCase(rp.c, try transCreateNodeSwitchElse(rp.c));
-    else_prong.expr = &(try transCreateNodeBreak(rp.c, label, null)).base;
+    else_prong.expr = blk: {
+        var br = try CtrlFlow.init(rp.c, .Break, switch_scope.default_label.?);
+        break :blk &(try br.finish(null)).base;
+    };
     _ = try appendToken(rp.c, .Comma, ",");
 
     if (switch_scope.case_index >= switch_scope.cases.len)
@@ -2790,7 +2851,7 @@ fn transDefault(
     switch_scope.cases[switch_scope.case_index] = &else_prong.base;
     switch_scope.case_index += 1;
 
-    switch_scope.pending_block.label = try appendIdentifier(rp.c, label);
+    switch_scope.pending_block.label = try appendIdentifier(rp.c, switch_scope.default_label.?);
     _ = try appendToken(rp.c, .Colon, ":");
 
     // take all pending statements
@@ -2799,8 +2860,8 @@ fn transDefault(
 
     const pending_node = try switch_scope.pending_block.complete(rp.c);
     switch_scope.pending_block.deinit();
-    switch_scope.pending_block = try Scope.Block.init(rp.c, scope, null);
-    try switch_scope.pending_block.statements.append(&pending_node.base);
+    switch_scope.pending_block = try Scope.Block.init(rp.c, scope, false);
+    try switch_scope.pending_block.statements.append(pending_node);
 
     return transStmt(rp, scope, ZigClangDefaultStmt_getSubStmt(stmt), .unused, .r_value);
 }
@@ -2894,7 +2955,7 @@ fn transStmtExpr(rp: RestorePoint, scope: *Scope, stmt: *const ZigClangStmtExpr,
         return transCompoundStmt(rp, scope, comp);
     }
     const lparen = try appendToken(rp.c, .LParen, "(");
-    var block_scope = try Scope.Block.init(rp.c, scope, "blk");
+    var block_scope = try Scope.Block.init(rp.c, scope, true);
     defer block_scope.deinit();
 
     var it = ZigClangCompoundStmt_body_begin(comp);
@@ -2915,7 +2976,7 @@ fn transStmtExpr(rp: RestorePoint, scope: *Scope, stmt: *const ZigClangStmtExpr,
     const grouped_expr = try rp.c.arena.create(ast.Node.GroupedExpression);
     grouped_expr.* = .{
         .lparen = lparen,
-        .expr = &block_node.base,
+        .expr = block_node,
         .rparen = rparen,
     };
     return maybeSuppressResult(rp, scope, used, &grouped_expr.base);
@@ -3209,7 +3270,7 @@ fn transCreatePreCrement(
     // zig:     _ref.* += 1;
     // zig:     break :blk _ref.*
     // zig: })
-    var block_scope = try Scope.Block.init(rp.c, scope, "blk");
+    var block_scope = try Scope.Block.init(rp.c, scope, true);
     defer block_scope.deinit();
     const ref = try block_scope.makeMangledName(rp.c, "ref");
 
@@ -3239,7 +3300,7 @@ fn transCreatePreCrement(
     const assign = try transCreateNodeInfixOp(rp, scope, ref_node, op, token, one, .used, false);
     try block_scope.statements.append(assign);
 
-    const break_node = try transCreateNodeBreakToken(rp.c, block_scope.label, ref_node);
+    const break_node = try transCreateNodeBreak(rp.c, block_scope.label, ref_node);
     try block_scope.statements.append(&break_node.base);
     const block_node = try block_scope.complete(rp.c);
     // semicolon must immediately follow rbrace because it is the last token in a block
@@ -3247,7 +3308,7 @@ fn transCreatePreCrement(
     const grouped_expr = try rp.c.arena.create(ast.Node.GroupedExpression);
     grouped_expr.* = .{
         .lparen = try appendToken(rp.c, .LParen, "("),
-        .expr = &block_node.base,
+        .expr = block_node,
         .rparen = try appendToken(rp.c, .RParen, ")"),
     };
     return &grouped_expr.base;
@@ -3283,7 +3344,7 @@ fn transCreatePostCrement(
     // zig:     _ref.* += 1;
     // zig:     break :blk _tmp
     // zig: })
-    var block_scope = try Scope.Block.init(rp.c, scope, "blk");
+    var block_scope = try Scope.Block.init(rp.c, scope, true);
     defer block_scope.deinit();
     const ref = try block_scope.makeMangledName(rp.c, "ref");
 
@@ -3341,7 +3402,7 @@ fn transCreatePostCrement(
     const grouped_expr = try rp.c.arena.create(ast.Node.GroupedExpression);
     grouped_expr.* = .{
         .lparen = try appendToken(rp.c, .LParen, "("),
-        .expr = &block_node.base,
+        .expr = block_node,
         .rparen = try appendToken(rp.c, .RParen, ")"),
     };
     return &grouped_expr.base;
@@ -3458,7 +3519,7 @@ fn transCreateCompoundAssign(
     // zig:     _ref.* = _ref.* + rhs;
     // zig:     break :blk _ref.*
     // zig: })
-    var block_scope = try Scope.Block.init(rp.c, scope, "blk");
+    var block_scope = try Scope.Block.init(rp.c, scope, true);
     defer block_scope.deinit();
     const ref = try block_scope.makeMangledName(rp.c, "ref");
 
@@ -3526,13 +3587,13 @@ fn transCreateCompoundAssign(
         try block_scope.statements.append(assign);
     }
 
-    const break_node = try transCreateNodeBreakToken(rp.c, block_scope.label, ref_node);
+    const break_node = try transCreateNodeBreak(rp.c, block_scope.label, ref_node);
     try block_scope.statements.append(&break_node.base);
     const block_node = try block_scope.complete(rp.c);
     const grouped_expr = try rp.c.arena.create(ast.Node.GroupedExpression);
     grouped_expr.* = .{
         .lparen = try appendToken(rp.c, .LParen, "("),
-        .expr = &block_node.base,
+        .expr = block_node,
         .rparen = try appendToken(rp.c, .RParen, ")"),
     };
     return &grouped_expr.base;
@@ -3602,8 +3663,16 @@ fn transCPtrCast(
 
 fn transBreak(rp: RestorePoint, scope: *Scope) TransError!*ast.Node {
     const break_scope = scope.getBreakableScope();
-    const label_text: ?[]const u8 = if (break_scope.id == .Switch) "__switch" else null;
-    const br = try transCreateNodeBreak(rp.c, label_text, null);
+    const label_text: ?[]const u8 = if (break_scope.id == .Switch) blk: {
+        const swtch = @fieldParentPtr(Scope.Switch, "base", break_scope);
+        const block_scope = try scope.findBlockScope(rp.c);
+        swtch.switch_label = try block_scope.makeMangledName(rp.c, "switch");
+        break :blk swtch.switch_label;
+    } else
+        null;
+
+    var cf = try CtrlFlow.init(rp.c, .Break, label_text);
+    const br = try cf.finish(null);
     _ = try appendToken(rp.c, .Semicolon, ";");
     return &br.base;
 }
@@ -3634,7 +3703,7 @@ fn transBinaryConditionalOperator(rp: RestorePoint, scope: *Scope, stmt: *const 
     //      })
     const lparen = try appendToken(rp.c, .LParen, "(");
 
-    var block_scope = try Scope.Block.init(rp.c, scope, "blk");
+    var block_scope = try Scope.Block.init(rp.c, scope, true);
     defer block_scope.deinit();
 
     const mangled_name = try block_scope.makeMangledName(rp.c, "cond_temp");
@@ -3683,7 +3752,7 @@ fn transBinaryConditionalOperator(rp: RestorePoint, scope: *Scope, stmt: *const 
     const grouped_expr = try rp.c.arena.create(ast.Node.GroupedExpression);
     grouped_expr.* = .{
         .lparen = lparen,
-        .expr = &block_node.base,
+        .expr = block_node,
         .rparen = try appendToken(rp.c, .RParen, ")"),
     };
     return maybeSuppressResult(rp, scope, used, &grouped_expr.base);
@@ -4082,8 +4151,7 @@ fn transCreateNodeAssign(
     // zig:     lhs = _tmp;
     // zig:     break :blk _tmp
     // zig: })
-    const label_name = "blk";
-    var block_scope = try Scope.Block.init(rp.c, scope, label_name);
+    var block_scope = try Scope.Block.init(rp.c, scope, true);
     defer block_scope.deinit();
 
     const tmp = try block_scope.makeMangledName(rp.c, "tmp");
@@ -4118,7 +4186,7 @@ fn transCreateNodeAssign(
     try block_scope.statements.append(assign);
 
     const break_node = blk: {
-        var tmp_ctrl_flow = try CtrlFlow.init(rp.c, .Break, label_name);
+        var tmp_ctrl_flow = try CtrlFlow.init(rp.c, .Break, tokenSlice(rp.c, block_scope.label.?));
         const rhs_expr = try transCreateNodeIdentifier(rp.c, tmp);
         break :blk try tmp_ctrl_flow.finish(rhs_expr);
     };
@@ -4127,7 +4195,7 @@ fn transCreateNodeAssign(
     const block_node = try block_scope.complete(rp.c);
     // semicolon must immediately follow rbrace because it is the last token in a block
     _ = try appendToken(rp.c, .Semicolon, ";");
-    return &block_node.base;
+    return block_node;
 }
 
 fn transCreateNodeFieldAccess(c: *Context, container: *ast.Node, field_name: []const u8) !*ast.Node {
@@ -4420,7 +4488,6 @@ fn transCreateNodeMacroFn(c: *Context, name: []const u8, ref: *ast.Node, proto_a
 
     const block = try ast.Node.Block.alloc(c.arena, 1);
     block.* = .{
-        .label = null,
         .lbrace = block_lbrace,
         .statements_len = 1,
         .rbrace = try appendToken(c, .RBrace, "}"),
@@ -4495,23 +4562,12 @@ fn transCreateNodeElse(c: *Context) !*ast.Node.Else {
     return node;
 }
 
-fn transCreateNodeBreakToken(
+fn transCreateNodeBreak(
     c: *Context,
     label: ?ast.TokenIndex,
     rhs: ?*ast.Node,
 ) !*ast.Node.ControlFlowExpression {
-    const other_token = label orelse return transCreateNodeBreak(c, null, rhs);
-    const loc = c.token_locs.items[other_token];
-    const label_name = c.source_buffer.items[loc.start..loc.end];
-    return transCreateNodeBreak(c, label_name, rhs);
-}
-
-fn transCreateNodeBreak(
-    c: *Context,
-    label: ?[]const u8,
-    rhs: ?*ast.Node,
-) !*ast.Node.ControlFlowExpression {
-    var ctrl_flow = try CtrlFlow.init(c, .Break, label);
+    var ctrl_flow = try CtrlFlow.init(c, .Break, if (label) |l| tokenSlice(c, l) else null);
     return ctrl_flow.finish(rhs);
 }
 
@@ -5362,7 +5418,7 @@ fn transMacroDefine(c: *Context, m: *MacroCtx) ParseError!void {
 }
 
 fn transMacroFnDefine(c: *Context, m: *MacroCtx) ParseError!void {
-    var block_scope = try Scope.Block.init(c, &c.global_scope.base, null);
+    var block_scope = try Scope.Block.init(c, &c.global_scope.base, false);
     defer block_scope.deinit();
     const scope = &block_scope.base;
 
@@ -5422,9 +5478,9 @@ fn transMacroFnDefine(c: *Context, m: *MacroCtx) ParseError!void {
     if (last != .Eof and last != .Nl)
         return m.fail(c, "unable to translate C expr: unexpected token .{}", .{@tagName(last)});
     _ = try appendToken(c, .Semicolon, ";");
-    const type_of_arg = if (expr.tag != .Block) expr else blk: {
-        const blk = @fieldParentPtr(ast.Node.Block, "base", expr);
-        const blk_last = blk.statements()[blk.statements_len - 1];
+    const type_of_arg = if (!expr.tag.isBlock()) expr else blk: {
+        const stmts = expr.blockStatements();
+        const blk_last = stmts[stmts.len - 1];
         const br = blk_last.cast(ast.Node.ControlFlowExpression).?;
         break :blk br.getRHS().?;
     };
@@ -5447,7 +5503,7 @@ fn transMacroFnDefine(c: *Context, m: *MacroCtx) ParseError!void {
         .visib_token = pub_tok,
         .extern_export_inline_token = inline_tok,
         .name_token = name_tok,
-        .body_node = &block_node.base,
+        .body_node = block_node,
     });
     mem.copy(ast.Node.FnProto.ParamDecl, fn_proto.params(), fn_params.items);
 
@@ -5475,8 +5531,7 @@ fn parseCExpr(c: *Context, m: *MacroCtx, scope: *Scope) ParseError!*ast.Node {
         },
         .Comma => {
             _ = try appendToken(c, .Semicolon, ";");
-            const label_name = "blk";
-            var block_scope = try Scope.Block.init(c, scope, label_name);
+            var block_scope = try Scope.Block.init(c, scope, true);
             defer block_scope.deinit();
 
             var last = node;
@@ -5501,10 +5556,9 @@ fn parseCExpr(c: *Context, m: *MacroCtx, scope: *Scope) ParseError!*ast.Node {
                 }
             }
 
-            const break_node = try transCreateNodeBreak(c, label_name, last);
+            const break_node = try transCreateNodeBreak(c, block_scope.label, last);
             try block_scope.statements.append(&break_node.base);
-            const block_node = try block_scope.complete(c);
-            return &block_node.base;
+            return try block_scope.complete(c);
         },
         else => {
             m.i -= 1;

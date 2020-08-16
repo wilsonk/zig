@@ -15,6 +15,9 @@ const leb128 = std.debug.leb;
 const Package = @import("Package.zig");
 const Value = @import("value.zig").Value;
 const Type = @import("type.zig").Type;
+const build_options = @import("build_options");
+
+const producer_string = if (std.builtin.is_test) "zig test" else "zig " ++ build_options.version;
 
 // TODO Turn back on zig fmt when https://github.com/ziglang/zig/issues/5948 is implemented.
 // zig fmt: off
@@ -202,7 +205,6 @@ pub const File = struct {
         called: std.StringHashMap(void),
         need_stddef: bool = false,
         need_stdint: bool = false,
-        need_noreturn: bool = false,
         error_msg: *Module.ErrorMsg = undefined,
 
         pub fn openPath(allocator: *Allocator, dir: fs.Dir, sub_path: []const u8, options: Options) !*File {
@@ -230,7 +232,7 @@ pub const File = struct {
             return &c_file.base;
         }
 
-        pub fn fail(self: *C, src: usize, comptime format: []const u8, args: anytype) !void {
+        pub fn fail(self: *C, src: usize, comptime format: []const u8, args: anytype) error{AnalysisFail, OutOfMemory} {
             self.error_msg = try Module.ErrorMsg.create(self.base.allocator, src, format, args);
             return error.AnalysisFail;
         }
@@ -1133,7 +1135,7 @@ pub const File = struct {
                 // Write the form for the compile unit, which must match the abbrev table above.
                 const name_strp = try self.makeDebugString(self.base.options.root_pkg.root_src_path);
                 const comp_dir_strp = try self.makeDebugString(self.base.options.root_pkg.root_src_dir_path);
-                const producer_strp = try self.makeDebugString("zig (TODO version here)");
+                const producer_strp = try self.makeDebugString(producer_string);
                 // Currently only one compilation unit is supported, so the address range is simply
                 // identical to the main program header virtual address and memory size.
                 const text_phdr = &self.program_headers.items[self.phdr_load_re_index.?];
@@ -1484,9 +1486,6 @@ pub const File = struct {
             assert(!self.shdr_table_dirty);
             assert(!self.shstrtab_dirty);
             assert(!self.debug_strtab_dirty);
-            assert(!self.offset_table_count_dirty);
-            const syms_sect = &self.sections.items[self.symtab_section_index.?];
-            assert(syms_sect.sh_info == self.local_symbols.items.len);
         }
 
         fn writeDwarfAddrAssumeCapacity(self: *Elf, buf: *std.ArrayList(u8), addr: u64) void {
@@ -1891,6 +1890,10 @@ pub const File = struct {
                 else => false,
             };
             if (is_fn) {
+                //if (mem.eql(u8, mem.spanZ(decl.name), "add")) {
+                //    typed_value.val.cast(Value.Payload.Function).?.func.dump(module.*);
+                //}
+
                 // For functions we need to add a prologue to the debug line program.
                 try dbg_line_buffer.ensureCapacity(26);
 

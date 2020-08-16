@@ -2,6 +2,29 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.addTest("duplicate/unused labels",
+        \\comptime {
+        \\    blk: { blk: while (false) {} }
+        \\    blk: while (false) { blk: for (@as([0]void, undefined)) |_| {} }
+        \\    blk: for (@as([0]void, undefined)) |_| { blk: {} }
+        \\}
+        \\comptime {
+        \\    blk: {}
+        \\    blk: while(false) {}
+        \\    blk: for(@as([0]void, undefined)) |_| {}
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:17: error: redeclaration of label 'blk'",
+        "tmp.zig:2:10: note: previous declaration is here",
+        "tmp.zig:3:31: error: redeclaration of label 'blk'",
+        "tmp.zig:3:10: note: previous declaration is here",
+        "tmp.zig:4:51: error: redeclaration of label 'blk'",
+        "tmp.zig:4:10: note: previous declaration is here",
+        "tmp.zig:7:10: error: unused block label",
+        "tmp.zig:8:10: error: unused while label",
+        "tmp.zig:9:10: error: unused for label",
+    });
+
     cases.addTest("@alignCast of zero sized types",
         \\export fn foo() void {
         \\    const a: *void = undefined;
@@ -6128,32 +6151,33 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:2:15: error: expected error union type, found '?i32'",
     });
 
-    cases.add("inline fn calls itself indirectly",
-        \\export fn foo() void {
-        \\    bar();
-        \\}
-        \\inline fn bar() void {
-        \\    baz();
-        \\    quux();
-        \\}
-        \\inline fn baz() void {
-        \\    bar();
-        \\    quux();
-        \\}
-        \\extern fn quux() void;
-    , &[_][]const u8{
-        "tmp.zig:4:1: error: unable to inline function",
-    });
+    // TODO test this in stage2, but we won't even try in stage1
+    //cases.add("inline fn calls itself indirectly",
+    //    \\export fn foo() void {
+    //    \\    bar();
+    //    \\}
+    //    \\inline fn bar() void {
+    //    \\    baz();
+    //    \\    quux();
+    //    \\}
+    //    \\inline fn baz() void {
+    //    \\    bar();
+    //    \\    quux();
+    //    \\}
+    //    \\extern fn quux() void;
+    //, &[_][]const u8{
+    //    "tmp.zig:4:1: error: unable to inline function",
+    //});
 
-    cases.add("save reference to inline function",
-        \\export fn foo() void {
-        \\    quux(@ptrToInt(bar));
-        \\}
-        \\inline fn bar() void { }
-        \\extern fn quux(usize) void;
-    , &[_][]const u8{
-        "tmp.zig:4:1: error: unable to inline function",
-    });
+    //cases.add("save reference to inline function",
+    //    \\export fn foo() void {
+    //    \\    quux(@ptrToInt(bar));
+    //    \\}
+    //    \\inline fn bar() void { }
+    //    \\extern fn quux(usize) void;
+    //, &[_][]const u8{
+    //    "tmp.zig:4:1: error: unable to inline function",
+    //});
 
     cases.add("signed integer division",
         \\export fn foo(a: i32, b: i32) i32 {

@@ -70,6 +70,7 @@ pub const Inst = struct {
         isnull,
         /// Read a value from a pointer.
         load,
+        loop,
         ptrtoint,
         ref,
         ret,
@@ -81,6 +82,7 @@ pub const Inst = struct {
         not,
         floatcast,
         intcast,
+        unwrap_optional,
 
         pub fn Type(tag: Tag) type {
             return switch (tag) {
@@ -101,6 +103,7 @@ pub const Inst = struct {
                 .floatcast,
                 .intcast,
                 .load,
+                .unwrap_optional,
                 => UnOp,
 
                 .add,
@@ -122,6 +125,7 @@ pub const Inst = struct {
                 .call => Call,
                 .condbr => CondBr,
                 .constant => Constant,
+                .loop => Loop,
             };
         }
 
@@ -368,11 +372,11 @@ pub const Inst = struct {
         then_body: Body,
         else_body: Body,
         /// Set of instructions whose lifetimes end at the start of one of the branches.
-        /// The `true` branch is first: `deaths[0..true_death_count]`.
-        /// The `false` branch is next: `(deaths + true_death_count)[..false_death_count]`.
+        /// The `then` branch is first: `deaths[0..then_death_count]`.
+        /// The `else` branch is next: `(deaths + then_death_count)[0..else_death_count]`.
         deaths: [*]*Inst = undefined,
-        true_death_count: u32 = 0,
-        false_death_count: u32 = 0,
+        then_death_count: u32 = 0,
+        else_death_count: u32 = 0,
 
         pub fn operandCount(self: *const CondBr) usize {
             return 1;
@@ -386,6 +390,12 @@ pub const Inst = struct {
 
             return null;
         }
+        pub fn thenDeaths(self: *const CondBr) []*Inst {
+            return self.deaths[0..self.then_death_count];
+        }
+        pub fn elseDeaths(self: *const CondBr) []*Inst {
+            return (self.deaths + self.then_death_count)[0..self.else_death_count];
+        }
     };
 
     pub const Constant = struct {
@@ -398,6 +408,20 @@ pub const Inst = struct {
             return 0;
         }
         pub fn getOperand(self: *const Constant, index: usize) ?*Inst {
+            return null;
+        }
+    };
+
+    pub const Loop = struct {
+        pub const base_tag = Tag.loop;
+
+        base: Inst,
+        body: Body,
+
+        pub fn operandCount(self: *const Loop) usize {
+            return 0;
+        }
+        pub fn getOperand(self: *const Loop, index: usize) ?*Inst {
             return null;
         }
     };

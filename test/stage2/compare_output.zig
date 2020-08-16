@@ -26,6 +26,11 @@ pub fn addCases(ctx: *TestContext) !void {
 
         case.addError("", &[_][]const u8{":1:1: error: no entry point found"});
 
+        case.addError(
+            \\export fn _start() noreturn {
+            \\}
+        , &[_][]const u8{":2:1: error: expected noreturn, found void"});
+
         // Regular old hello world
         case.addCompareOutput(
             \\export fn _start() noreturn {
@@ -423,6 +428,106 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    x += a;
             \\    x += b;
             \\    return x;
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+
+        // Optionals
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const a: u32 = 2;
+            \\    const b: ?u32 = a;
+            \\    const c = b.?;
+            \\    if (c != 2) unreachable;
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+
+        // While loops
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    var i: u32 = 0;
+            \\    while (i < 4) : (i += 1) print();
+            \\    assert(i == 4);
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn print() void {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (1),
+            \\          [arg1] "{rdi}" (1),
+            \\          [arg2] "{rsi}" (@ptrToInt("hello\n")),
+            \\          [arg3] "{rdx}" (6)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    return;
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "hello\nhello\nhello\nhello\n",
+        );
+
+        // Labeled blocks (no conditional branch)
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    assert(add(3, 4) == 20);
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn add(a: u32, b: u32) u32 {
+            \\    const x: u32 = blk: {
+            \\        const c = a + b; // 7
+            \\        const d = a + c; // 10
+            \\        const e = d + b; // 14
+            \\        break :blk e;
+            \\    };
+            \\    const y = x + a; // 17
+            \\    const z = y + a; // 20
+            \\    return z;
             \\}
             \\
             \\pub fn assert(ok: bool) void {
