@@ -37,6 +37,8 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  build-obj [source]           create object from source or assembly\n"
         "  builtin                      show the source code of @import(\"builtin\")\n"
         "  cc                           use Zig as a drop-in C compiler\n"
+        "  c++                          use Zig as a drop-in C++ compiler\n"
+        "  env                          print lib path, std path, compiler id and version\n"
         "  fmt                          parse files and render in canonical zig format\n"
         "  id                           print the base64-encoded compiler id\n"
         "  init-exe                     initialize a `zig build` application in the cwd\n"
@@ -125,12 +127,14 @@ static int print_full_usage(const char *arg0, FILE *file, int return_code) {
         "  -l[lib]                      alias for --library\n"
         "  -rdynamic                    add all symbols to the dynamic symbol table\n"
         "  -rpath [path]                add directory to the runtime library search path\n"
+        "  --stack [size]               (linux, windows, Wasm) override default stack size\n"
         "  --subsystem [subsystem]      (windows) /SUBSYSTEM:<subsystem> to the linker\n"
         "  -F[dir]                      (darwin) add search path for frameworks\n"
         "  -framework [name]            (darwin) link against framework\n"
         "  --ver-major [ver]            dynamic library semver major version\n"
         "  --ver-minor [ver]            dynamic library semver minor version\n"
         "  --ver-patch [ver]            dynamic library semver patch version\n"
+        "  -Bsymbolic                   bind global references locally\n"
         "\n"
         "Test Options:\n"
         "  --test-filter [text]         skip tests that do not match filter\n"
@@ -451,6 +455,7 @@ static int main0(int argc, char **argv) {
     Buf *linker_optimization = nullptr;
     OptionalBool linker_gc_sections = OptionalBoolNull;
     OptionalBool linker_allow_shlib_undefined = OptionalBoolNull;
+    OptionalBool linker_bind_global_refs_locally = OptionalBoolNull;
     bool linker_z_nodelete = false;
     bool linker_z_defs = false;
     size_t stack_size_override = 0;
@@ -578,6 +583,8 @@ static int main0(int argc, char **argv) {
         return (term.how == TerminationIdClean) ? term.code : -1;
     } else if (argc >= 2 && strcmp(argv[1], "fmt") == 0) {
         return stage2_fmt(argc, argv);
+    } else if (argc >= 2 && strcmp(argv[1], "env") == 0) {
+        return stage2_env(argc, argv);
     } else if (argc >= 2 && (strcmp(argv[1], "cc") == 0 || strcmp(argv[1], "c++") == 0)) {
         emit_h = false;
         strip = true;
@@ -632,11 +639,17 @@ static int main0(int argc, char **argv) {
                     break;
                 }
                 case Stage2ClangArgL: // -l
-                    if (strcmp(it.only_arg, "c") == 0)
+                    if (strcmp(it.only_arg, "c") == 0) {
                         have_libc = true;
-                    if (strcmp(it.only_arg, "c++") == 0)
+                        link_libs.append("c");
+                    } else if (strcmp(it.only_arg, "c++") == 0 ||
+                        strcmp(it.only_arg, "stdc++") == 0)
+                    {
                         have_libcpp = true;
-                    link_libs.append(it.only_arg);
+                        link_libs.append("c++");
+                    } else {
+                        link_libs.append(it.only_arg);
+                    }
                     break;
                 case Stage2ClangArgIgnore:
                     break;
@@ -835,6 +848,8 @@ static int main0(int argc, char **argv) {
                        buf_eql_str(arg, "-no-allow-shlib-undefined"))
             {
                 linker_allow_shlib_undefined = OptionalBoolFalse;
+            } else if (buf_eql_str(arg, "-Bsymbolic")) {
+                linker_bind_global_refs_locally = OptionalBoolTrue;
             } else if (buf_eql_str(arg, "-z")) {
                 i += 1;
                 if (i >= linker_args.length) {
@@ -909,6 +924,7 @@ static int main0(int argc, char **argv) {
             }
             if (emit_bin_override_path == nullptr) {
                 emit_bin_override_path = "a.out";
+                enable_cache = CacheOptOn;
             }
         } else {
             cmd = CmdBuild;
@@ -1005,6 +1021,8 @@ static int main0(int argc, char **argv) {
                 want_single_threaded = true;;
             } else if (strcmp(arg, "--bundle-compiler-rt") == 0) {
                 bundle_compiler_rt = true;
+            } else if (strcmp(arg, "-Bsymbolic") == 0) {
+                linker_bind_global_refs_locally = OptionalBoolTrue;
             } else if (strcmp(arg, "--test-cmd-bin") == 0) {
                 test_exec_args.append(nullptr);
             } else if (arg[1] == 'D' && arg[2] != 0) {
@@ -1016,11 +1034,15 @@ static int main0(int argc, char **argv) {
             } else if (arg[1] == 'l' && arg[2] != 0) {
                 // alias for --library
                 const char *l = &arg[2];
-                if (strcmp(l, "c") == 0)
+                if (strcmp(l, "c") == 0) {
                     have_libc = true;
-                if (strcmp(l, "c++") == 0)
+                    link_libs.append("c");
+                } else if (strcmp(l, "c++") == 0 || strcmp(l, "stdc++") == 0) {
                     have_libcpp = true;
-                link_libs.append(l);
+                    link_libs.append("c++");
+                } else {
+                    link_libs.append(l);
+                }
             } else if (arg[1] == 'I' && arg[2] != 0) {
                 clang_argv.append("-I");
                 clang_argv.append(&arg[2]);
@@ -1159,11 +1181,15 @@ static int main0(int argc, char **argv) {
                 } else if (strcmp(arg, "-F") == 0) {
                     framework_dirs.append(argv[i]);
                 } else if (strcmp(arg, "--library") == 0 || strcmp(arg, "-l") == 0) {
-                    if (strcmp(argv[i], "c") == 0)
+                    if (strcmp(argv[i], "c") == 0) {
                         have_libc = true;
-                    if (strcmp(argv[i], "c++") == 0)
+                        link_libs.append("c");
+                    } else if (strcmp(argv[i], "c++") == 0 || strcmp(argv[i], "stdc++") == 0) {
                         have_libcpp = true;
-                    link_libs.append(argv[i]);
+                        link_libs.append("c++");
+                    } else {
+                        link_libs.append(argv[i]);
+                    }
                 } else if (strcmp(arg, "--forbid-library") == 0) {
                     forbidden_link_libs.append(argv[i]);
                 } else if (strcmp(arg, "--object") == 0) {
@@ -1209,6 +1235,8 @@ static int main0(int argc, char **argv) {
                     ver_patch = atoi(argv[i]);
                 } else if (strcmp(arg, "--test-cmd") == 0) {
                     test_exec_args.append(argv[i]);
+                } else if (strcmp(arg, "--stack") == 0) {
+                    stack_size_override = atoi(argv[i]);
                 } else if (strcmp(arg, "--subsystem") == 0) {
                     if (strcmp(argv[i], "console") == 0) {
                         subsystem = TargetSubsystemConsole;
@@ -1593,6 +1621,7 @@ static int main0(int argc, char **argv) {
             g->linker_optimization = linker_optimization;
             g->linker_gc_sections = linker_gc_sections;
             g->linker_allow_shlib_undefined = linker_allow_shlib_undefined;
+            g->linker_bind_global_refs_locally = linker_bind_global_refs_locally;
             g->linker_z_nodelete = linker_z_nodelete;
             g->linker_z_defs = linker_z_defs;
             g->stack_size_override = stack_size_override;

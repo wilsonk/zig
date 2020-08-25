@@ -1,1075 +1,2990 @@
 const std = @import("std");
-const builtin = std.builtin;
-const Scope = @import("scope.zig").Scope;
-const Compilation = @import("compilation.zig").Compilation;
 const Value = @import("value.zig").Value;
-const llvm = @import("llvm.zig");
-const event = std.event;
-const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const Target = std.Target;
+const Module = @import("Module.zig");
 
-pub const Type = struct {
-    base: Value,
-    id: Id,
-    name: []const u8,
-    abi_alignment: AbiAlignment,
+/// This is the raw data, with no bookkeeping, no memory awareness, no de-duplication.
+/// It's important for this type to be small.
+/// Types are not de-duplicated, which helps with multi-threading since it obviates the requirement
+/// of obtaining a lock on a global type table, as well as making the
+/// garbage collection bookkeeping simpler.
+/// This union takes advantage of the fact that the first page of memory
+/// is unmapped, giving us 4096 possible enum tags that have no payload.
+pub const Type = extern union {
+    /// If the tag value is less than Tag.no_payload_count, then no pointer
+    /// dereference is needed.
+    tag_if_small_enough: usize,
+    ptr_otherwise: *Payload,
 
-    pub const AbiAlignment = event.Future(error{OutOfMemory}!u32);
+    pub fn zigTypeTag(self: Type) std.builtin.TypeId {
+        switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .int_signed,
+            .int_unsigned,
+            => return .Int,
 
-    pub const Id = builtin.TypeId;
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            => return .Float,
 
-    pub fn destroy(base: *Type, comp: *Compilation) void {
-        switch (base.id) {
-            .Struct => @fieldParentPtr(Struct, "base", base).destroy(comp),
-            .Fn => @fieldParentPtr(Fn, "base", base).destroy(comp),
-            .Type => @fieldParentPtr(MetaType, "base", base).destroy(comp),
-            .Void => @fieldParentPtr(Void, "base", base).destroy(comp),
-            .Bool => @fieldParentPtr(Bool, "base", base).destroy(comp),
-            .NoReturn => @fieldParentPtr(NoReturn, "base", base).destroy(comp),
-            .Int => @fieldParentPtr(Int, "base", base).destroy(comp),
-            .Float => @fieldParentPtr(Float, "base", base).destroy(comp),
-            .Pointer => @fieldParentPtr(Pointer, "base", base).destroy(comp),
-            .Array => @fieldParentPtr(Array, "base", base).destroy(comp),
-            .ComptimeFloat => @fieldParentPtr(ComptimeFloat, "base", base).destroy(comp),
-            .ComptimeInt => @fieldParentPtr(ComptimeInt, "base", base).destroy(comp),
-            .EnumLiteral => @fieldParentPtr(EnumLiteral, "base", base).destroy(comp),
-            .Undefined => @fieldParentPtr(Undefined, "base", base).destroy(comp),
-            .Null => @fieldParentPtr(Null, "base", base).destroy(comp),
-            .Optional => @fieldParentPtr(Optional, "base", base).destroy(comp),
-            .ErrorUnion => @fieldParentPtr(ErrorUnion, "base", base).destroy(comp),
-            .ErrorSet => @fieldParentPtr(ErrorSet, "base", base).destroy(comp),
-            .Enum => @fieldParentPtr(Enum, "base", base).destroy(comp),
-            .Union => @fieldParentPtr(Union, "base", base).destroy(comp),
-            .BoundFn => @fieldParentPtr(BoundFn, "base", base).destroy(comp),
-            .Opaque => @fieldParentPtr(Opaque, "base", base).destroy(comp),
-            .Frame => @fieldParentPtr(Frame, "base", base).destroy(comp),
-            .AnyFrame => @fieldParentPtr(AnyFrame, "base", base).destroy(comp),
-            .Vector => @fieldParentPtr(Vector, "base", base).destroy(comp),
+            .c_void => return .Opaque,
+            .bool => return .Bool,
+            .void => return .Void,
+            .type => return .Type,
+            .error_set, .error_set_single, .anyerror => return .ErrorSet,
+            .comptime_int => return .ComptimeInt,
+            .comptime_float => return .ComptimeFloat,
+            .noreturn => return .NoReturn,
+            .@"null" => return .Null,
+            .@"undefined" => return .Undefined,
+
+            .fn_noreturn_no_args => return .Fn,
+            .fn_void_no_args => return .Fn,
+            .fn_naked_noreturn_no_args => return .Fn,
+            .fn_ccc_void_no_args => return .Fn,
+            .function => return .Fn,
+
+            .array, .array_u8_sentinel_0, .array_u8, .array_sentinel => return .Array,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .pointer,
+            => return .Pointer,
+
+            .optional,
+            .optional_single_const_pointer,
+            .optional_single_mut_pointer,
+            => return .Optional,
+            .enum_literal => return .EnumLiteral,
+
+            .anyerror_void_error_union, .error_union => return .ErrorUnion,
+
+            .anyframe_T, .@"anyframe" => return .AnyFrame,
         }
     }
 
-    pub fn getLlvmType(
-        base: *Type,
-        allocator: *Allocator,
-        llvm_context: *llvm.Context,
-    ) error{OutOfMemory}!*llvm.Type {
-        switch (base.id) {
-            .Struct => return @fieldParentPtr(Struct, "base", base).getLlvmType(allocator, llvm_context),
-            .Fn => return @fieldParentPtr(Fn, "base", base).getLlvmType(allocator, llvm_context),
-            .Type => unreachable,
-            .Void => unreachable,
-            .Bool => return @fieldParentPtr(Bool, "base", base).getLlvmType(allocator, llvm_context),
-            .NoReturn => unreachable,
-            .Int => return @fieldParentPtr(Int, "base", base).getLlvmType(allocator, llvm_context),
-            .Float => return @fieldParentPtr(Float, "base", base).getLlvmType(allocator, llvm_context),
-            .Pointer => return @fieldParentPtr(Pointer, "base", base).getLlvmType(allocator, llvm_context),
-            .Array => return @fieldParentPtr(Array, "base", base).getLlvmType(allocator, llvm_context),
-            .ComptimeFloat => unreachable,
-            .ComptimeInt => unreachable,
-            .EnumLiteral => unreachable,
-            .Undefined => unreachable,
-            .Null => unreachable,
-            .Optional => return @fieldParentPtr(Optional, "base", base).getLlvmType(allocator, llvm_context),
-            .ErrorUnion => return @fieldParentPtr(ErrorUnion, "base", base).getLlvmType(allocator, llvm_context),
-            .ErrorSet => return @fieldParentPtr(ErrorSet, "base", base).getLlvmType(allocator, llvm_context),
-            .Enum => return @fieldParentPtr(Enum, "base", base).getLlvmType(allocator, llvm_context),
-            .Union => return @fieldParentPtr(Union, "base", base).getLlvmType(allocator, llvm_context),
-            .BoundFn => return @fieldParentPtr(BoundFn, "base", base).getLlvmType(allocator, llvm_context),
-            .Opaque => return @fieldParentPtr(Opaque, "base", base).getLlvmType(allocator, llvm_context),
-            .Frame => return @fieldParentPtr(Frame, "base", base).getLlvmType(allocator, llvm_context),
-            .AnyFrame => return @fieldParentPtr(AnyFrame, "base", base).getLlvmType(allocator, llvm_context),
-            .Vector => return @fieldParentPtr(Vector, "base", base).getLlvmType(allocator, llvm_context),
+    pub fn initTag(comptime small_tag: Tag) Type {
+        comptime assert(@enumToInt(small_tag) < Tag.no_payload_count);
+        return .{ .tag_if_small_enough = @enumToInt(small_tag) };
+    }
+
+    pub fn initPayload(payload: *Payload) Type {
+        assert(@enumToInt(payload.tag) >= Tag.no_payload_count);
+        return .{ .ptr_otherwise = payload };
+    }
+
+    pub fn tag(self: Type) Tag {
+        if (self.tag_if_small_enough < Tag.no_payload_count) {
+            return @intToEnum(Tag, @intCast(@TagType(Tag), self.tag_if_small_enough));
+        } else {
+            return self.ptr_otherwise.tag;
         }
     }
 
-    pub fn handleIsPtr(base: *Type) bool {
-        switch (base.id) {
-            .Type,
-            .ComptimeFloat,
-            .ComptimeInt,
-            .EnumLiteral,
-            .Undefined,
-            .Null,
-            .BoundFn,
-            .Opaque,
-            => unreachable,
+    pub fn cast(self: Type, comptime T: type) ?*T {
+        if (self.tag_if_small_enough < Tag.no_payload_count)
+            return null;
 
-            .NoReturn,
-            .Void,
-            .Bool,
-            .Int,
+        const expected_tag = std.meta.fieldInfo(T, "base").default_value.?.tag;
+        if (self.ptr_otherwise.tag != expected_tag)
+            return null;
+
+        return @fieldParentPtr(T, "base", self.ptr_otherwise);
+    }
+
+    pub fn castPointer(self: Type) ?*Payload.PointerSimple {
+        return switch (self.tag()) {
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .optional_single_const_pointer,
+            .optional_single_mut_pointer,
+            => @fieldParentPtr(Payload.PointerSimple, "base", self.ptr_otherwise),
+            else => null,
+        };
+    }
+
+    pub fn eql(a: Type, b: Type) bool {
+        // As a shortcut, if the small tags / addresses match, we're done.
+        if (a.tag_if_small_enough == b.tag_if_small_enough)
+            return true;
+        const zig_tag_a = a.zigTypeTag();
+        const zig_tag_b = b.zigTypeTag();
+        if (zig_tag_a != zig_tag_b)
+            return false;
+        switch (zig_tag_a) {
+            .EnumLiteral => return true,
+            .Type => return true,
+            .Void => return true,
+            .Bool => return true,
+            .NoReturn => return true,
+            .ComptimeFloat => return true,
+            .ComptimeInt => return true,
+            .Undefined => return true,
+            .Null => return true,
+            .AnyFrame => {
+                return a.elemType().eql(b.elemType());
+            },
+            .Pointer => {
+                // Hot path for common case:
+                if (a.castPointer()) |a_payload| {
+                    if (b.castPointer()) |b_payload| {
+                        return eql(a_payload.pointee_type, b_payload.pointee_type);
+                    }
+                }
+                const is_slice_a = isSlice(a);
+                const is_slice_b = isSlice(b);
+                if (is_slice_a != is_slice_b)
+                    return false;
+                @panic("TODO implement more pointer Type equality comparison");
+            },
+            .Int => {
+                // Detect that e.g. u64 != usize, even if the bits match on a particular target.
+                const a_is_named_int = a.isNamedInt();
+                const b_is_named_int = b.isNamedInt();
+                if (a_is_named_int != b_is_named_int)
+                    return false;
+                if (a_is_named_int)
+                    return a.tag() == b.tag();
+                // Remaining cases are arbitrary sized integers.
+                // The target will not be branched upon, because we handled target-dependent cases above.
+                const info_a = a.intInfo(@as(Target, undefined));
+                const info_b = b.intInfo(@as(Target, undefined));
+                return info_a.signed == info_b.signed and info_a.bits == info_b.bits;
+            },
+            .Array => {
+                if (a.arrayLen() != b.arrayLen())
+                    return false;
+                if (a.elemType().eql(b.elemType()))
+                    return false;
+                const sentinel_a = a.arraySentinel();
+                const sentinel_b = b.arraySentinel();
+                if (sentinel_a) |sa| {
+                    if (sentinel_b) |sb| {
+                        return sa.eql(sb);
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return sentinel_b == null;
+                }
+            },
+            .Fn => {
+                if (!a.fnReturnType().eql(b.fnReturnType()))
+                    return false;
+                if (a.fnCallingConvention() != b.fnCallingConvention())
+                    return false;
+                const a_param_len = a.fnParamLen();
+                const b_param_len = b.fnParamLen();
+                if (a_param_len != b_param_len)
+                    return false;
+                var i: usize = 0;
+                while (i < a_param_len) : (i += 1) {
+                    if (!a.fnParamType(i).eql(b.fnParamType(i)))
+                        return false;
+                }
+                return true;
+            },
+            .Optional => {
+                var buf_a: Payload.PointerSimple = undefined;
+                var buf_b: Payload.PointerSimple = undefined;
+                return a.optionalChild(&buf_a).eql(b.optionalChild(&buf_b));
+            },
             .Float,
-            .Pointer,
+            .Struct,
+            .ErrorUnion,
             .ErrorSet,
             .Enum,
-            .Fn,
+            .Union,
+            .BoundFn,
+            .Opaque,
+            .Frame,
+            .Vector,
+            => std.debug.panic("TODO implement Type equality comparison of {} and {}", .{ a, b }),
+        }
+    }
+
+    pub fn hash(self: Type) u32 {
+        var hasher = std.hash.Wyhash.init(0);
+        const zig_type_tag = self.zigTypeTag();
+        std.hash.autoHash(&hasher, zig_type_tag);
+        switch (zig_type_tag) {
+            .Type,
+            .Void,
+            .Bool,
+            .NoReturn,
+            .ComptimeFloat,
+            .ComptimeInt,
+            .Undefined,
+            .Null,
+            => {}, // The zig type tag is all that is needed to distinguish.
+
+            .Pointer => {
+                // TODO implement more pointer type hashing
+            },
+            .Int => {
+                // Detect that e.g. u64 != usize, even if the bits match on a particular target.
+                if (self.isNamedInt()) {
+                    std.hash.autoHash(&hasher, self.tag());
+                } else {
+                    // Remaining cases are arbitrary sized integers.
+                    // The target will not be branched upon, because we handled target-dependent cases above.
+                    const info = self.intInfo(@as(Target, undefined));
+                    std.hash.autoHash(&hasher, info.signed);
+                    std.hash.autoHash(&hasher, info.bits);
+                }
+            },
+            .Array => {
+                std.hash.autoHash(&hasher, self.arrayLen());
+                std.hash.autoHash(&hasher, self.elemType().hash());
+                // TODO hash array sentinel
+            },
+            .Fn => {
+                std.hash.autoHash(&hasher, self.fnReturnType().hash());
+                std.hash.autoHash(&hasher, self.fnCallingConvention());
+                const params_len = self.fnParamLen();
+                std.hash.autoHash(&hasher, params_len);
+                var i: usize = 0;
+                while (i < params_len) : (i += 1) {
+                    std.hash.autoHash(&hasher, self.fnParamType(i).hash());
+                }
+            },
+            .Optional => {
+                var buf: Payload.PointerSimple = undefined;
+                std.hash.autoHash(&hasher, self.optionalChild(&buf).hash());
+            },
+            .Float,
+            .Struct,
+            .ErrorUnion,
+            .ErrorSet,
+            .Enum,
+            .Union,
+            .BoundFn,
+            .Opaque,
             .Frame,
             .AnyFrame,
             .Vector,
-            => return false,
+            .EnumLiteral,
+            => {
+                // TODO implement more type hashing
+            },
+        }
+        return @truncate(u32, hasher.final());
+    }
 
-            .Struct => @panic("TODO"),
-            .Array => @panic("TODO"),
-            .Optional => @panic("TODO"),
-            .ErrorUnion => @panic("TODO"),
-            .Union => @panic("TODO"),
+    pub fn copy(self: Type, allocator: *Allocator) error{OutOfMemory}!Type {
+        if (self.tag_if_small_enough < Tag.no_payload_count) {
+            return Type{ .tag_if_small_enough = self.tag_if_small_enough };
+        } else switch (self.ptr_otherwise.tag) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .c_void,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .enum_literal,
+            .anyerror_void_error_union,
+            .@"anyframe",
+            => unreachable,
+
+            .array_u8_sentinel_0 => return self.copyPayloadShallow(allocator, Payload.Array_u8_Sentinel0),
+            .array_u8 => return self.copyPayloadShallow(allocator, Payload.Array_u8),
+            .array => {
+                const payload = @fieldParentPtr(Payload.Array, "base", self.ptr_otherwise);
+                const new_payload = try allocator.create(Payload.Array);
+                new_payload.* = .{
+                    .base = payload.base,
+                    .len = payload.len,
+                    .elem_type = try payload.elem_type.copy(allocator),
+                };
+                return Type{ .ptr_otherwise = &new_payload.base };
+            },
+            .array_sentinel => {
+                const payload = @fieldParentPtr(Payload.ArraySentinel, "base", self.ptr_otherwise);
+                const new_payload = try allocator.create(Payload.ArraySentinel);
+                new_payload.* = .{
+                    .base = payload.base,
+                    .len = payload.len,
+                    .sentinel = try payload.sentinel.copy(allocator),
+                    .elem_type = try payload.elem_type.copy(allocator),
+                };
+                return Type{ .ptr_otherwise = &new_payload.base };
+            },
+            .int_signed => return self.copyPayloadShallow(allocator, Payload.IntSigned),
+            .int_unsigned => return self.copyPayloadShallow(allocator, Payload.IntUnsigned),
+            .function => {
+                const payload = @fieldParentPtr(Payload.Function, "base", self.ptr_otherwise);
+                const new_payload = try allocator.create(Payload.Function);
+                const param_types = try allocator.alloc(Type, payload.param_types.len);
+                for (payload.param_types) |param_type, i| {
+                    param_types[i] = try param_type.copy(allocator);
+                }
+                new_payload.* = .{
+                    .base = payload.base,
+                    .return_type = try payload.return_type.copy(allocator),
+                    .param_types = param_types,
+                    .cc = payload.cc,
+                };
+                return Type{ .ptr_otherwise = &new_payload.base };
+            },
+            .optional => return self.copyPayloadSingleField(allocator, Payload.Optional, "child_type"),
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            => return self.copyPayloadSingleField(allocator, Payload.PointerSimple, "pointee_type"),
+            .anyframe_T => return self.copyPayloadSingleField(allocator, Payload.AnyFrame, "return_type"),
+
+            .pointer => {
+                const payload = @fieldParentPtr(Payload.Pointer, "base", self.ptr_otherwise);
+                const new_payload = try allocator.create(Payload.Pointer);
+                new_payload.* = .{
+                    .base = payload.base,
+
+                    .pointee_type = try payload.pointee_type.copy(allocator),
+                    .sentinel = if (payload.sentinel) |some| try some.copy(allocator) else null,
+                    .@"align" = payload.@"align",
+                    .bit_offset = payload.bit_offset,
+                    .host_size = payload.host_size,
+                    .@"allowzero" = payload.@"allowzero",
+                    .mutable = payload.mutable,
+                    .@"volatile" = payload.@"volatile",
+                    .size = payload.size,
+                };
+                return Type{ .ptr_otherwise = &new_payload.base };
+            },
+            .error_union => {
+                const payload = @fieldParentPtr(Payload.ErrorUnion, "base", self.ptr_otherwise);
+                const new_payload = try allocator.create(Payload.ErrorUnion);
+                new_payload.* = .{
+                    .base = payload.base,
+
+                    .error_set = try payload.error_set.copy(allocator),
+                    .payload = try payload.payload.copy(allocator),
+                };
+                return Type{ .ptr_otherwise = &new_payload.base };
+            },
+            .error_set => return self.copyPayloadShallow(allocator, Payload.ErrorSet),
+            .error_set_single => return self.copyPayloadShallow(allocator, Payload.ErrorSetSingle),
         }
     }
 
-    pub fn hasBits(base: *Type) bool {
-        switch (base.id) {
-            .Type,
-            .ComptimeFloat,
-            .ComptimeInt,
-            .EnumLiteral,
-            .Undefined,
-            .Null,
-            .BoundFn,
-            .Opaque,
+    fn copyPayloadShallow(self: Type, allocator: *Allocator, comptime T: type) error{OutOfMemory}!Type {
+        const payload = @fieldParentPtr(T, "base", self.ptr_otherwise);
+        const new_payload = try allocator.create(T);
+        new_payload.* = payload.*;
+        return Type{ .ptr_otherwise = &new_payload.base };
+    }
+
+    fn copyPayloadSingleField(self: Type, allocator: *Allocator, comptime T: type, comptime field_name: []const u8) error{OutOfMemory}!Type {
+        const payload = @fieldParentPtr(T, "base", self.ptr_otherwise);
+        const new_payload = try allocator.create(T);
+        new_payload.base = payload.base;
+        @field(new_payload, field_name) = try @field(payload, field_name).copy(allocator);
+        return Type{ .ptr_otherwise = &new_payload.base };
+    }
+
+    pub fn format(
+        self: Type,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        out_stream: anytype,
+    ) @TypeOf(out_stream).Error!void {
+        comptime assert(fmt.len == 0);
+        var ty = self;
+        while (true) {
+            const t = ty.tag();
+            switch (t) {
+                .u8,
+                .i8,
+                .u16,
+                .i16,
+                .u32,
+                .i32,
+                .u64,
+                .i64,
+                .usize,
+                .isize,
+                .c_short,
+                .c_ushort,
+                .c_int,
+                .c_uint,
+                .c_long,
+                .c_ulong,
+                .c_longlong,
+                .c_ulonglong,
+                .c_longdouble,
+                .c_void,
+                .f16,
+                .f32,
+                .f64,
+                .f128,
+                .bool,
+                .void,
+                .type,
+                .anyerror,
+                .comptime_int,
+                .comptime_float,
+                .noreturn,
+                => return out_stream.writeAll(@tagName(t)),
+
+                .enum_literal => return out_stream.writeAll("@TypeOf(.EnumLiteral)"),
+                .@"null" => return out_stream.writeAll("@TypeOf(null)"),
+                .@"undefined" => return out_stream.writeAll("@TypeOf(undefined)"),
+
+                .@"anyframe" => return out_stream.writeAll("anyframe"),
+                .anyerror_void_error_union => return out_stream.writeAll("anyerror!void"),
+                .const_slice_u8 => return out_stream.writeAll("[]const u8"),
+                .fn_noreturn_no_args => return out_stream.writeAll("fn() noreturn"),
+                .fn_void_no_args => return out_stream.writeAll("fn() void"),
+                .fn_naked_noreturn_no_args => return out_stream.writeAll("fn() callconv(.Naked) noreturn"),
+                .fn_ccc_void_no_args => return out_stream.writeAll("fn() callconv(.C) void"),
+                .single_const_pointer_to_comptime_int => return out_stream.writeAll("*const comptime_int"),
+                .function => {
+                    const payload = @fieldParentPtr(Payload.Function, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("fn(");
+                    for (payload.param_types) |param_type, i| {
+                        if (i != 0) try out_stream.writeAll(", ");
+                        try param_type.format("", .{}, out_stream);
+                    }
+                    try out_stream.writeAll(") ");
+                    ty = payload.return_type;
+                    continue;
+                },
+
+                .anyframe_T => {
+                    const payload = @fieldParentPtr(Payload.AnyFrame, "base", ty.ptr_otherwise);
+                    try out_stream.print("anyframe->", .{});
+                    ty = payload.return_type;
+                    continue;
+                },
+                .array_u8 => {
+                    const payload = @fieldParentPtr(Payload.Array_u8, "base", ty.ptr_otherwise);
+                    return out_stream.print("[{}]u8", .{payload.len});
+                },
+                .array_u8_sentinel_0 => {
+                    const payload = @fieldParentPtr(Payload.Array_u8_Sentinel0, "base", ty.ptr_otherwise);
+                    return out_stream.print("[{}:0]u8", .{payload.len});
+                },
+                .array => {
+                    const payload = @fieldParentPtr(Payload.Array, "base", ty.ptr_otherwise);
+                    try out_stream.print("[{}]", .{payload.len});
+                    ty = payload.elem_type;
+                    continue;
+                },
+                .array_sentinel => {
+                    const payload = @fieldParentPtr(Payload.ArraySentinel, "base", ty.ptr_otherwise);
+                    try out_stream.print("[{}:{}]", .{ payload.len, payload.sentinel });
+                    ty = payload.elem_type;
+                    continue;
+                },
+                .single_const_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("*const ");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .single_mut_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("*");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .many_const_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("[*]const ");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .many_mut_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("[*]");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .c_const_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("[*c]const ");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .c_mut_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("[*c]");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .const_slice => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("[]const ");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .mut_slice => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("[]");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .int_signed => {
+                    const payload = @fieldParentPtr(Payload.IntSigned, "base", ty.ptr_otherwise);
+                    return out_stream.print("i{}", .{payload.bits});
+                },
+                .int_unsigned => {
+                    const payload = @fieldParentPtr(Payload.IntUnsigned, "base", ty.ptr_otherwise);
+                    return out_stream.print("u{}", .{payload.bits});
+                },
+                .optional => {
+                    const payload = @fieldParentPtr(Payload.Optional, "base", ty.ptr_otherwise);
+                    try out_stream.writeByte('?');
+                    ty = payload.child_type;
+                    continue;
+                },
+                .optional_single_const_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("?*const ");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .optional_single_mut_pointer => {
+                    const payload = @fieldParentPtr(Payload.PointerSimple, "base", ty.ptr_otherwise);
+                    try out_stream.writeAll("?*");
+                    ty = payload.pointee_type;
+                    continue;
+                },
+
+                .pointer => {
+                    const payload = @fieldParentPtr(Payload.Pointer, "base", ty.ptr_otherwise);
+                    if (payload.sentinel) |some| switch (payload.size) {
+                        .One, .C => unreachable,
+                        .Many => try out_stream.writeAll("[*:{}]"),
+                        .Slice => try out_stream.writeAll("[:{}]"),
+                    } else switch (payload.size) {
+                        .One => try out_stream.writeAll("*"),
+                        .Many => try out_stream.writeAll("[*]"),
+                        .C => try out_stream.writeAll("[*c]"),
+                        .Slice => try out_stream.writeAll("[]"),
+                    }
+                    if (payload.@"align" != 0) {
+                        try out_stream.print("align({}", .{payload.@"align"});
+
+                        if (payload.bit_offset != 0) {
+                            try out_stream.print(":{}:{}", .{ payload.bit_offset, payload.host_size });
+                        }
+                        try out_stream.writeAll(") ");
+                    }
+                    if (!payload.mutable) try out_stream.writeAll("const ");
+                    if (payload.@"volatile") try out_stream.writeAll("volatile ");
+                    if (payload.@"allowzero") try out_stream.writeAll("allowzero ");
+
+                    ty = payload.pointee_type;
+                    continue;
+                },
+                .error_union => {
+                    const payload = @fieldParentPtr(Payload.ErrorUnion, "base", ty.ptr_otherwise);
+                    try payload.error_set.format("", .{}, out_stream);
+                    try out_stream.writeAll("!");
+                    ty = payload.payload;
+                    continue;
+                },
+                .error_set => {
+                    const payload = @fieldParentPtr(Payload.ErrorSet, "base", ty.ptr_otherwise);
+                    return out_stream.writeAll(std.mem.spanZ(payload.decl.name));
+                },
+                .error_set_single => {
+                    const payload = @fieldParentPtr(Payload.ErrorSetSingle, "base", ty.ptr_otherwise);
+                    return out_stream.print("error{{{}}}", .{payload.name});
+                },
+            }
+            unreachable;
+        }
+    }
+
+    pub fn toValue(self: Type, allocator: *Allocator) Allocator.Error!Value {
+        switch (self.tag()) {
+            .u8 => return Value.initTag(.u8_type),
+            .i8 => return Value.initTag(.i8_type),
+            .u16 => return Value.initTag(.u16_type),
+            .i16 => return Value.initTag(.i16_type),
+            .u32 => return Value.initTag(.u32_type),
+            .i32 => return Value.initTag(.i32_type),
+            .u64 => return Value.initTag(.u64_type),
+            .i64 => return Value.initTag(.i64_type),
+            .usize => return Value.initTag(.usize_type),
+            .isize => return Value.initTag(.isize_type),
+            .c_short => return Value.initTag(.c_short_type),
+            .c_ushort => return Value.initTag(.c_ushort_type),
+            .c_int => return Value.initTag(.c_int_type),
+            .c_uint => return Value.initTag(.c_uint_type),
+            .c_long => return Value.initTag(.c_long_type),
+            .c_ulong => return Value.initTag(.c_ulong_type),
+            .c_longlong => return Value.initTag(.c_longlong_type),
+            .c_ulonglong => return Value.initTag(.c_ulonglong_type),
+            .c_longdouble => return Value.initTag(.c_longdouble_type),
+            .c_void => return Value.initTag(.c_void_type),
+            .f16 => return Value.initTag(.f16_type),
+            .f32 => return Value.initTag(.f32_type),
+            .f64 => return Value.initTag(.f64_type),
+            .f128 => return Value.initTag(.f128_type),
+            .bool => return Value.initTag(.bool_type),
+            .void => return Value.initTag(.void_type),
+            .type => return Value.initTag(.type_type),
+            .anyerror => return Value.initTag(.anyerror_type),
+            .comptime_int => return Value.initTag(.comptime_int_type),
+            .comptime_float => return Value.initTag(.comptime_float_type),
+            .noreturn => return Value.initTag(.noreturn_type),
+            .@"null" => return Value.initTag(.null_type),
+            .@"undefined" => return Value.initTag(.undefined_type),
+            .fn_noreturn_no_args => return Value.initTag(.fn_noreturn_no_args_type),
+            .fn_void_no_args => return Value.initTag(.fn_void_no_args_type),
+            .fn_naked_noreturn_no_args => return Value.initTag(.fn_naked_noreturn_no_args_type),
+            .fn_ccc_void_no_args => return Value.initTag(.fn_ccc_void_no_args_type),
+            .single_const_pointer_to_comptime_int => return Value.initTag(.single_const_pointer_to_comptime_int_type),
+            .const_slice_u8 => return Value.initTag(.const_slice_u8_type),
+            .enum_literal => return Value.initTag(.enum_literal_type),
+            else => {
+                const ty_payload = try allocator.create(Value.Payload.Ty);
+                ty_payload.* = .{ .ty = self };
+                return Value.initPayload(&ty_payload.base);
+            },
+        }
+    }
+
+    pub fn hasCodeGenBits(self: Type) bool {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .bool,
+            .anyerror,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .array_u8_sentinel_0,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => true,
+            // TODO lazy types
+            .array => self.elemType().hasCodeGenBits() and self.arrayLen() != 0,
+            .array_u8 => self.arrayLen() != 0,
+            .array_sentinel, .single_const_pointer, .single_mut_pointer, .many_const_pointer, .many_mut_pointer, .c_const_pointer, .c_mut_pointer, .const_slice, .mut_slice, .pointer => self.elemType().hasCodeGenBits(),
+            .int_signed => self.cast(Payload.IntSigned).?.bits == 0,
+            .int_unsigned => self.cast(Payload.IntUnsigned).?.bits == 0,
+
+            .error_union => {
+                const payload = self.cast(Payload.ErrorUnion).?;
+                return payload.error_set.hasCodeGenBits() or payload.payload.hasCodeGenBits();
+            },
+
+            .c_void,
+            .void,
+            .type,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .enum_literal,
+            => false,
+        };
+    }
+
+    pub fn isNoReturn(self: Type) bool {
+        return self.zigTypeTag() == .NoReturn;
+    }
+
+    /// Asserts that hasCodeGenBits() is true.
+    pub fn abiAlignment(self: Type, target: Target) u32 {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .bool,
+            .array_u8_sentinel_0,
+            .array_u8,
+            => return 1,
+
+            .fn_noreturn_no_args, // represents machine code; not a pointer
+            .fn_void_no_args, // represents machine code; not a pointer
+            .fn_naked_noreturn_no_args, // represents machine code; not a pointer
+            .fn_ccc_void_no_args, // represents machine code; not a pointer
+            .function, // represents machine code; not a pointer
+            => return switch (target.cpu.arch) {
+                .arm => 4,
+                .riscv64 => 2,
+                else => 1,
+            },
+
+            .i16, .u16 => return 2,
+            .i32, .u32 => return 4,
+            .i64, .u64 => return 8,
+
+            .isize,
+            .usize,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .optional_single_const_pointer,
+            .optional_single_mut_pointer,
+            .@"anyframe",
+            .anyframe_T,
+            => return @divExact(target.cpu.arch.ptrBitWidth(), 8),
+
+            .pointer => {
+                const payload = @fieldParentPtr(Payload.Pointer, "base", self.ptr_otherwise);
+
+                if (payload.@"align" != 0) return payload.@"align";
+                return @divExact(target.cpu.arch.ptrBitWidth(), 8);
+            },
+
+            .c_short => return @divExact(CType.short.sizeInBits(target), 8),
+            .c_ushort => return @divExact(CType.ushort.sizeInBits(target), 8),
+            .c_int => return @divExact(CType.int.sizeInBits(target), 8),
+            .c_uint => return @divExact(CType.uint.sizeInBits(target), 8),
+            .c_long => return @divExact(CType.long.sizeInBits(target), 8),
+            .c_ulong => return @divExact(CType.ulong.sizeInBits(target), 8),
+            .c_longlong => return @divExact(CType.longlong.sizeInBits(target), 8),
+            .c_ulonglong => return @divExact(CType.ulonglong.sizeInBits(target), 8),
+
+            .f16 => return 2,
+            .f32 => return 4,
+            .f64 => return 8,
+            .f128 => return 16,
+            .c_longdouble => return 16,
+
+            .error_set,
+            .error_set_single,
+            .anyerror_void_error_union,
+            .anyerror,
+            => return 2, // TODO revisit this when we have the concept of the error tag type
+
+            .array, .array_sentinel => return self.elemType().abiAlignment(target),
+
+            .int_signed, .int_unsigned => {
+                const bits: u16 = if (self.cast(Payload.IntSigned)) |pl|
+                    pl.bits
+                else if (self.cast(Payload.IntUnsigned)) |pl|
+                    pl.bits
+                else
+                    unreachable;
+
+                return std.math.ceilPowerOfTwoPromote(u16, (bits + 7) / 8);
+            },
+
+            .optional => {
+                var buf: Payload.PointerSimple = undefined;
+                const child_type = self.optionalChild(&buf);
+                if (!child_type.hasCodeGenBits()) return 1;
+
+                if (child_type.zigTypeTag() == .Pointer and !child_type.isCPtr())
+                    return @divExact(target.cpu.arch.ptrBitWidth(), 8);
+
+                return child_type.abiAlignment(target);
+            },
+
+            .error_union => {
+                const payload = self.cast(Payload.ErrorUnion).?;
+                if (!payload.error_set.hasCodeGenBits()) {
+                    return payload.payload.abiAlignment(target);
+                } else if (!payload.payload.hasCodeGenBits()) {
+                    return payload.error_set.abiAlignment(target);
+                }
+                @panic("TODO abiAlignment error union");
+            },
+
+            .c_void,
+            .void,
+            .type,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .enum_literal,
             => unreachable,
+        };
+    }
 
-            .Void,
-            .NoReturn,
-            => return false,
+    /// Asserts the type has the ABI size already resolved.
+    pub fn abiSize(self: Type, target: Target) u64 {
+        return switch (self.tag()) {
+            .fn_noreturn_no_args => unreachable, // represents machine code; not a pointer
+            .fn_void_no_args => unreachable, // represents machine code; not a pointer
+            .fn_naked_noreturn_no_args => unreachable, // represents machine code; not a pointer
+            .fn_ccc_void_no_args => unreachable, // represents machine code; not a pointer
+            .function => unreachable, // represents machine code; not a pointer
+            .c_void => unreachable,
+            .void => unreachable,
+            .type => unreachable,
+            .comptime_int => unreachable,
+            .comptime_float => unreachable,
+            .noreturn => unreachable,
+            .@"null" => unreachable,
+            .@"undefined" => unreachable,
+            .enum_literal => unreachable,
+            .single_const_pointer_to_comptime_int => unreachable,
 
+            .u8,
+            .i8,
+            .bool,
+            => return 1,
+
+            .array_u8 => @fieldParentPtr(Payload.Array_u8_Sentinel0, "base", self.ptr_otherwise).len,
+            .array_u8_sentinel_0 => @fieldParentPtr(Payload.Array_u8_Sentinel0, "base", self.ptr_otherwise).len + 1,
+            .array => {
+                const payload = @fieldParentPtr(Payload.Array, "base", self.ptr_otherwise);
+                const elem_size = std.math.max(payload.elem_type.abiAlignment(target), payload.elem_type.abiSize(target));
+                return payload.len * elem_size;
+            },
+            .array_sentinel => {
+                const payload = @fieldParentPtr(Payload.ArraySentinel, "base", self.ptr_otherwise);
+                const elem_size = std.math.max(payload.elem_type.abiAlignment(target), payload.elem_type.abiSize(target));
+                return (payload.len + 1) * elem_size;
+            },
+            .i16, .u16 => return 2,
+            .i32, .u32 => return 4,
+            .i64, .u64 => return 8,
+
+            .@"anyframe", .anyframe_T, .isize, .usize => return @divExact(target.cpu.arch.ptrBitWidth(), 8),
+
+            .const_slice,
+            .mut_slice,
+            => {
+                if (self.elemType().hasCodeGenBits()) return @divExact(target.cpu.arch.ptrBitWidth(), 8) * 2;
+                return @divExact(target.cpu.arch.ptrBitWidth(), 8);
+            },
+            .const_slice_u8 => return @divExact(target.cpu.arch.ptrBitWidth(), 8) * 2,
+
+            .optional_single_const_pointer,
+            .optional_single_mut_pointer,
+            => {
+                if (self.elemType().hasCodeGenBits()) return 1;
+                return @divExact(target.cpu.arch.ptrBitWidth(), 8);
+            },
+
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .pointer,
+            => {
+                if (self.elemType().hasCodeGenBits()) return 0;
+                return @divExact(target.cpu.arch.ptrBitWidth(), 8);
+            },
+
+            .c_short => return @divExact(CType.short.sizeInBits(target), 8),
+            .c_ushort => return @divExact(CType.ushort.sizeInBits(target), 8),
+            .c_int => return @divExact(CType.int.sizeInBits(target), 8),
+            .c_uint => return @divExact(CType.uint.sizeInBits(target), 8),
+            .c_long => return @divExact(CType.long.sizeInBits(target), 8),
+            .c_ulong => return @divExact(CType.ulong.sizeInBits(target), 8),
+            .c_longlong => return @divExact(CType.longlong.sizeInBits(target), 8),
+            .c_ulonglong => return @divExact(CType.ulonglong.sizeInBits(target), 8),
+
+            .f16 => return 2,
+            .f32 => return 4,
+            .f64 => return 8,
+            .f128 => return 16,
+            .c_longdouble => return 16,
+
+            .error_set,
+            .error_set_single,
+            .anyerror_void_error_union,
+            .anyerror,
+            => return 2, // TODO revisit this when we have the concept of the error tag type
+
+            .int_signed, .int_unsigned => {
+                const bits: u16 = if (self.cast(Payload.IntSigned)) |pl|
+                    pl.bits
+                else if (self.cast(Payload.IntUnsigned)) |pl|
+                    pl.bits
+                else
+                    unreachable;
+
+                return std.math.ceilPowerOfTwoPromote(u16, (bits + 7) / 8);
+            },
+
+            .optional => {
+                var buf: Payload.PointerSimple = undefined;
+                const child_type = self.optionalChild(&buf);
+                if (!child_type.hasCodeGenBits()) return 1;
+
+                if (child_type.zigTypeTag() == .Pointer and !child_type.isCPtr())
+                    return @divExact(target.cpu.arch.ptrBitWidth(), 8);
+
+                // Optional types are represented as a struct with the child type as the first
+                // field and a boolean as the second. Since the child type's abi alignment is
+                // guaranteed to be >= that of bool's (1 byte) the added size is exactly equal
+                // to the child type's ABI alignment.
+                return child_type.abiAlignment(target) + child_type.abiSize(target);
+            },
+
+            .error_union => {
+                const payload = self.cast(Payload.ErrorUnion).?;
+                if (!payload.error_set.hasCodeGenBits() and !payload.payload.hasCodeGenBits()) {
+                    return 0;
+                } else if (!payload.error_set.hasCodeGenBits()) {
+                    return payload.payload.abiSize(target);
+                } else if (!payload.payload.hasCodeGenBits()) {
+                    return payload.error_set.abiSize(target);
+                }
+                @panic("TODO abiSize error union");
+            },
+        };
+    }
+
+    pub fn isSinglePointer(self: Type) bool {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .const_slice_u8,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .single_const_pointer,
+            .single_mut_pointer,
+            .single_const_pointer_to_comptime_int,
+            => true,
+
+            .pointer => self.cast(Payload.Pointer).?.size == .One,
+        };
+    }
+
+    pub fn isSlice(self: Type) bool {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .single_const_pointer_to_comptime_int,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .const_slice,
+            .mut_slice,
+            .const_slice_u8,
+            => true,
+
+            .pointer => self.cast(Payload.Pointer).?.size == .Slice,
+        };
+    }
+
+    pub fn isConstPtr(self: Type) bool {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .int_unsigned,
+            .int_signed,
+            .single_mut_pointer,
+            .many_mut_pointer,
+            .c_mut_pointer,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .mut_slice,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .single_const_pointer,
+            .many_const_pointer,
+            .c_const_pointer,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .const_slice,
+            => true,
+
+            .pointer => !self.cast(Payload.Pointer).?.mutable,
+        };
+    }
+
+    pub fn isVolatilePtr(self: Type) bool {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .int_unsigned,
+            .int_signed,
+            .single_mut_pointer,
+            .single_const_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .pointer => {
+                const payload = @fieldParentPtr(Payload.Pointer, "base", self.ptr_otherwise);
+                return payload.@"volatile";
+            },
+        };
+    }
+
+    /// Asserts that the type is an optional
+    pub fn isPtrLikeOptional(self: Type) bool {
+        switch (self.tag()) {
+            .optional_single_const_pointer, .optional_single_mut_pointer => return true,
+            .optional => {
+                var buf: Payload.PointerSimple = undefined;
+                const child_type = self.optionalChild(&buf);
+                // optionals of zero sized pointers behave like bools
+                if (!child_type.hasCodeGenBits()) return false;
+
+                return child_type.zigTypeTag() == .Pointer and !child_type.isCPtr();
+            },
+            else => unreachable,
+        }
+    }
+
+    /// Returns if type can be used for a runtime variable
+    pub fn isValidVarType(self: Type, is_extern: bool) bool {
+        var ty = self;
+        while (true) switch (ty.zigTypeTag()) {
             .Bool,
             .Int,
             .Float,
-            .Fn,
+            .ErrorSet,
+            .Enum,
             .Frame,
             .AnyFrame,
             .Vector,
             => return true,
 
-            .Pointer => {
-                const ptr_type = @fieldParentPtr(Pointer, "base", base);
-                return ptr_type.key.child_type.hasBits();
+            .Opaque => return is_extern,
+            .BoundFn,
+            .ComptimeFloat,
+            .ComptimeInt,
+            .EnumLiteral,
+            .NoReturn,
+            .Type,
+            .Void,
+            .Undefined,
+            .Null,
+            => return false,
+
+            .Optional => {
+                var buf: Payload.PointerSimple = undefined;
+                return ty.optionalChild(&buf).isValidVarType(is_extern);
             },
+            .Pointer, .Array => ty = ty.elemType(),
 
-            .ErrorSet => @panic("TODO"),
-            .Enum => @panic("TODO"),
-            .Struct => @panic("TODO"),
-            .Array => @panic("TODO"),
-            .Optional => @panic("TODO"),
-            .ErrorUnion => @panic("TODO"),
-            .Union => @panic("TODO"),
-        }
-    }
-
-    pub fn cast(base: *Type, comptime T: type) ?*T {
-        if (base.id != @field(Id, @typeName(T))) return null;
-        return @fieldParentPtr(T, "base", base);
-    }
-
-    pub fn dump(base: *const Type) void {
-        std.debug.warn("{}", .{@tagName(base.id)});
-    }
-
-    fn init(base: *Type, comp: *Compilation, id: Id, name: []const u8) void {
-        base.* = Type{
-            .base = Value{
-                .id = .Type,
-                .typ = &MetaType.get(comp).base,
-                .ref_count = std.atomic.Int(usize).init(1),
-            },
-            .id = id,
-            .name = name,
-            .abi_alignment = AbiAlignment.init(),
+            .ErrorUnion => @panic("TODO fn isValidVarType"),
+            .Fn => @panic("TODO fn isValidVarType"),
+            .Struct => @panic("TODO struct isValidVarType"),
+            .Union => @panic("TODO union isValidVarType"),
         };
     }
 
-    /// If you happen to have an llvm context handy, use getAbiAlignmentInContext instead.
-    /// Otherwise, this one will grab one from the pool and then release it.
-    pub fn getAbiAlignment(base: *Type, comp: *Compilation) !u32 {
-        if (base.abi_alignment.start()) |ptr| return ptr.*;
+    /// Asserts the type is a pointer or array type.
+    pub fn elemType(self: Type) Type {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_const_pointer,
+            .optional_single_mut_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
 
-        {
-            const held = try comp.zig_compiler.getAnyLlvmContext();
-            defer held.release(comp.zig_compiler);
-
-            const llvm_context = held.node.data;
-
-            base.abi_alignment.data = base.resolveAbiAlignment(comp, llvm_context);
-        }
-        base.abi_alignment.resolve();
-        return base.abi_alignment.data;
+            .array => self.cast(Payload.Array).?.elem_type,
+            .array_sentinel => self.cast(Payload.ArraySentinel).?.elem_type,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            => self.castPointer().?.pointee_type,
+            .array_u8, .array_u8_sentinel_0, .const_slice_u8 => Type.initTag(.u8),
+            .single_const_pointer_to_comptime_int => Type.initTag(.comptime_int),
+            .pointer => self.cast(Payload.Pointer).?.pointee_type,
+        };
     }
 
-    /// If you have an llvm conext handy, you can use it here.
-    pub fn getAbiAlignmentInContext(base: *Type, comp: *Compilation, llvm_context: *llvm.Context) !u32 {
-        if (base.abi_alignment.start()) |ptr| return ptr.*;
-
-        base.abi_alignment.data = base.resolveAbiAlignment(comp, llvm_context);
-        base.abi_alignment.resolve();
-        return base.abi_alignment.data;
-    }
-
-    /// Lower level function that does the work. See getAbiAlignment.
-    fn resolveAbiAlignment(base: *Type, comp: *Compilation, llvm_context: *llvm.Context) !u32 {
-        const llvm_type = try base.getLlvmType(comp.gpa(), llvm_context);
-        return @intCast(u32, llvm.ABIAlignmentOfType(comp.target_data_ref, llvm_type));
-    }
-
-    pub const Struct = struct {
-        base: Type,
-        decls: *Scope.Decls,
-
-        pub fn destroy(self: *Struct, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Struct, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const Fn = struct {
-        base: Type,
-        key: Key,
-        non_key: NonKey,
-        garbage_node: std.atomic.Stack(*Fn).Node,
-
-        pub const Kind = enum {
-            Normal,
-            Generic,
-        };
-
-        pub const NonKey = union {
-            Normal: Normal,
-            Generic: void,
-
-            pub const Normal = struct {
-                variable_list: std.ArrayList(*Scope.Var),
-            };
-        };
-
-        pub const Key = struct {
-            data: Data,
-            alignment: ?u32,
-
-            pub const Data = union(Kind) {
-                Generic: Generic,
-                Normal: Normal,
-            };
-
-            pub const Normal = struct {
-                params: []Param,
-                return_type: *Type,
-                is_var_args: bool,
-                cc: CallingConvention,
-            };
-
-            pub const Generic = struct {
-                param_count: usize,
-                cc: CallingConvention,
-            };
-
-            pub fn hash(self: *const Key) u32 {
-                var result: u32 = 0;
-                result +%= hashAny(self.alignment, 0);
-                switch (self.data) {
-                    .Generic => |generic| {
-                        result +%= hashAny(generic.param_count, 1);
-                        result +%= hashAny(generic.cc, 3);
-                    },
-                    .Normal => |normal| {
-                        result +%= hashAny(normal.return_type, 4);
-                        result +%= hashAny(normal.is_var_args, 5);
-                        result +%= hashAny(normal.cc, 6);
-                        for (normal.params) |param| {
-                            result +%= hashAny(param.is_noalias, 7);
-                            result +%= hashAny(param.typ, 8);
-                        }
-                    },
-                }
-                return result;
-            }
-
-            pub fn eql(self: *const Key, other: *const Key) bool {
-                if ((self.alignment == null) != (other.alignment == null)) return false;
-                if (self.alignment) |self_align| {
-                    if (self_align != other.alignment.?) return false;
-                }
-                if (@as(@TagType(Data), self.data) != @as(@TagType(Data), other.data)) return false;
-                switch (self.data) {
-                    .Generic => |*self_generic| {
-                        const other_generic = &other.data.Generic;
-                        if (self_generic.param_count != other_generic.param_count) return false;
-                        if (self_generic.cc != other_generic.cc) return false;
-                    },
-                    .Normal => |*self_normal| {
-                        const other_normal = &other.data.Normal;
-                        if (self_normal.cc != other_normal.cc) return false;
-                        if (self_normal.is_var_args != other_normal.is_var_args) return false;
-                        if (self_normal.return_type != other_normal.return_type) return false;
-                        for (self_normal.params) |*self_param, i| {
-                            const other_param = &other_normal.params[i];
-                            if (self_param.is_noalias != other_param.is_noalias) return false;
-                            if (self_param.typ != other_param.typ) return false;
-                        }
-                    },
-                }
-                return true;
-            }
-
-            pub fn deref(key: Key, comp: *Compilation) void {
-                switch (key.data) {
-                    .Generic => {},
-                    .Normal => |normal| {
-                        normal.return_type.base.deref(comp);
-                        for (normal.params) |param| {
-                            param.typ.base.deref(comp);
-                        }
-                    },
-                }
-            }
-
-            pub fn ref(key: Key) void {
-                switch (key.data) {
-                    .Generic => {},
-                    .Normal => |normal| {
-                        normal.return_type.base.ref();
-                        for (normal.params) |param| {
-                            param.typ.base.ref();
-                        }
-                    },
-                }
-            }
-        };
-
-        const CallingConvention = builtin.CallingConvention;
-
-        pub const Param = struct {
-            is_noalias: bool,
-            typ: *Type,
-        };
-
-        fn ccFnTypeStr(cc: CallingConvention) []const u8 {
-            return switch (cc) {
-                .Unspecified => "",
-                .C => "extern ",
-                .Cold => "coldcc ",
-                .Naked => "nakedcc ",
-                .Stdcall => "stdcallcc ",
-                .Async => "async ",
-                else => unreachable,
-            };
-        }
-
-        pub fn paramCount(self: *Fn) usize {
-            return switch (self.key.data) {
-                .Generic => |generic| generic.param_count,
-                .Normal => |normal| normal.params.len,
-            };
-        }
-
-        /// takes ownership of key.Normal.params on success
-        pub fn get(comp: *Compilation, key: Key) !*Fn {
-            {
-                const held = comp.fn_type_table.acquire();
-                defer held.release();
-
-                if (held.value.get(&key)) |entry| {
-                    entry.value.base.base.ref();
-                    return entry.value;
-                }
-            }
-
-            key.ref();
-            errdefer key.deref(comp);
-
-            const self = try comp.gpa().create(Fn);
-            self.* = Fn{
-                .base = undefined,
-                .key = key,
-                .non_key = undefined,
-                .garbage_node = undefined,
-            };
-            errdefer comp.gpa().destroy(self);
-
-            var name_buf = std.ArrayList(u8).init(comp.gpa());
-            defer name_buf.deinit();
-
-            const name_stream = name_buf.outStream();
-
-            switch (key.data) {
-                .Generic => |generic| {
-                    self.non_key = NonKey{ .Generic = {} };
-                    const cc_str = ccFnTypeStr(generic.cc);
-                    try name_stream.print("{}fn(", .{cc_str});
-                    var param_i: usize = 0;
-                    while (param_i < generic.param_count) : (param_i += 1) {
-                        const arg = if (param_i == 0) "var" else ", var";
-                        try name_stream.write(arg);
-                    }
-                    try name_stream.write(")");
-                    if (key.alignment) |alignment| {
-                        try name_stream.print(" align({})", .{alignment});
-                    }
-                    try name_stream.write(" var");
-                },
-                .Normal => |normal| {
-                    self.non_key = NonKey{
-                        .Normal = NonKey.Normal{ .variable_list = std.ArrayList(*Scope.Var).init(comp.gpa()) },
-                    };
-                    const cc_str = ccFnTypeStr(normal.cc);
-                    try name_stream.print("{}fn(", .{cc_str});
-                    for (normal.params) |param, i| {
-                        if (i != 0) try name_stream.write(", ");
-                        if (param.is_noalias) try name_stream.write("noalias ");
-                        try name_stream.write(param.typ.name);
-                    }
-                    if (normal.is_var_args) {
-                        if (normal.params.len != 0) try name_stream.write(", ");
-                        try name_stream.write("...");
-                    }
-                    try name_stream.write(")");
-                    if (key.alignment) |alignment| {
-                        try name_stream.print(" align({})", .{alignment});
-                    }
-                    try name_stream.print(" {}", .{normal.return_type.name});
-                },
-            }
-
-            self.base.init(comp, .Fn, name_buf.toOwnedSlice());
-
-            {
-                const held = comp.fn_type_table.acquire();
-                defer held.release();
-
-                _ = try held.value.put(&self.key, self);
-            }
-            return self;
-        }
-
-        pub fn destroy(self: *Fn, comp: *Compilation) void {
-            self.key.deref(comp);
-            switch (self.key.data) {
-                .Generic => {},
-                .Normal => {
-                    self.non_key.Normal.variable_list.deinit();
-                },
-            }
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Fn, allocator: *Allocator, llvm_context: *llvm.Context) !*llvm.Type {
-            const normal = &self.key.data.Normal;
-            const llvm_return_type = switch (normal.return_type.id) {
-                .Void => llvm.VoidTypeInContext(llvm_context) orelse return error.OutOfMemory,
-                else => try normal.return_type.getLlvmType(allocator, llvm_context),
-            };
-            const llvm_param_types = try allocator.alloc(*llvm.Type, normal.params.len);
-            defer allocator.free(llvm_param_types);
-            for (llvm_param_types) |*llvm_param_type, i| {
-                llvm_param_type.* = try normal.params[i].typ.getLlvmType(allocator, llvm_context);
-            }
-
-            return llvm.FunctionType(
-                llvm_return_type,
-                llvm_param_types.ptr,
-                @intCast(c_uint, llvm_param_types.len),
-                @boolToInt(normal.is_var_args),
-            ) orelse error.OutOfMemory;
-        }
-    };
-
-    pub const MetaType = struct {
-        base: Type,
-        value: *Type,
-
-        /// Adds 1 reference to the resulting type
-        pub fn get(comp: *Compilation) *MetaType {
-            comp.meta_type.base.base.ref();
-            return comp.meta_type;
-        }
-
-        pub fn destroy(self: *MetaType, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const Void = struct {
-        base: Type,
-
-        /// Adds 1 reference to the resulting type
-        pub fn get(comp: *Compilation) *Void {
-            comp.void_type.base.base.ref();
-            return comp.void_type;
-        }
-
-        pub fn destroy(self: *Void, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const Bool = struct {
-        base: Type,
-
-        /// Adds 1 reference to the resulting type
-        pub fn get(comp: *Compilation) *Bool {
-            comp.bool_type.base.base.ref();
-            return comp.bool_type;
-        }
-
-        pub fn destroy(self: *Bool, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Bool, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const NoReturn = struct {
-        base: Type,
-
-        /// Adds 1 reference to the resulting type
-        pub fn get(comp: *Compilation) *NoReturn {
-            comp.noreturn_type.base.base.ref();
-            return comp.noreturn_type;
-        }
-
-        pub fn destroy(self: *NoReturn, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const Int = struct {
-        base: Type,
-        key: Key,
-        garbage_node: std.atomic.Stack(*Int).Node,
-
-        pub const Key = struct {
-            bit_count: u32,
-            is_signed: bool,
-
-            pub fn hash(self: *const Key) u32 {
-                var result: u32 = 0;
-                result +%= hashAny(self.is_signed, 0);
-                result +%= hashAny(self.bit_count, 1);
-                return result;
-            }
-
-            pub fn eql(self: *const Key, other: *const Key) bool {
-                return self.bit_count == other.bit_count and self.is_signed == other.is_signed;
-            }
-        };
-
-        pub fn get_u8(comp: *Compilation) *Int {
-            comp.u8_type.base.base.ref();
-            return comp.u8_type;
-        }
-
-        pub fn get(comp: *Compilation, key: Key) !*Int {
-            {
-                const held = comp.int_type_table.acquire();
-                defer held.release();
-
-                if (held.value.get(&key)) |entry| {
-                    entry.value.base.base.ref();
-                    return entry.value;
-                }
-            }
-
-            const self = try comp.gpa().create(Int);
-            self.* = Int{
-                .base = undefined,
-                .key = key,
-                .garbage_node = undefined,
-            };
-            errdefer comp.gpa().destroy(self);
-
-            const u_or_i = "ui"[@boolToInt(key.is_signed)];
-            const name = try std.fmt.allocPrint(comp.gpa(), "{c}{}", .{ u_or_i, key.bit_count });
-            errdefer comp.gpa().free(name);
-
-            self.base.init(comp, .Int, name);
-
-            {
-                const held = comp.int_type_table.acquire();
-                defer held.release();
-
-                _ = try held.value.put(&self.key, self);
-            }
-            return self;
-        }
-
-        pub fn destroy(self: *Int, comp: *Compilation) void {
-            self.garbage_node = std.atomic.Stack(*Int).Node{
-                .data = self,
-                .next = undefined,
-            };
-            comp.registerGarbage(Int, &self.garbage_node);
-        }
-
-        pub fn gcDestroy(self: *Int, comp: *Compilation) void {
-            {
-                const held = comp.int_type_table.acquire();
-                defer held.release();
-
-                _ = held.value.remove(&self.key).?;
-            }
-            // we allocated the name
-            comp.gpa().free(self.base.name);
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Int, allocator: *Allocator, llvm_context: *llvm.Context) !*llvm.Type {
-            return llvm.IntTypeInContext(llvm_context, self.key.bit_count) orelse return error.OutOfMemory;
-        }
-    };
-
-    pub const Float = struct {
-        base: Type,
-
-        pub fn destroy(self: *Float, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Float, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-    pub const Pointer = struct {
-        base: Type,
-        key: Key,
-        garbage_node: std.atomic.Stack(*Pointer).Node,
-
-        pub const Key = struct {
-            child_type: *Type,
-            mut: Mut,
-            vol: Vol,
-            size: Size,
-            alignment: Align,
-
-            pub fn hash(self: *const Key) u32 {
-                var result: u32 = 0;
-                result +%= switch (self.alignment) {
-                    .Abi => 0xf201c090,
-                    .Override => |x| hashAny(x, 0),
+    /// Asserts that the type is an optional.
+    pub fn optionalChild(self: Type, buf: *Payload.PointerSimple) Type {
+        return switch (self.tag()) {
+            .optional => self.cast(Payload.Optional).?.child_type,
+            .optional_single_mut_pointer => {
+                buf.* = .{
+                    .base = .{ .tag = .single_mut_pointer },
+                    .pointee_type = self.castPointer().?.pointee_type,
                 };
-                result +%= hashAny(self.child_type, 1);
-                result +%= hashAny(self.mut, 2);
-                result +%= hashAny(self.vol, 3);
-                result +%= hashAny(self.size, 4);
-                return result;
-            }
+                return Type.initPayload(&buf.base);
+            },
+            .optional_single_const_pointer => {
+                buf.* = .{
+                    .base = .{ .tag = .single_const_pointer },
+                    .pointee_type = self.castPointer().?.pointee_type,
+                };
+                return Type.initPayload(&buf.base);
+            },
+            else => unreachable,
+        };
+    }
 
-            pub fn eql(self: *const Key, other: *const Key) bool {
-                if (self.child_type != other.child_type or
-                    self.mut != other.mut or
-                    self.vol != other.vol or
-                    self.size != other.size or
-                    @as(@TagType(Align), self.alignment) != @as(@TagType(Align), other.alignment))
-                {
-                    return false;
+    /// Asserts that the type is an optional.
+    /// Same as `optionalChild` but allocates the buffer if needed.
+    pub fn optionalChildAlloc(self: Type, allocator: *Allocator) !Type {
+        return switch (self.tag()) {
+            .optional => self.cast(Payload.Optional).?.child_type,
+            .optional_single_mut_pointer, .optional_single_const_pointer => {
+                const payload = try allocator.create(Payload.PointerSimple);
+                payload.* = .{
+                    .base = .{
+                        .tag = if (self.tag() == .optional_single_const_pointer)
+                            .single_const_pointer
+                        else
+                            .single_mut_pointer,
+                    },
+                    .pointee_type = self.castPointer().?.pointee_type,
+                };
+                return Type.initPayload(&payload.base);
+            },
+            else => unreachable,
+        };
+    }
+
+    /// Asserts the type is an array or vector.
+    pub fn arrayLen(self: Type) u64 {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+
+            .array => self.cast(Payload.Array).?.len,
+            .array_sentinel => self.cast(Payload.ArraySentinel).?.len,
+            .array_u8 => self.cast(Payload.Array_u8).?.len,
+            .array_u8_sentinel_0 => self.cast(Payload.Array_u8_Sentinel0).?.len,
+        };
+    }
+
+    /// Asserts the type is an array or vector.
+    pub fn arraySentinel(self: Type) ?Value {
+        return switch (self.tag()) {
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .c_longdouble,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+
+            .array, .array_u8 => return null,
+            .array_sentinel => return self.cast(Payload.ArraySentinel).?.sentinel,
+            .array_u8_sentinel_0 => return Value.initTag(.zero),
+        };
+    }
+
+    /// Returns true if and only if the type is a fixed-width integer.
+    pub fn isInt(self: Type) bool {
+        return self.isSignedInt() or self.isUnsignedInt();
+    }
+
+    /// Returns true if and only if the type is a fixed-width, signed integer.
+    pub fn isSignedInt(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .int_unsigned,
+            .u8,
+            .usize,
+            .c_ushort,
+            .c_uint,
+            .c_ulong,
+            .c_ulonglong,
+            .u16,
+            .u32,
+            .u64,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .int_signed,
+            .i8,
+            .isize,
+            .c_short,
+            .c_int,
+            .c_long,
+            .c_longlong,
+            .i16,
+            .i32,
+            .i64,
+            => true,
+        };
+    }
+
+    /// Returns true if and only if the type is a fixed-width, unsigned integer.
+    pub fn isUnsignedInt(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .int_signed,
+            .i8,
+            .isize,
+            .c_short,
+            .c_int,
+            .c_long,
+            .c_longlong,
+            .i16,
+            .i32,
+            .i64,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .int_unsigned,
+            .u8,
+            .usize,
+            .c_ushort,
+            .c_uint,
+            .c_ulong,
+            .c_ulonglong,
+            .u16,
+            .u32,
+            .u64,
+            => true,
+        };
+    }
+
+    /// Asserts the type is an integer.
+    pub fn intInfo(self: Type, target: Target) struct { signed: bool, bits: u16 } {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+
+            .int_unsigned => .{ .signed = false, .bits = self.cast(Payload.IntUnsigned).?.bits },
+            .int_signed => .{ .signed = true, .bits = self.cast(Payload.IntSigned).?.bits },
+            .u8 => .{ .signed = false, .bits = 8 },
+            .i8 => .{ .signed = true, .bits = 8 },
+            .u16 => .{ .signed = false, .bits = 16 },
+            .i16 => .{ .signed = true, .bits = 16 },
+            .u32 => .{ .signed = false, .bits = 32 },
+            .i32 => .{ .signed = true, .bits = 32 },
+            .u64 => .{ .signed = false, .bits = 64 },
+            .i64 => .{ .signed = true, .bits = 64 },
+            .usize => .{ .signed = false, .bits = target.cpu.arch.ptrBitWidth() },
+            .isize => .{ .signed = true, .bits = target.cpu.arch.ptrBitWidth() },
+            .c_short => .{ .signed = true, .bits = CType.short.sizeInBits(target) },
+            .c_ushort => .{ .signed = false, .bits = CType.ushort.sizeInBits(target) },
+            .c_int => .{ .signed = true, .bits = CType.int.sizeInBits(target) },
+            .c_uint => .{ .signed = false, .bits = CType.uint.sizeInBits(target) },
+            .c_long => .{ .signed = true, .bits = CType.long.sizeInBits(target) },
+            .c_ulong => .{ .signed = false, .bits = CType.ulong.sizeInBits(target) },
+            .c_longlong => .{ .signed = true, .bits = CType.longlong.sizeInBits(target) },
+            .c_ulonglong => .{ .signed = false, .bits = CType.ulonglong.sizeInBits(target) },
+        };
+    }
+
+    pub fn isNamedInt(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .int_unsigned,
+            .int_signed,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            => true,
+        };
+    }
+
+    pub fn isFloat(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            => true,
+
+            else => false,
+        };
+    }
+
+    /// Asserts the type is a fixed-size float.
+    pub fn floatBits(self: Type, target: Target) u16 {
+        return switch (self.tag()) {
+            .f16 => 16,
+            .f32 => 32,
+            .f64 => 64,
+            .f128 => 128,
+            .c_longdouble => CType.longdouble.sizeInBits(target),
+
+            else => unreachable,
+        };
+    }
+
+    /// Asserts the type is a function.
+    pub fn fnParamLen(self: Type) usize {
+        return switch (self.tag()) {
+            .fn_noreturn_no_args => 0,
+            .fn_void_no_args => 0,
+            .fn_naked_noreturn_no_args => 0,
+            .fn_ccc_void_no_args => 0,
+            .function => @fieldParentPtr(Payload.Function, "base", self.ptr_otherwise).param_types.len,
+
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+        };
+    }
+
+    /// Asserts the type is a function. The length of the slice must be at least the length
+    /// given by `fnParamLen`.
+    pub fn fnParamTypes(self: Type, types: []Type) void {
+        switch (self.tag()) {
+            .fn_noreturn_no_args => return,
+            .fn_void_no_args => return,
+            .fn_naked_noreturn_no_args => return,
+            .fn_ccc_void_no_args => return,
+            .function => {
+                const payload = @fieldParentPtr(Payload.Function, "base", self.ptr_otherwise);
+                std.mem.copy(Type, types, payload.param_types);
+            },
+
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+        }
+    }
+
+    /// Asserts the type is a function.
+    pub fn fnParamType(self: Type, index: usize) Type {
+        switch (self.tag()) {
+            .function => {
+                const payload = @fieldParentPtr(Payload.Function, "base", self.ptr_otherwise);
+                return payload.param_types[index];
+            },
+
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+        }
+    }
+
+    /// Asserts the type is a function.
+    pub fn fnReturnType(self: Type) Type {
+        return switch (self.tag()) {
+            .fn_noreturn_no_args => Type.initTag(.noreturn),
+            .fn_naked_noreturn_no_args => Type.initTag(.noreturn),
+
+            .fn_void_no_args,
+            .fn_ccc_void_no_args,
+            => Type.initTag(.void),
+
+            .function => @fieldParentPtr(Payload.Function, "base", self.ptr_otherwise).return_type,
+
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+        };
+    }
+
+    /// Asserts the type is a function.
+    pub fn fnCallingConvention(self: Type) std.builtin.CallingConvention {
+        return switch (self.tag()) {
+            .fn_noreturn_no_args => .Unspecified,
+            .fn_void_no_args => .Unspecified,
+            .fn_naked_noreturn_no_args => .Naked,
+            .fn_ccc_void_no_args => .C,
+            .function => @fieldParentPtr(Payload.Function, "base", self.ptr_otherwise).cc,
+
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+        };
+    }
+
+    /// Asserts the type is a function.
+    pub fn fnIsVarArgs(self: Type) bool {
+        return switch (self.tag()) {
+            .fn_noreturn_no_args => false,
+            .fn_void_no_args => false,
+            .fn_naked_noreturn_no_args => false,
+            .fn_ccc_void_no_args => false,
+            .function => false,
+
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .comptime_int,
+            .comptime_float,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => unreachable,
+        };
+    }
+
+    pub fn isNumeric(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .comptime_int,
+            .comptime_float,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .int_unsigned,
+            .int_signed,
+            => true,
+
+            .c_void,
+            .bool,
+            .void,
+            .type,
+            .anyerror,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => false,
+        };
+    }
+
+    pub fn onePossibleValue(self: Type) ?Value {
+        var ty = self;
+        while (true) switch (ty.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .comptime_int,
+            .comptime_float,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .bool,
+            .type,
+            .anyerror,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .single_const_pointer_to_comptime_int,
+            .array_sentinel,
+            .array_u8_sentinel_0,
+            .const_slice_u8,
+            .const_slice,
+            .mut_slice,
+            .c_void,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .anyerror_void_error_union,
+            .anyframe_T,
+            .@"anyframe",
+            .error_union,
+            .error_set,
+            .error_set_single,
+            => return null,
+
+            .void => return Value.initTag(.void_value),
+            .noreturn => return Value.initTag(.unreachable_value),
+            .@"null" => return Value.initTag(.null_value),
+            .@"undefined" => return Value.initTag(.undef),
+
+            .int_unsigned => {
+                if (ty.cast(Payload.IntUnsigned).?.bits == 0) {
+                    return Value.initTag(.zero);
+                } else {
+                    return null;
                 }
-                switch (self.alignment) {
-                    .Abi => return true,
-                    .Override => |x| return x == other.alignment.Override,
+            },
+            .int_signed => {
+                if (ty.cast(Payload.IntSigned).?.bits == 0) {
+                    return Value.initTag(.zero);
+                } else {
+                    return null;
                 }
-            }
+            },
+            .array, .array_u8 => {
+                if (ty.arrayLen() == 0)
+                    return Value.initTag(.empty_array);
+                ty = ty.elemType();
+                continue;
+            },
+            .many_const_pointer,
+            .many_mut_pointer,
+            .c_const_pointer,
+            .c_mut_pointer,
+            .single_const_pointer,
+            .single_mut_pointer,
+            => {
+                const ptr = ty.castPointer().?;
+                ty = ptr.pointee_type;
+                continue;
+            },
+            .pointer => {
+                ty = ty.cast(Payload.Pointer).?.pointee_type;
+                continue;
+            },
+        };
+    }
+
+    pub fn isCPtr(self: Type) bool {
+        return switch (self.tag()) {
+            .f16,
+            .f32,
+            .f64,
+            .f128,
+            .c_longdouble,
+            .comptime_int,
+            .comptime_float,
+            .u8,
+            .i8,
+            .u16,
+            .i16,
+            .u32,
+            .i32,
+            .u64,
+            .i64,
+            .usize,
+            .isize,
+            .c_short,
+            .c_ushort,
+            .c_int,
+            .c_uint,
+            .c_long,
+            .c_ulong,
+            .c_longlong,
+            .c_ulonglong,
+            .bool,
+            .type,
+            .anyerror,
+            .fn_noreturn_no_args,
+            .fn_void_no_args,
+            .fn_naked_noreturn_no_args,
+            .fn_ccc_void_no_args,
+            .function,
+            .single_const_pointer_to_comptime_int,
+            .const_slice_u8,
+            .c_void,
+            .void,
+            .noreturn,
+            .@"null",
+            .@"undefined",
+            .int_unsigned,
+            .int_signed,
+            .array,
+            .array_sentinel,
+            .array_u8,
+            .array_u8_sentinel_0,
+            .single_const_pointer,
+            .single_mut_pointer,
+            .many_const_pointer,
+            .many_mut_pointer,
+            .const_slice,
+            .mut_slice,
+            .optional,
+            .optional_single_mut_pointer,
+            .optional_single_const_pointer,
+            .enum_literal,
+            .error_union,
+            .@"anyframe",
+            .anyframe_T,
+            .anyerror_void_error_union,
+            .error_set,
+            .error_set_single,
+            => return false,
+
+            .c_const_pointer,
+            .c_mut_pointer,
+            => return true,
+
+            .pointer => self.cast(Payload.Pointer).?.size == .C,
+        };
+    }
+
+    /// This enum does not directly correspond to `std.builtin.TypeId` because
+    /// it has extra enum tags in it, as a way of using less memory. For example,
+    /// even though Zig recognizes `*align(10) i32` and `*i32` both as Pointer types
+    /// but with different alignment values, in this data structure they are represented
+    /// with different enum tags, because the the former requires more payload data than the latter.
+    /// See `zigTypeTag` for the function that corresponds to `std.builtin.TypeId`.
+    pub const Tag = enum {
+        // The first section of this enum are tags that require no payload.
+        u8,
+        i8,
+        u16,
+        i16,
+        u32,
+        i32,
+        u64,
+        i64,
+        usize,
+        isize,
+        c_short,
+        c_ushort,
+        c_int,
+        c_uint,
+        c_long,
+        c_ulong,
+        c_longlong,
+        c_ulonglong,
+        c_longdouble,
+        f16,
+        f32,
+        f64,
+        f128,
+        c_void,
+        bool,
+        void,
+        type,
+        anyerror,
+        comptime_int,
+        comptime_float,
+        noreturn,
+        enum_literal,
+        @"null",
+        @"undefined",
+        fn_noreturn_no_args,
+        fn_void_no_args,
+        fn_naked_noreturn_no_args,
+        fn_ccc_void_no_args,
+        single_const_pointer_to_comptime_int,
+        anyerror_void_error_union,
+        @"anyframe",
+        const_slice_u8, // See last_no_payload_tag below.
+        // After this, the tag requires a payload.
+
+        array_u8,
+        array_u8_sentinel_0,
+        array,
+        array_sentinel,
+        pointer,
+        single_const_pointer,
+        single_mut_pointer,
+        many_const_pointer,
+        many_mut_pointer,
+        c_const_pointer,
+        c_mut_pointer,
+        const_slice,
+        mut_slice,
+        int_signed,
+        int_unsigned,
+        function,
+        optional,
+        optional_single_mut_pointer,
+        optional_single_const_pointer,
+        error_union,
+        anyframe_T,
+        error_set,
+        error_set_single,
+
+        pub const last_no_payload_tag = Tag.const_slice_u8;
+        pub const no_payload_count = @enumToInt(last_no_payload_tag) + 1;
+    };
+
+    pub const Payload = struct {
+        tag: Tag,
+
+        pub const Array_u8_Sentinel0 = struct {
+            base: Payload = Payload{ .tag = .array_u8_sentinel_0 },
+
+            len: u64,
         };
 
-        pub const Mut = enum {
-            Mut,
-            Const,
+        pub const Array_u8 = struct {
+            base: Payload = Payload{ .tag = .array_u8 },
+
+            len: u64,
         };
 
-        pub const Vol = enum {
-            Non,
-            Volatile,
+        pub const Array = struct {
+            base: Payload = Payload{ .tag = .array },
+
+            len: u64,
+            elem_type: Type,
         };
 
-        pub const Align = union(enum) {
-            Abi,
-            Override: u32,
+        pub const ArraySentinel = struct {
+            base: Payload = Payload{ .tag = .array_sentinel },
+
+            len: u64,
+            sentinel: Value,
+            elem_type: Type,
         };
 
-        pub const Size = builtin.TypeInfo.Pointer.Size;
+        pub const PointerSimple = struct {
+            base: Payload,
 
-        pub fn destroy(self: *Pointer, comp: *Compilation) void {
-            self.garbage_node = std.atomic.Stack(*Pointer).Node{
-                .data = self,
-                .next = undefined,
-            };
-            comp.registerGarbage(Pointer, &self.garbage_node);
-        }
-
-        pub fn gcDestroy(self: *Pointer, comp: *Compilation) void {
-            {
-                const held = comp.ptr_type_table.acquire();
-                defer held.release();
-
-                _ = held.value.remove(&self.key).?;
-            }
-            self.key.child_type.base.deref(comp);
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getAlignAsInt(self: *Pointer, comp: *Compilation) u32 {
-            switch (self.key.alignment) {
-                .Abi => return self.key.child_type.getAbiAlignment(comp),
-                .Override => |alignment| return alignment,
-            }
-        }
-
-        pub fn get(
-            comp: *Compilation,
-            key: Key,
-        ) !*Pointer {
-            var normal_key = key;
-            switch (key.alignment) {
-                .Abi => {},
-                .Override => |alignment| {
-                    // TODO https://github.com/ziglang/zig/issues/3190
-                    var align_spill = alignment;
-                    const abi_align = try key.child_type.getAbiAlignment(comp);
-                    if (abi_align == align_spill) {
-                        normal_key.alignment = .Abi;
-                    }
-                },
-            }
-            {
-                const held = comp.ptr_type_table.acquire();
-                defer held.release();
-
-                if (held.value.get(&normal_key)) |entry| {
-                    entry.value.base.base.ref();
-                    return entry.value;
-                }
-            }
-
-            const self = try comp.gpa().create(Pointer);
-            self.* = Pointer{
-                .base = undefined,
-                .key = normal_key,
-                .garbage_node = undefined,
-            };
-            errdefer comp.gpa().destroy(self);
-
-            const size_str = switch (self.key.size) {
-                .One => "*",
-                .Many => "[*]",
-                .Slice => "[]",
-                .C => "[*c]",
-            };
-            const mut_str = switch (self.key.mut) {
-                .Const => "const ",
-                .Mut => "",
-            };
-            const vol_str = switch (self.key.vol) {
-                .Volatile => "volatile ",
-                .Non => "",
-            };
-            const name = switch (self.key.alignment) {
-                .Abi => try std.fmt.allocPrint(comp.gpa(), "{}{}{}{}", .{
-                    size_str,
-                    mut_str,
-                    vol_str,
-                    self.key.child_type.name,
-                }),
-                .Override => |alignment| try std.fmt.allocPrint(comp.gpa(), "{}align<{}> {}{}{}", .{
-                    size_str,
-                    alignment,
-                    mut_str,
-                    vol_str,
-                    self.key.child_type.name,
-                }),
-            };
-            errdefer comp.gpa().free(name);
-
-            self.base.init(comp, .Pointer, name);
-
-            {
-                const held = comp.ptr_type_table.acquire();
-                defer held.release();
-
-                _ = try held.value.put(&self.key, self);
-            }
-            return self;
-        }
-
-        pub fn getLlvmType(self: *Pointer, allocator: *Allocator, llvm_context: *llvm.Context) !*llvm.Type {
-            const elem_llvm_type = try self.key.child_type.getLlvmType(allocator, llvm_context);
-            return llvm.PointerType(elem_llvm_type, 0) orelse return error.OutOfMemory;
-        }
-    };
-
-    pub const Array = struct {
-        base: Type,
-        key: Key,
-        garbage_node: std.atomic.Stack(*Array).Node,
-
-        pub const Key = struct {
-            elem_type: *Type,
-            len: usize,
-
-            pub fn hash(self: *const Key) u32 {
-                var result: u32 = 0;
-                result +%= hashAny(self.elem_type, 0);
-                result +%= hashAny(self.len, 1);
-                return result;
-            }
-
-            pub fn eql(self: *const Key, other: *const Key) bool {
-                return self.elem_type == other.elem_type and self.len == other.len;
-            }
+            pointee_type: Type,
         };
 
-        pub fn destroy(self: *Array, comp: *Compilation) void {
-            self.key.elem_type.base.deref(comp);
-            comp.gpa().destroy(self);
-        }
+        pub const IntSigned = struct {
+            base: Payload = Payload{ .tag = .int_signed },
 
-        pub fn get(comp: *Compilation, key: Key) !*Array {
-            key.elem_type.base.ref();
-            errdefer key.elem_type.base.deref(comp);
+            bits: u16,
+        };
 
-            {
-                const held = comp.array_type_table.acquire();
-                defer held.release();
+        pub const IntUnsigned = struct {
+            base: Payload = Payload{ .tag = .int_unsigned },
 
-                if (held.value.get(&key)) |entry| {
-                    entry.value.base.base.ref();
-                    return entry.value;
-                }
-            }
+            bits: u16,
+        };
 
-            const self = try comp.gpa().create(Array);
-            self.* = Array{
-                .base = undefined,
-                .key = key,
-                .garbage_node = undefined,
-            };
-            errdefer comp.gpa().destroy(self);
+        pub const Function = struct {
+            base: Payload = Payload{ .tag = .function },
 
-            const name = try std.fmt.allocPrint(comp.gpa(), "[{}]{}", .{ key.len, key.elem_type.name });
-            errdefer comp.gpa().free(name);
+            param_types: []Type,
+            return_type: Type,
+            cc: std.builtin.CallingConvention,
+        };
 
-            self.base.init(comp, .Array, name);
+        pub const Optional = struct {
+            base: Payload = Payload{ .tag = .optional },
 
-            {
-                const held = comp.array_type_table.acquire();
-                defer held.release();
+            child_type: Type,
+        };
 
-                _ = try held.value.put(&self.key, self);
-            }
-            return self;
-        }
+        pub const Pointer = struct {
+            base: Payload = .{ .tag = .pointer },
 
-        pub fn getLlvmType(self: *Array, allocator: *Allocator, llvm_context: *llvm.Context) !*llvm.Type {
-            const elem_llvm_type = try self.key.elem_type.getLlvmType(allocator, llvm_context);
-            return llvm.ArrayType(elem_llvm_type, @intCast(c_uint, self.key.len)) orelse return error.OutOfMemory;
-        }
-    };
+            pointee_type: Type,
+            sentinel: ?Value,
+            /// If zero use pointee_type.AbiAlign()
+            @"align": u32,
+            bit_offset: u16,
+            host_size: u16,
+            @"allowzero": bool,
+            mutable: bool,
+            @"volatile": bool,
+            size: std.builtin.TypeInfo.Pointer.Size,
+        };
 
-    pub const Vector = struct {
-        base: Type,
+        pub const ErrorUnion = struct {
+            base: Payload = .{ .tag = .error_union },
 
-        pub fn destroy(self: *Vector, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
+            error_set: Type,
+            payload: Type,
+        };
 
-        pub fn getLlvmType(self: *Vector, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
+        pub const AnyFrame = struct {
+            base: Payload = .{ .tag = .anyframe_T },
 
-    pub const ComptimeFloat = struct {
-        base: Type,
+            return_type: Type,
+        };
 
-        pub fn destroy(self: *ComptimeFloat, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
+        pub const ErrorSet = struct {
+            base: Payload = .{ .tag = .error_set },
 
-    pub const ComptimeInt = struct {
-        base: Type,
+            decl: *Module.Decl,
+        };
 
-        /// Adds 1 reference to the resulting type
-        pub fn get(comp: *Compilation) *ComptimeInt {
-            comp.comptime_int_type.base.base.ref();
-            return comp.comptime_int_type;
-        }
+        pub const ErrorSetSingle = struct {
+            base: Payload = .{ .tag = .error_set_single },
 
-        pub fn destroy(self: *ComptimeInt, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const EnumLiteral = struct {
-        base: Type,
-
-        /// Adds 1 reference to the resulting type
-        pub fn get(comp: *Compilation) *EnumLiteral {
-            comp.comptime_int_type.base.base.ref();
-            return comp.comptime_int_type;
-        }
-
-        pub fn destroy(self: *EnumLiteral, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const Undefined = struct {
-        base: Type,
-
-        pub fn destroy(self: *Undefined, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const Null = struct {
-        base: Type,
-
-        pub fn destroy(self: *Null, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-    };
-
-    pub const Optional = struct {
-        base: Type,
-
-        pub fn destroy(self: *Optional, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Optional, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const ErrorUnion = struct {
-        base: Type,
-
-        pub fn destroy(self: *ErrorUnion, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *ErrorUnion, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const ErrorSet = struct {
-        base: Type,
-
-        pub fn destroy(self: *ErrorSet, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *ErrorSet, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const Enum = struct {
-        base: Type,
-
-        pub fn destroy(self: *Enum, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Enum, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const Union = struct {
-        base: Type,
-
-        pub fn destroy(self: *Union, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Union, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const BoundFn = struct {
-        base: Type,
-
-        pub fn destroy(self: *BoundFn, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *BoundFn, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const Opaque = struct {
-        base: Type,
-
-        pub fn destroy(self: *Opaque, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Opaque, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const Frame = struct {
-        base: Type,
-
-        pub fn destroy(self: *Frame, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *Frame, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
-    };
-
-    pub const AnyFrame = struct {
-        base: Type,
-
-        pub fn destroy(self: *AnyFrame, comp: *Compilation) void {
-            comp.gpa().destroy(self);
-        }
-
-        pub fn getLlvmType(self: *AnyFrame, allocator: *Allocator, llvm_context: *llvm.Context) *llvm.Type {
-            @panic("TODO");
-        }
+            /// memory is owned by `Module`
+            name: []const u8,
+        };
     };
 };
 
-fn hashAny(x: var, comptime seed: u64) u32 {
-    switch (@typeInfo(@TypeOf(x))) {
-        .Int => |info| {
-            comptime var rng = comptime std.rand.DefaultPrng.init(seed);
-            const unsigned_x = @bitCast(std.meta.IntType(false, info.bits), x);
-            if (info.bits <= 32) {
-                return @as(u32, unsigned_x) *% comptime rng.random.scalar(u32);
-            } else {
-                return @truncate(u32, unsigned_x *% comptime rng.random.scalar(@TypeOf(unsigned_x)));
-            }
-        },
-        .Pointer => |info| {
-            switch (info.size) {
-                .One => return hashAny(@ptrToInt(x), seed),
-                .Many => @compileError("implement hash function"),
-                .Slice => @compileError("implement hash function"),
-                .C => unreachable,
-            }
-        },
-        .Enum => return hashAny(@enumToInt(x), seed),
-        .Bool => {
-            comptime var rng = comptime std.rand.DefaultPrng.init(seed);
-            const vals = comptime [2]u32{ rng.random.scalar(u32), rng.random.scalar(u32) };
-            return vals[@boolToInt(x)];
-        },
-        .Optional => {
-            if (x) |non_opt| {
-                return hashAny(non_opt, seed);
-            } else {
-                return hashAny(@as(u32, 1), seed);
-            }
-        },
-        else => @compileError("implement hash function for " ++ @typeName(@TypeOf(x))),
+pub const CType = enum {
+    short,
+    ushort,
+    int,
+    uint,
+    long,
+    ulong,
+    longlong,
+    ulonglong,
+    longdouble,
+
+    pub fn sizeInBits(self: CType, target: Target) u16 {
+        const arch = target.cpu.arch;
+        switch (target.os.tag) {
+            .freestanding, .other => switch (target.cpu.arch) {
+                .msp430 => switch (self) {
+                    .short,
+                    .ushort,
+                    .int,
+                    .uint,
+                    => return 16,
+                    .long,
+                    .ulong,
+                    => return 32,
+                    .longlong,
+                    .ulonglong,
+                    => return 64,
+                    .longdouble => @panic("TODO figure out what kind of float `long double` is on this target"),
+                },
+                else => switch (self) {
+                    .short,
+                    .ushort,
+                    => return 16,
+                    .int,
+                    .uint,
+                    => return 32,
+                    .long,
+                    .ulong,
+                    => return target.cpu.arch.ptrBitWidth(),
+                    .longlong,
+                    .ulonglong,
+                    => return 64,
+                    .longdouble => @panic("TODO figure out what kind of float `long double` is on this target"),
+                },
+            },
+
+            .linux,
+            .macosx,
+            .freebsd,
+            .netbsd,
+            .dragonfly,
+            .openbsd,
+            .wasi,
+            .emscripten,
+            => switch (self) {
+                .short,
+                .ushort,
+                => return 16,
+                .int,
+                .uint,
+                => return 32,
+                .long,
+                .ulong,
+                => return target.cpu.arch.ptrBitWidth(),
+                .longlong,
+                .ulonglong,
+                => return 64,
+                .longdouble => @panic("TODO figure out what kind of float `long double` is on this target"),
+            },
+
+            .windows, .uefi => switch (self) {
+                .short,
+                .ushort,
+                => return 16,
+                .int,
+                .uint,
+                .long,
+                .ulong,
+                => return 32,
+                .longlong,
+                .ulonglong,
+                => return 64,
+                .longdouble => @panic("TODO figure out what kind of float `long double` is on this target"),
+            },
+
+            .ios => switch (self) {
+                .short,
+                .ushort,
+                => return 16,
+                .int,
+                .uint,
+                => return 32,
+                .long,
+                .ulong,
+                .longlong,
+                .ulonglong,
+                => return 64,
+                .longdouble => @panic("TODO figure out what kind of float `long double` is on this target"),
+            },
+
+            .ananas,
+            .cloudabi,
+            .fuchsia,
+            .kfreebsd,
+            .lv2,
+            .solaris,
+            .haiku,
+            .minix,
+            .rtems,
+            .nacl,
+            .cnk,
+            .aix,
+            .cuda,
+            .nvcl,
+            .amdhsa,
+            .ps4,
+            .elfiamcu,
+            .tvos,
+            .watchos,
+            .mesa3d,
+            .contiki,
+            .amdpal,
+            .hermit,
+            .hurd,
+            => @panic("TODO specify the C integer and float type sizes for this OS"),
+        }
     }
-}
+};

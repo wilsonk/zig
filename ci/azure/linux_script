@@ -12,11 +12,17 @@ sudo apt-get update -q
 
 sudo apt-get remove -y llvm-*
 sudo rm -rf /usr/local/*
-sudo apt-get install -y libxml2-dev libclang-10-dev llvm-10 llvm-10-dev liblld-10-dev cmake s3cmd gcc-7 g++-7
+sudo apt-get install -y libxml2-dev libclang-10-dev llvm-10 llvm-10-dev liblld-10-dev cmake s3cmd gcc-7 g++-7 ninja-build tidy
 
-wget https://ziglang.org/deps/qemu-5.0.0-rc1-x86_64-alpinelinux.tar.xz
-tar xf qemu-5.0.0-rc1-x86_64-alpinelinux.tar.xz
-PATH=$PWD/qemu-5.0.0-rc1/bin:$PATH
+QEMUBASE="qemu-linux-x86_64-5.1.0"
+wget https://ziglang.org/deps/$QEMUBASE.tar.xz
+tar xf $QEMUBASE.tar.xz
+PATH=$PWD/$QEMUBASE/bin:$PATH
+
+WASMTIME="wasmtime-v0.15.0-x86_64-linux"
+wget https://github.com/bytecodealliance/wasmtime/releases/download/v0.15.0/$WASMTIME.tar.xz
+tar xf $WASMTIME.tar.xz
+PATH=$PWD/$WASMTIME:$PATH
 
 # Make the `zig version` number consistent.
 # This will affect the cmake command below.
@@ -42,9 +48,13 @@ export CC=gcc-7
 export CXX=g++-7
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc) install
-./zig build test -Denable-qemu
+cmake .. -DCMAKE_BUILD_TYPE=Release -GNinja
+ninja install
+./zig build test -Denable-qemu -Denable-wasmtime
+
+# look for HTML errors
+tidy -qe ../zig-cache/langref.html
+
 VERSION="$(./zig version)"
 
 if [ "${BUILD_REASON}" != "PullRequest" ]; then

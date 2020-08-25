@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const std = @import("../std.zig");
 const assert = std.debug.assert;
 const Target = std.Target;
@@ -497,7 +502,7 @@ pub const CrossTarget = struct {
 
     pub fn zigTriple(self: CrossTarget, allocator: *mem.Allocator) error{OutOfMemory}![]u8 {
         if (self.isNative()) {
-            return mem.dupe(allocator, u8, "native");
+            return allocator.dupe(u8, "native");
         }
 
         const arch_name = if (self.cpu_arch) |arch| @tagName(arch) else "native";
@@ -514,14 +519,14 @@ pub const CrossTarget = struct {
             switch (self.getOsVersionMin()) {
                 .none => {},
                 .semver => |v| try result.outStream().print(".{}", .{v}),
-                .windows => |v| try result.outStream().print(".{}", .{@tagName(v)}),
+                .windows => |v| try result.outStream().print("{s}", .{v}),
             }
         }
         if (self.os_version_max) |max| {
             switch (max) {
                 .none => {},
                 .semver => |v| try result.outStream().print("...{}", .{v}),
-                .windows => |v| try result.outStream().print("...{}", .{@tagName(v)}),
+                .windows => |v| try result.outStream().print("..{s}", .{v}),
             }
         }
 
@@ -660,7 +665,7 @@ pub const CrossTarget = struct {
         return Target.getObjectFormatSimple(self.getOsTag(), self.getCpuArch());
     }
 
-    fn updateCpuFeatures(self: CrossTarget, set: *Target.Cpu.Feature.Set) void {
+    pub fn updateCpuFeatures(self: CrossTarget, set: *Target.Cpu.Feature.Set) void {
         set.removeFeatureSet(self.cpu_features_sub);
         set.addFeatureSet(self.cpu_features_add);
         set.populateDependencies(self.getCpuArch().allFeaturesList());

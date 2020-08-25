@@ -55,7 +55,7 @@ static AstNode *ast_parse_bool_or_expr(ParseContext *pc);
 static AstNode *ast_parse_bool_and_expr(ParseContext *pc);
 static AstNode *ast_parse_compare_expr(ParseContext *pc);
 static AstNode *ast_parse_bitwise_expr(ParseContext *pc);
-static AstNode *ast_parse_bit_shit_expr(ParseContext *pc);
+static AstNode *ast_parse_bit_shift_expr(ParseContext *pc);
 static AstNode *ast_parse_addition_expr(ParseContext *pc);
 static AstNode *ast_parse_multiply_expr(ParseContext *pc);
 static AstNode *ast_parse_prefix_expr(ParseContext *pc);
@@ -93,7 +93,6 @@ static AstNode *ast_parse_field_init(ParseContext *pc);
 static AstNode *ast_parse_while_continue_expr(ParseContext *pc);
 static AstNode *ast_parse_link_section(ParseContext *pc);
 static AstNode *ast_parse_callconv(ParseContext *pc);
-static Optional<AstNodeFnProto> ast_parse_fn_cc(ParseContext *pc);
 static AstNode *ast_parse_param_decl(ParseContext *pc);
 static AstNode *ast_parse_param_type(ParseContext *pc);
 static AstNode *ast_parse_if_prefix(ParseContext *pc);
@@ -526,28 +525,49 @@ static void ast_parse_container_doc_comments(ParseContext *pc, Buf *buf) {
     }
 }
 
+enum ContainerFieldState {
+    // no fields have been seen
+    ContainerFieldStateNone,
+    // currently parsing fields
+    ContainerFieldStateSeen,
+    // saw fields and then a declaration after them
+    ContainerFieldStateEnd,
+};
+
 // ContainerMembers
 //     <- TestDecl ContainerMembers
 //      / TopLevelComptime ContainerMembers
 //      / KEYWORD_pub? TopLevelDecl ContainerMembers
-//      / KEYWORD_comptime? ContainerField COMMA ContainerMembers
-//      / KEYWORD_comptime? ContainerField
+//      / ContainerField COMMA ContainerMembers
+//      / ContainerField
 //      /
 static AstNodeContainerDecl ast_parse_container_members(ParseContext *pc) {
     AstNodeContainerDecl res = {};
     Buf tld_doc_comment_buf = BUF_INIT;
     buf_resize(&tld_doc_comment_buf, 0);
+    ContainerFieldState field_state = ContainerFieldStateNone;
+    Token *first_token = nullptr;
     for (;;) {
         ast_parse_container_doc_comments(pc, &tld_doc_comment_buf);
 
+        Token *peeked_token = peek_token(pc);
+
         AstNode *test_decl = ast_parse_test_decl(pc);
         if (test_decl != nullptr) {
+            if (field_state == ContainerFieldStateSeen) {
+                field_state = ContainerFieldStateEnd;
+                first_token = peeked_token;
+            }
             res.decls.append(test_decl);
             continue;
         }
 
         AstNode *top_level_comptime = ast_parse_top_level_comptime(pc);
         if (top_level_comptime != nullptr) {
+            if (field_state == ContainerFieldStateSeen) {
+                field_state = ContainerFieldStateEnd;
+                first_token = peeked_token;
+            }
             res.decls.append(top_level_comptime);
             continue;
         }
@@ -555,11 +575,17 @@ static AstNodeContainerDecl ast_parse_container_members(ParseContext *pc) {
         Buf doc_comment_buf = BUF_INIT;
         ast_parse_doc_comments(pc, &doc_comment_buf);
 
+        peeked_token = peek_token(pc);
+
         Token *visib_token = eat_token_if(pc, TokenIdKeywordPub);
         VisibMod visib_mod = visib_token != nullptr ? VisibModPub : VisibModPrivate;
 
         AstNode *top_level_decl = ast_parse_top_level_decl(pc, visib_mod, &doc_comment_buf);
         if (top_level_decl != nullptr) {
+            if (field_state == ContainerFieldStateSeen) {
+                field_state = ContainerFieldStateEnd;
+                first_token = peeked_token;
+            }
             res.decls.append(top_level_decl);
             continue;
         }
@@ -572,6 +598,16 @@ static AstNodeContainerDecl ast_parse_container_members(ParseContext *pc) {
 
         AstNode *container_field = ast_parse_container_field(pc);
         if (container_field != nullptr) {
+            switch (field_state) {
+                case ContainerFieldStateNone:
+                    field_state = ContainerFieldStateSeen;
+                    break;
+                case ContainerFieldStateSeen:
+                    break;
+                case ContainerFieldStateEnd:
+                    ast_error(pc, first_token, "declarations are not allowed between container fields");                    
+            }
+
             assert(container_field->type == NodeTypeStructField);
             container_field->data.struct_field.doc_comments = doc_comment_buf;
             container_field->data.struct_field.comptime_token = comptime_token;
@@ -644,6 +680,9 @@ static AstNode *ast_parse_top_level_decl(ParseContext *pc, VisibMod visib_mod, B
             AstNode *var_decl = ast_parse_var_decl(pc);
             if (var_decl != nullptr) {
                 assert(var_decl->type == NodeTypeVariableDeclaration);
+                if (first->id == TokenIdKeywordExtern && var_decl->data.variable_declaration.expr != nullptr) {
+                    ast_error(pc, first, "extern variables have no initializers");
+                }
                 var_decl->line = first->start_line;
                 var_decl->column = first->start_column;
                 var_decl->data.variable_declaration.threadlocal_tok = thread_local_kw;
@@ -670,7 +709,6 @@ static AstNode *ast_parse_top_level_decl(ParseContext *pc, VisibMod visib_mod, B
             fn_proto->column = first->start_column;
             fn_proto->data.fn_proto.visib_mod = visib_mod;
             fn_proto->data.fn_proto.doc_comments = *doc_comments;
-            // ast_parse_fn_cc may set it
             if (!fn_proto->data.fn_proto.is_extern)
                 fn_proto->data.fn_proto.is_extern = first->id == TokenIdKeywordExtern;
             fn_proto->data.fn_proto.is_export = first->id == TokenIdKeywordExport;
@@ -751,29 +789,11 @@ static AstNode *ast_parse_top_level_decl(ParseContext *pc, VisibMod visib_mod, B
     return nullptr;
 }
 
-// FnProto <- FnCC? KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? LinkSection? EXCLAMATIONMARK? (KEYWORD_var / TypeExpr)
+// FnProto <- KEYWORD_fn IDENTIFIER? LPAREN ParamDeclList RPAREN ByteAlign? LinkSection? EXCLAMATIONMARK? (KEYWORD_anytype / TypeExpr)
 static AstNode *ast_parse_fn_proto(ParseContext *pc) {
-    Token *first = peek_token(pc);
-    AstNodeFnProto fn_cc;
-    Token *fn;
-    if (ast_parse_fn_cc(pc).unwrap(&fn_cc)) {
-        // The extern keyword for fn CC is also used for container decls.
-        // We therefore put it back, as allow container decl to consume it
-        // later.
-        if (fn_cc.is_extern) {
-            fn = eat_token_if(pc, TokenIdKeywordFn);
-            if (fn == nullptr) {
-                put_back_token(pc);
-                return nullptr;
-            }
-        } else {
-            fn = expect_token(pc, TokenIdKeywordFn);
-        }
-    } else {
-        fn_cc = {};
-        fn = eat_token_if(pc, TokenIdKeywordFn);
-        if (fn == nullptr)
-            return nullptr;
+    Token *first = eat_token_if(pc, TokenIdKeywordFn);
+    if (first == nullptr) {
+        return nullptr;
     }
 
     Token *identifier = eat_token_if(pc, TokenIdSymbol);
@@ -784,22 +804,22 @@ static AstNode *ast_parse_fn_proto(ParseContext *pc) {
     AstNode *align_expr = ast_parse_byte_align(pc);
     AstNode *section_expr = ast_parse_link_section(pc);
     AstNode *callconv_expr = ast_parse_callconv(pc);
-    Token *var = eat_token_if(pc, TokenIdKeywordVar);
+    Token *anytype = eat_token_if(pc, TokenIdKeywordAnyType);
     Token *exmark = nullptr;
     AstNode *return_type = nullptr;
-    if (var == nullptr) {
+    if (anytype == nullptr) {
         exmark = eat_token_if(pc, TokenIdBang);
         return_type = ast_expect(pc, ast_parse_type_expr);
     }
 
     AstNode *res = ast_create_node(pc, NodeTypeFnProto, first);
-    res->data.fn_proto = fn_cc;
+    res->data.fn_proto = {};
     res->data.fn_proto.name = token_buf(identifier);
     res->data.fn_proto.params = params;
     res->data.fn_proto.align_expr = align_expr;
     res->data.fn_proto.section_expr = section_expr;
     res->data.fn_proto.callconv_expr = callconv_expr;
-    res->data.fn_proto.return_var_token = var;
+    res->data.fn_proto.return_anytype_token = anytype;
     res->data.fn_proto.auto_err_set = exmark != nullptr;
     res->data.fn_proto.return_type = return_type;
 
@@ -845,7 +865,7 @@ static AstNode *ast_parse_var_decl(ParseContext *pc) {
     return res;
 }
 
-// ContainerField <- IDENTIFIER (COLON TypeExpr ByteAlign?)? (EQUAL Expr)?
+// ContainerField <- KEYWORD_comptime? IDENTIFIER (COLON TypeExpr ByteAlign?)? (EQUAL Expr)?
 static AstNode *ast_parse_container_field(ParseContext *pc) {
     Token *identifier = eat_token_if(pc, TokenIdSymbol);
     if (identifier == nullptr)
@@ -853,9 +873,9 @@ static AstNode *ast_parse_container_field(ParseContext *pc) {
 
     AstNode *type_expr = nullptr;
     if (eat_token_if(pc, TokenIdColon) != nullptr) {
-        Token *var_tok = eat_token_if(pc, TokenIdKeywordVar);
-        if (var_tok != nullptr) {
-            type_expr = ast_create_node(pc, NodeTypeVarFieldType, var_tok);
+        Token *anytype_tok = eat_token_if(pc, TokenIdKeywordAnyType);
+        if (anytype_tok != nullptr) {
+            type_expr = ast_create_node(pc, NodeTypeAnyTypeField, anytype_tok);
         } else {
             type_expr = ast_expect(pc, ast_parse_type_expr);
         }
@@ -876,7 +896,7 @@ static AstNode *ast_parse_container_field(ParseContext *pc) {
 // Statement
 //     <- KEYWORD_comptime? VarDecl
 //      / KEYWORD_comptime BlockExprStatement
-//      / KEYWORD_noasync BlockExprStatement
+//      / KEYWORD_nosuspend BlockExprStatement
 //      / KEYWORD_suspend (SEMICOLON / BlockExprStatement)
 //      / KEYWORD_defer BlockExprStatement
 //      / KEYWORD_errdefer Payload? BlockExprStatement
@@ -900,11 +920,11 @@ static AstNode *ast_parse_statement(ParseContext *pc) {
         return res;
     }
 
-    Token *noasync = eat_token_if(pc, TokenIdKeywordNoAsync);
-    if (noasync != nullptr) {
+    Token *nosuspend = eat_token_if(pc, TokenIdKeywordNoSuspend);
+    if (nosuspend != nullptr) {
         AstNode *statement = ast_expect(pc, ast_parse_block_expr_statement);
-        AstNode *res = ast_create_node(pc, NodeTypeNoAsync, noasync);
-        res->data.noasync_expr.expr = statement;
+        AstNode *res = ast_create_node(pc, NodeTypeNoSuspend, nosuspend);
+        res->data.nosuspend_expr.expr = statement;
         return res;
     }
 
@@ -1220,11 +1240,11 @@ static AstNode *ast_parse_compare_expr(ParseContext *pc) {
 
 // BitwiseExpr <- BitShiftExpr (BitwiseOp BitShiftExpr)*
 static AstNode *ast_parse_bitwise_expr(ParseContext *pc) {
-    return ast_parse_bin_op_expr(pc, BinOpChainInf, ast_parse_bitwise_op, ast_parse_bit_shit_expr);
+    return ast_parse_bin_op_expr(pc, BinOpChainInf, ast_parse_bitwise_op, ast_parse_bit_shift_expr);
 }
 
 // BitShiftExpr <- AdditionExpr (BitShiftOp AdditionExpr)*
-static AstNode *ast_parse_bit_shit_expr(ParseContext *pc) {
+static AstNode *ast_parse_bit_shift_expr(ParseContext *pc) {
     return ast_parse_bin_op_expr(pc, BinOpChainInf, ast_parse_bit_shift_op, ast_parse_addition_expr);
 }
 
@@ -1252,7 +1272,7 @@ static AstNode *ast_parse_prefix_expr(ParseContext *pc) {
 //      / IfExpr
 //      / KEYWORD_break BreakLabel? Expr?
 //      / KEYWORD_comptime Expr
-//      / KEYWORD_noasync Expr
+//      / KEYWORD_nosuspend Expr
 //      / KEYWORD_continue BreakLabel?
 //      / KEYWORD_resume Expr
 //      / KEYWORD_return Expr?
@@ -1287,11 +1307,11 @@ static AstNode *ast_parse_primary_expr(ParseContext *pc) {
         return res;
     }
 
-    Token *noasync = eat_token_if(pc, TokenIdKeywordNoAsync);
-    if (noasync != nullptr) {
+    Token *nosuspend = eat_token_if(pc, TokenIdKeywordNoSuspend);
+    if (nosuspend != nullptr) {
         AstNode *expr = ast_expect(pc, ast_parse_expr);
-        AstNode *res = ast_create_node(pc, NodeTypeNoAsync, noasync);
-        res->data.noasync_expr.expr = expr;
+        AstNode *res = ast_create_node(pc, NodeTypeNoSuspend, nosuspend);
+        res->data.nosuspend_expr.expr = expr;
         return res;
     }
 
@@ -1487,17 +1507,6 @@ static AstNode *ast_parse_error_union_expr(ParseContext *pc) {
 static AstNode *ast_parse_suffix_expr(ParseContext *pc) {
     Token *async_token = eat_token_if(pc, TokenIdKeywordAsync);
     if (async_token) {
-        if (eat_token_if(pc, TokenIdKeywordFn) != nullptr) {
-            // HACK: If we see the keyword `fn`, then we assume that
-            //       we are parsing an async fn proto, and not a call.
-            //       We therefore put back all tokens consumed by the async
-            //       prefix...
-            put_back_token(pc);
-            put_back_token(pc);
-
-            return ast_parse_primary_type_expr(pc);
-        }
-
         AstNode *child = ast_expect(pc, ast_parse_primary_type_expr);
         while (true) {
             AstNode *suffix = ast_parse_suffix_op(pc);
@@ -1603,7 +1612,6 @@ static AstNode *ast_parse_suffix_expr(ParseContext *pc) {
 //      / IfTypeExpr
 //      / INTEGER
 //      / KEYWORD_comptime TypeExpr
-//      / KEYWORD_noasync TypeExpr
 //      / KEYWORD_error DOT IDENTIFIER
 //      / KEYWORD_false
 //      / KEYWORD_null
@@ -1702,14 +1710,6 @@ static AstNode *ast_parse_primary_type_expr(ParseContext *pc) {
         AstNode *expr = ast_expect(pc, ast_parse_type_expr);
         AstNode *res = ast_create_node(pc, NodeTypeCompTime, comptime);
         res->data.comptime_expr.expr = expr;
-        return res;
-    }
-
-    Token *noasync = eat_token_if(pc, TokenIdKeywordNoAsync);
-    if (noasync != nullptr) {
-        AstNode *expr = ast_expect(pc, ast_parse_type_expr);
-        AstNode *res = ast_create_node(pc, NodeTypeNoAsync, noasync);
-        res->data.noasync_expr.expr = expr;
         return res;
     }
 
@@ -2150,23 +2150,6 @@ static AstNode *ast_parse_callconv(ParseContext *pc) {
     return res;
 }
 
-// FnCC
-//     <- KEYWORD_extern
-//      / KEYWORD_async
-static Optional<AstNodeFnProto> ast_parse_fn_cc(ParseContext *pc) {
-    AstNodeFnProto res = {};
-    if (eat_token_if(pc, TokenIdKeywordAsync) != nullptr) {
-        res.is_async = true;
-        return Optional<AstNodeFnProto>::some(res);
-    }
-    if (eat_token_if(pc, TokenIdKeywordExtern) != nullptr) {
-        res.is_extern = true;
-        return Optional<AstNodeFnProto>::some(res);
-    }
-
-    return Optional<AstNodeFnProto>::none();
-}
-
 // ParamDecl <- (KEYWORD_noalias / KEYWORD_comptime)? (IDENTIFIER COLON)? ParamType
 static AstNode *ast_parse_param_decl(ParseContext *pc) {
     Buf doc_comments = BUF_INIT;
@@ -2211,14 +2194,14 @@ static AstNode *ast_parse_param_decl(ParseContext *pc) {
 }
 
 // ParamType
-//     <- KEYWORD_var
+//     <- KEYWORD_anytype
 //      / DOT3
 //      / TypeExpr
 static AstNode *ast_parse_param_type(ParseContext *pc) {
-    Token *var_token = eat_token_if(pc, TokenIdKeywordVar);
-    if (var_token != nullptr) {
-        AstNode *res = ast_create_node(pc, NodeTypeParamDecl, var_token);
-        res->data.param_decl.var_token = var_token;
+    Token *anytype_token = eat_token_if(pc, TokenIdKeywordAnyType);
+    if (anytype_token != nullptr) {
+        AstNode *res = ast_create_node(pc, NodeTypeParamDecl, anytype_token);
+        res->data.param_decl.anytype_token = anytype_token;
         return res;
     }
 
@@ -2699,7 +2682,7 @@ static AstNode *ast_parse_prefix_type_op(ParseContext *pc) {
 
             if (eat_token_if(pc, TokenIdKeywordAlign) != nullptr) {
                 expect_token(pc, TokenIdLParen);
-                AstNode *align_expr = ast_parse_expr(pc);
+                AstNode *align_expr = ast_expect(pc, ast_parse_expr);
                 child->data.pointer_type.align_expr = align_expr;
                 if (eat_token_if(pc, TokenIdColon) != nullptr) {
                     Token *bit_offset_start = expect_token(pc, TokenIdIntLiteral);
@@ -3152,7 +3135,7 @@ void ast_visit_node_children(AstNode *node, void (*visit)(AstNode **, void *cont
         case NodeTypeCompTime:
             visit_field(&node->data.comptime_expr.expr, visit, context);
             break;
-        case NodeTypeNoAsync:
+        case NodeTypeNoSuspend:
             visit_field(&node->data.comptime_expr.expr, visit, context);
             break;
         case NodeTypeBreak:
@@ -3227,7 +3210,7 @@ void ast_visit_node_children(AstNode *node, void (*visit)(AstNode **, void *cont
             visit_field(&node->data.suspend.block, visit, context);
             break;
         case NodeTypeEnumLiteral:
-        case NodeTypeVarFieldType:
+        case NodeTypeAnyTypeField:
             break;
     }
 }

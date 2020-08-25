@@ -12,7 +12,6 @@ const ArrayListSentineled = std.ArrayListSentineled;
 const Target = std.Target;
 const CrossTarget = std.zig.CrossTarget;
 const self_hosted_main = @import("main.zig");
-const errmsg = @import("errmsg.zig");
 const DepTokenizer = @import("dep_tokenizer.zig").Tokenizer;
 const assert = std.debug.assert;
 const LibCInstallation = @import("libc_installation.zig").LibCInstallation;
@@ -116,6 +115,8 @@ const Error = extern enum {
     UnknownClangOption,
     NestedResponseFile,
     ZigIsTheCCompiler,
+    FileBusy,
+    Locked,
 };
 
 const FILE = std.c.FILE;
@@ -152,6 +153,7 @@ export fn stage2_render_ast(tree: *ast.Tree, output_file: *FILE) Error {
     const c_out_stream = std.io.cOutStream(output_file);
     _ = std.zig.render(std.heap.c_allocator, c_out_stream, tree) catch |e| switch (e) {
         error.WouldBlock => unreachable, // stage1 opens stuff in exclusively blocking mode
+        error.NotOpenForWriting => unreachable,
         error.SystemResources => return .SystemResources,
         error.OperationAborted => return .OperationAborted,
         error.BrokenPipe => return .BrokenPipe,
@@ -166,8 +168,6 @@ export fn stage2_render_ast(tree: *ast.Tree, output_file: *FILE) Error {
     return .None;
 }
 
-// TODO: just use the actual self-hosted zig fmt. Until https://github.com/ziglang/zig/issues/2377,
-// we use a blocking implementation.
 export fn stage2_fmt(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     if (std.debug.runtime_safety) {
         fmtMain(argc, argv) catch unreachable;
@@ -180,8 +180,7 @@ export fn stage2_fmt(argc: c_int, argv: [*]const [*:0]const u8) c_int {
     return 0;
 }
 
-fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
-    const allocator = std.heap.c_allocator;
+fn argvToArrayList(allocator: *Allocator, argc: c_int, argv: [*]const [*:0]const u8) !ArrayList([]const u8) {
     var args_list = std.ArrayList([]const u8).init(allocator);
     const argc_usize = @intCast(usize, argc);
     var arg_i: usize = 0;
@@ -189,251 +188,17 @@ fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
         try args_list.append(mem.spanZ(argv[arg_i]));
     }
 
-    stdout = std.io.getStdOut().outStream();
-    stderr_file = std.io.getStdErr();
-    stderr = stderr_file.outStream();
+    return args_list;
+}
+
+fn fmtMain(argc: c_int, argv: [*]const [*:0]const u8) !void {
+    const allocator = std.heap.c_allocator;
+
+    var args_list = try argvToArrayList(allocator, argc, argv);
+    defer args_list.deinit();
 
     const args = args_list.span()[2..];
-
-    var color: errmsg.Color = .Auto;
-    var stdin_flag: bool = false;
-    var check_flag: bool = false;
-    var input_files = ArrayList([]const u8).init(allocator);
-
-    {
-        var i: usize = 0;
-        while (i < args.len) : (i += 1) {
-            const arg = args[i];
-            if (mem.startsWith(u8, arg, "-")) {
-                if (mem.eql(u8, arg, "--help")) {
-                    try stdout.writeAll(self_hosted_main.usage_fmt);
-                    process.exit(0);
-                } else if (mem.eql(u8, arg, "--color")) {
-                    if (i + 1 >= args.len) {
-                        try stderr.writeAll("expected [auto|on|off] after --color\n");
-                        process.exit(1);
-                    }
-                    i += 1;
-                    const next_arg = args[i];
-                    if (mem.eql(u8, next_arg, "auto")) {
-                        color = .Auto;
-                    } else if (mem.eql(u8, next_arg, "on")) {
-                        color = .On;
-                    } else if (mem.eql(u8, next_arg, "off")) {
-                        color = .Off;
-                    } else {
-                        try stderr.print("expected [auto|on|off] after --color, found '{}'\n", .{next_arg});
-                        process.exit(1);
-                    }
-                } else if (mem.eql(u8, arg, "--stdin")) {
-                    stdin_flag = true;
-                } else if (mem.eql(u8, arg, "--check")) {
-                    check_flag = true;
-                } else {
-                    try stderr.print("unrecognized parameter: '{}'", .{arg});
-                    process.exit(1);
-                }
-            } else {
-                try input_files.append(arg);
-            }
-        }
-    }
-
-    if (stdin_flag) {
-        if (input_files.items.len != 0) {
-            try stderr.writeAll("cannot use --stdin with positional arguments\n");
-            process.exit(1);
-        }
-
-        const stdin_file = io.getStdIn();
-        var stdin = stdin_file.inStream();
-
-        const source_code = try stdin.readAllAlloc(allocator, self_hosted_main.max_src_size);
-        defer allocator.free(source_code);
-
-        const tree = std.zig.parse(allocator, source_code) catch |err| {
-            try stderr.print("error parsing stdin: {}\n", .{err});
-            process.exit(1);
-        };
-        defer tree.deinit();
-
-        var error_it = tree.errors.iterator(0);
-        while (error_it.next()) |parse_error| {
-            try printErrMsgToFile(allocator, parse_error, tree, "<stdin>", stderr_file, color);
-        }
-        if (tree.errors.len != 0) {
-            process.exit(1);
-        }
-        if (check_flag) {
-            const anything_changed = try std.zig.render(allocator, io.null_out_stream, tree);
-            const code = if (anything_changed) @as(u8, 1) else @as(u8, 0);
-            process.exit(code);
-        }
-
-        _ = try std.zig.render(allocator, stdout, tree);
-        return;
-    }
-
-    if (input_files.items.len == 0) {
-        try stderr.writeAll("expected at least one source file argument\n");
-        process.exit(1);
-    }
-
-    var fmt = Fmt{
-        .seen = Fmt.SeenMap.init(allocator),
-        .any_error = false,
-        .color = color,
-        .allocator = allocator,
-    };
-
-    for (input_files.span()) |file_path| {
-        try fmtPath(&fmt, file_path, check_flag);
-    }
-    if (fmt.any_error) {
-        process.exit(1);
-    }
-}
-
-const FmtError = error{
-    SystemResources,
-    OperationAborted,
-    IoPending,
-    BrokenPipe,
-    Unexpected,
-    WouldBlock,
-    FileClosed,
-    DestinationAddressRequired,
-    DiskQuota,
-    FileTooBig,
-    InputOutput,
-    NoSpaceLeft,
-    AccessDenied,
-    OutOfMemory,
-    RenameAcrossMountPoints,
-    ReadOnlyFileSystem,
-    LinkQuotaExceeded,
-    FileBusy,
-} || fs.File.OpenError;
-
-fn fmtPath(fmt: *Fmt, file_path: []const u8, check_mode: bool) FmtError!void {
-    if (fmt.seen.exists(file_path)) return;
-    try fmt.seen.put(file_path);
-
-    const max = std.math.maxInt(usize);
-    const source_code = fs.cwd().readFileAlloc(fmt.allocator, file_path, max) catch |err| switch (err) {
-        error.IsDir, error.AccessDenied => {
-            // TODO make event based (and dir.next())
-            var dir = try fs.cwd().openDir(file_path, .{ .iterate = true });
-            defer dir.close();
-
-            var dir_it = dir.iterate();
-
-            while (try dir_it.next()) |entry| {
-                if (entry.kind == .Directory or mem.endsWith(u8, entry.name, ".zig")) {
-                    const full_path = try fs.path.join(fmt.allocator, &[_][]const u8{ file_path, entry.name });
-                    try fmtPath(fmt, full_path, check_mode);
-                }
-            }
-            return;
-        },
-        else => {
-            // TODO lock stderr printing
-            try stderr.print("unable to open '{}': {}\n", .{ file_path, err });
-            fmt.any_error = true;
-            return;
-        },
-    };
-    defer fmt.allocator.free(source_code);
-
-    const tree = std.zig.parse(fmt.allocator, source_code) catch |err| {
-        try stderr.print("error parsing file '{}': {}\n", .{ file_path, err });
-        fmt.any_error = true;
-        return;
-    };
-    defer tree.deinit();
-
-    var error_it = tree.errors.iterator(0);
-    while (error_it.next()) |parse_error| {
-        try printErrMsgToFile(fmt.allocator, parse_error, tree, file_path, stderr_file, fmt.color);
-    }
-    if (tree.errors.len != 0) {
-        fmt.any_error = true;
-        return;
-    }
-
-    if (check_mode) {
-        const anything_changed = try std.zig.render(fmt.allocator, io.null_out_stream, tree);
-        if (anything_changed) {
-            try stderr.print("{}\n", .{file_path});
-            fmt.any_error = true;
-        }
-    } else {
-        const baf = try io.BufferedAtomicFile.create(fmt.allocator, file_path);
-        defer baf.destroy();
-
-        const anything_changed = try std.zig.render(fmt.allocator, baf.stream(), tree);
-        if (anything_changed) {
-            try stderr.print("{}\n", .{file_path});
-            try baf.finish();
-        }
-    }
-}
-
-const Fmt = struct {
-    seen: SeenMap,
-    any_error: bool,
-    color: errmsg.Color,
-    allocator: *mem.Allocator,
-
-    const SeenMap = std.BufSet;
-};
-
-fn printErrMsgToFile(
-    allocator: *mem.Allocator,
-    parse_error: *const ast.Error,
-    tree: *ast.Tree,
-    path: []const u8,
-    file: fs.File,
-    color: errmsg.Color,
-) !void {
-    const color_on = switch (color) {
-        .Auto => file.isTty(),
-        .On => true,
-        .Off => false,
-    };
-    const lok_token = parse_error.loc();
-    const span = errmsg.Span{
-        .first = lok_token,
-        .last = lok_token,
-    };
-
-    const first_token = tree.tokens.at(span.first);
-    const last_token = tree.tokens.at(span.last);
-    const start_loc = tree.tokenLocationPtr(0, first_token);
-    const end_loc = tree.tokenLocationPtr(first_token.end, last_token);
-
-    var text_buf = std.ArrayList(u8).init(allocator);
-    defer text_buf.deinit();
-    const out_stream = text_buf.outStream();
-    try parse_error.render(&tree.tokens, out_stream);
-    const text = text_buf.span();
-
-    const stream = file.outStream();
-    try stream.print("{}:{}:{}: error: {}\n", .{ path, start_loc.line + 1, start_loc.column + 1, text });
-
-    if (!color_on) return;
-
-    // Print \r and \t as one space each so that column counts line up
-    for (tree.source[start_loc.line_start..start_loc.line_end]) |byte| {
-        try stream.writeByte(switch (byte) {
-            '\r', '\t' => ' ',
-            else => byte,
-        });
-    }
-    try stream.writeByte('\n');
-    try stream.writeByteNTimes(' ', start_loc.column);
-    try stream.writeByteNTimes('~', last_token.end - first_token.start);
-    try stream.writeByte('\n');
+    return self_hosted_main.cmdFmt(allocator, args);
 }
 
 export fn stage2_DepTokenizer_init(input: [*]const u8, len: usize) stage2_DepTokenizer {
@@ -628,6 +393,25 @@ fn detectNativeCpuWithLLVM(
 
     result.features.populateDependencies(all_features);
     return result;
+}
+
+export fn stage2_env(argc: c_int, argv: [*]const [*:0]const u8) c_int {
+    const allocator = std.heap.c_allocator;
+
+    var args_list = argvToArrayList(allocator, argc, argv) catch |err| {
+        std.debug.print("unable to parse arguments: {}\n", .{@errorName(err)});
+        return -1;
+    };
+    defer args_list.deinit();
+
+    const args = args_list.span()[2..];
+
+    @import("print_env.zig").cmdEnv(allocator, args, std.io.getStdOut().outStream()) catch |err| {
+        std.debug.print("unable to print info: {}\n", .{@errorName(err)});
+        return -1;
+    };
+
+    return 0;
 }
 
 // ABI warning
@@ -828,10 +612,13 @@ export fn stage2_libc_parse(stage1_libc: *Stage2LibCInstallation, libc_file_z: [
         error.SystemResources => return .SystemResources,
         error.OperationAborted => return .OperationAborted,
         error.WouldBlock => unreachable,
+        error.NotOpenForWriting => unreachable,
+        error.NotOpenForReading => unreachable,
         error.Unexpected => return .Unexpected,
         error.EndOfStream => return .EndOfFile,
         error.IsDir => return .IsDir,
         error.ConnectionResetByPeer => unreachable,
+        error.ConnectionTimedOut => unreachable,
         error.OutOfMemory => return .OutOfMemory,
         error.Unseekable => unreachable,
         error.SharingViolation => return .SharingViolation,
@@ -847,6 +634,7 @@ export fn stage2_libc_parse(stage1_libc: *Stage2LibCInstallation, libc_file_z: [
         error.NoDevice => return .NoDevice,
         error.NotDir => return .NotDir,
         error.DeviceBusy => return .DeviceBusy,
+        error.FileLocksNotSupported => unreachable,
     };
     stage1_libc.initFromStage2(libc);
     return .None;
@@ -881,6 +669,7 @@ export fn stage2_libc_render(stage1_libc: *Stage2LibCInstallation, output_file: 
     const c_out_stream = std.io.cOutStream(output_file);
     libc.render(c_out_stream) catch |err| switch (err) {
         error.WouldBlock => unreachable, // stage1 opens stuff in exclusively blocking mode
+        error.NotOpenForWriting => unreachable,
         error.SystemResources => return .SystemResources,
         error.OperationAborted => return .OperationAborted,
         error.BrokenPipe => return .BrokenPipe,
@@ -1111,13 +900,13 @@ const Stage2Target = extern struct {
 
             .windows => try os_builtin_str_buffer.outStream().print(
                 \\ .windows = .{{
-                \\        .min = .{},
-                \\        .max = .{},
+                \\        .min = {s},
+                \\        .max = {s},
                 \\    }}}},
                 \\
             , .{
-                @tagName(target.os.version_range.windows.min),
-                @tagName(target.os.version_range.windows.max),
+                target.os.version_range.windows.min,
+                target.os.version_range.windows.max,
             }),
         }
         try os_builtin_str_buffer.appendSlice("};\n");
@@ -1512,3 +1301,5 @@ export fn stage2_clang_arg_next(it: *ClangArgIterator) Error {
     };
     return .None;
 }
+
+export const stage2_is_zig0 = false;

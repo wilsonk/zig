@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 // Adapted from https://github.com/grzegorz-kraszewski/stringtofloat.
 
 // MIT License
@@ -367,7 +372,7 @@ test "fmt.parseFloat" {
     const epsilon = 1e-7;
 
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
-        const Z = std.meta.IntType(false, T.bit_count);
+        const Z = std.meta.Int(false, T.bit_count);
 
         testing.expectError(error.InvalidCharacter, parseFloat(T, ""));
         testing.expectError(error.InvalidCharacter, parseFloat(T, "   1"));

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 // zig run benchmark.zig --release-fast --override-lib-dir ..
 
 const builtin = @import("builtin");
@@ -17,20 +22,20 @@ const Crypto = struct {
 };
 
 const hashes = [_]Crypto{
-    Crypto{ .ty = crypto.Md5, .name = "md5" },
-    Crypto{ .ty = crypto.Sha1, .name = "sha1" },
-    Crypto{ .ty = crypto.Sha256, .name = "sha256" },
-    Crypto{ .ty = crypto.Sha512, .name = "sha512" },
-    Crypto{ .ty = crypto.Sha3_256, .name = "sha3-256" },
-    Crypto{ .ty = crypto.Sha3_512, .name = "sha3-512" },
-    Crypto{ .ty = crypto.gimli.Hash, .name = "gimli-hash" },
-    Crypto{ .ty = crypto.Blake2s256, .name = "blake2s" },
-    Crypto{ .ty = crypto.Blake2b512, .name = "blake2b" },
-    Crypto{ .ty = crypto.Blake3, .name = "blake3" },
+    Crypto{ .ty = crypto.hash.Md5, .name = "md5" },
+    Crypto{ .ty = crypto.hash.Sha1, .name = "sha1" },
+    Crypto{ .ty = crypto.hash.sha2.Sha256, .name = "sha256" },
+    Crypto{ .ty = crypto.hash.sha2.Sha512, .name = "sha512" },
+    Crypto{ .ty = crypto.hash.sha3.Sha3_256, .name = "sha3-256" },
+    Crypto{ .ty = crypto.hash.sha3.Sha3_512, .name = "sha3-512" },
+    Crypto{ .ty = crypto.hash.Gimli, .name = "gimli-hash" },
+    Crypto{ .ty = crypto.hash.blake2.Blake2s256, .name = "blake2s" },
+    Crypto{ .ty = crypto.hash.blake2.Blake2b512, .name = "blake2b" },
+    Crypto{ .ty = crypto.hash.Blake3, .name = "blake3" },
 };
 
-pub fn benchmarkHash(comptime Hash: var, comptime bytes: comptime_int) !u64 {
-    var h = Hash.init();
+pub fn benchmarkHash(comptime Hash: anytype, comptime bytes: comptime_int) !u64 {
+    var h = Hash.init(.{});
 
     var block: [Hash.digest_length]u8 = undefined;
     prng.random.bytes(block[0..]);
@@ -50,19 +55,24 @@ pub fn benchmarkHash(comptime Hash: var, comptime bytes: comptime_int) !u64 {
 }
 
 const macs = [_]Crypto{
-    Crypto{ .ty = crypto.Poly1305, .name = "poly1305" },
-    Crypto{ .ty = crypto.HmacMd5, .name = "hmac-md5" },
-    Crypto{ .ty = crypto.HmacSha1, .name = "hmac-sha1" },
-    Crypto{ .ty = crypto.HmacSha256, .name = "hmac-sha256" },
+    Crypto{ .ty = crypto.onetimeauth.Poly1305, .name = "poly1305" },
+    Crypto{ .ty = crypto.auth.hmac.HmacMd5, .name = "hmac-md5" },
+    Crypto{ .ty = crypto.auth.hmac.HmacSha1, .name = "hmac-sha1" },
+    Crypto{ .ty = crypto.auth.hmac.sha2.HmacSha256, .name = "hmac-sha256" },
+    Crypto{ .ty = crypto.auth.hmac.sha2.HmacSha512, .name = "hmac-sha512" },
+    Crypto{ .ty = crypto.auth.siphash.SipHash64(2, 4), .name = "siphash-2-4" },
+    Crypto{ .ty = crypto.auth.siphash.SipHash64(1, 3), .name = "siphash-1-3" },
+    Crypto{ .ty = crypto.auth.siphash.SipHash128(2, 4), .name = "siphash128-2-4" },
+    Crypto{ .ty = crypto.auth.siphash.SipHash128(1, 3), .name = "siphash128-1-3" },
 };
 
-pub fn benchmarkMac(comptime Mac: var, comptime bytes: comptime_int) !u64 {
-    std.debug.assert(32 >= Mac.mac_length and 32 >= Mac.minimum_key_length);
+pub fn benchmarkMac(comptime Mac: anytype, comptime bytes: comptime_int) !u64 {
+    std.debug.assert(64 >= Mac.mac_length and 32 >= Mac.minimum_key_length);
 
     var in: [1 * MiB]u8 = undefined;
     prng.random.bytes(in[0..]);
 
-    var key: [32]u8 = undefined;
+    var key: [64]u8 = undefined;
     prng.random.bytes(key[0..]);
 
     var offset: usize = 0;
@@ -79,9 +89,9 @@ pub fn benchmarkMac(comptime Mac: var, comptime bytes: comptime_int) !u64 {
     return throughput;
 }
 
-const exchanges = [_]Crypto{Crypto{ .ty = crypto.X25519, .name = "x25519" }};
+const exchanges = [_]Crypto{Crypto{ .ty = crypto.dh.X25519, .name = "x25519" }};
 
-pub fn benchmarkKeyExchange(comptime DhKeyExchange: var, comptime exchange_count: comptime_int) !u64 {
+pub fn benchmarkKeyExchange(comptime DhKeyExchange: anytype, comptime exchange_count: comptime_int) !u64 {
     std.debug.assert(DhKeyExchange.minimum_key_length >= DhKeyExchange.secret_length);
 
     var in: [DhKeyExchange.minimum_key_length]u8 = undefined;
@@ -90,7 +100,6 @@ pub fn benchmarkKeyExchange(comptime DhKeyExchange: var, comptime exchange_count
     var out: [DhKeyExchange.minimum_key_length]u8 = undefined;
     prng.random.bytes(out[0..]);
 
-    var offset: usize = 0;
     var timer = try Timer.start();
     const start = timer.lap();
     {
@@ -103,6 +112,30 @@ pub fn benchmarkKeyExchange(comptime DhKeyExchange: var, comptime exchange_count
 
     const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
     const throughput = @floatToInt(u64, exchange_count / elapsed_s);
+
+    return throughput;
+}
+
+const signatures = [_]Crypto{Crypto{ .ty = crypto.sign.Ed25519, .name = "ed25519" }};
+
+pub fn benchmarkSignatures(comptime Signature: anytype, comptime signatures_count: comptime_int) !u64 {
+    var seed: [Signature.seed_length]u8 = undefined;
+    prng.random.bytes(seed[0..]);
+    const msg = [_]u8{0} ** 64;
+    const key_pair = try Signature.createKeyPair(seed);
+
+    var timer = try Timer.start();
+    const start = timer.lap();
+    {
+        var i: usize = 0;
+        while (i < signatures_count) : (i += 1) {
+            _ = try Signature.sign(&msg, key_pair, null);
+        }
+    }
+    const end = timer.read();
+
+    const elapsed_s = @intToFloat(f64, end - start) / time.ns_per_s;
+    const throughput = @floatToInt(u64, signatures_count / elapsed_s);
 
     return throughput;
 }
@@ -121,15 +154,6 @@ fn usage() void {
 
 fn mode(comptime x: comptime_int) comptime_int {
     return if (builtin.mode == .Debug) x / 64 else x;
-}
-
-// TODO(#1358): Replace with builtin formatted padding when available.
-fn printPad(stdout: var, s: []const u8) !void {
-    var i: usize = 0;
-    while (i < 12 - s.len) : (i += 1) {
-        try stdout.print(" ", .{});
-    }
-    try stdout.print("{}", .{s});
 }
 
 pub fn main() !void {
@@ -175,24 +199,28 @@ pub fn main() !void {
     inline for (hashes) |H| {
         if (filter == null or std.mem.indexOf(u8, H.name, filter.?) != null) {
             const throughput = try benchmarkHash(H.ty, mode(32 * MiB));
-            try printPad(stdout, H.name);
-            try stdout.print(": {} MiB/s\n", .{throughput / (1 * MiB)});
+            try stdout.print("{:>11}: {:5} MiB/s\n", .{ H.name, throughput / (1 * MiB) });
         }
     }
 
     inline for (macs) |M| {
         if (filter == null or std.mem.indexOf(u8, M.name, filter.?) != null) {
             const throughput = try benchmarkMac(M.ty, mode(128 * MiB));
-            try printPad(stdout, M.name);
-            try stdout.print(": {} MiB/s\n", .{throughput / (1 * MiB)});
+            try stdout.print("{:>11}: {:5} MiB/s\n", .{ M.name, throughput / (1 * MiB) });
         }
     }
 
     inline for (exchanges) |E| {
         if (filter == null or std.mem.indexOf(u8, E.name, filter.?) != null) {
             const throughput = try benchmarkKeyExchange(E.ty, mode(1000));
-            try printPad(stdout, E.name);
-            try stdout.print(": {} exchanges/s\n", .{throughput});
+            try stdout.print("{:>11}: {:5} exchanges/s\n", .{ E.name, throughput });
+        }
+    }
+
+    inline for (signatures) |E| {
+        if (filter == null or std.mem.indexOf(u8, E.name, filter.?) != null) {
+            const throughput = try benchmarkSignatures(E.ty, mode(1000));
+            try stdout.print("{:>11}: {:5} signatures/s\n", .{ E.name, throughput });
         }
     }
 }

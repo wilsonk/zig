@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 // x86-64-specific declarations that are intended to be imported into the POSIX namespace.
 const std = @import("../../../std.zig");
 const pid_t = linux.pid_t;
@@ -461,6 +466,23 @@ pub const REG_ERR = 19;
 pub const REG_TRAPNO = 20;
 pub const REG_OLDMASK = 21;
 pub const REG_CR2 = 22;
+
+pub const LOCK_SH = 1;
+pub const LOCK_EX = 2;
+pub const LOCK_UN = 8;
+pub const LOCK_NB = 4;
+
+pub const F_RDLCK = 0;
+pub const F_WRLCK = 1;
+pub const F_UNLCK = 2;
+
+pub const Flock = extern struct {
+    l_type: i16,
+    l_whence: i16,
+    l_start: off_t,
+    l_len: off_t,
+    l_pid: pid_t,
+};
 
 pub const msghdr = extern struct {
     msg_name: ?*sockaddr,

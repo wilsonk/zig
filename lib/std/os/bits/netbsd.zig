@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const std = @import("../../std.zig");
 const builtin = std.builtin;
 const maxInt = std.math.maxInt;
@@ -33,6 +38,14 @@ pub const dl_phdr_info = extern struct {
     dlpi_name: ?[*:0]const u8,
     dlpi_phdr: [*]std.elf.Phdr,
     dlpi_phnum: u16,
+};
+
+pub const Flock = extern struct {
+    l_start: off_t,
+    l_len: off_t,
+    l_pid: pid_t,
+    l_type: i16,
+    l_whence: i16,
 };
 
 pub const addrinfo = extern struct {
@@ -434,6 +447,15 @@ pub const F_SETOWN = 6;
 pub const F_GETLK = 7;
 pub const F_SETLK = 8;
 pub const F_SETLKW = 9;
+
+pub const F_RDLCK = 1;
+pub const F_WRLCK = 3;
+pub const F_UNLCK = 2;
+
+pub const LOCK_SH = 1;
+pub const LOCK_EX = 2;
+pub const LOCK_UN = 8;
+pub const LOCK_NB = 4;
 
 pub const FD_CLOEXEC = 1;
 

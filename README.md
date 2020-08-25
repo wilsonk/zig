@@ -51,6 +51,8 @@ cmake ..
 make install
 ```
 
+Need help? [Troubleshooting Build Issues](https://github.com/ziglang/zig/wiki/Troubleshooting-Build-Issues)
+
 ##### MacOS
 
 ```
@@ -62,43 +64,14 @@ cmake .. -DCMAKE_PREFIX_PATH=$(brew --prefix llvm)
 make install
 ```
 
+You will now run into this issue:
+[homebrew and llvm 10 packages in apt.llvm.org are broken with undefined reference to getPollyPluginInfo](https://github.com/ziglang/zig/issues/4799)
+or
+[error: unable to create target: 'Unable to find target for this triple (no targets are registered)'](https://github.com/ziglang/zig/issues/5055),
+in which case try `-DZIG_WORKAROUND_4799=ON`
+
+Hopefully this will be fixed upstream with LLVM 10.0.1.
+
 ##### Windows
 
 See https://github.com/ziglang/zig/wiki/Building-Zig-on-Windows
-
-### Stage 2: Build Self-Hosted Zig from Zig Source Code
-
-*Note: Stage 2 compiler is not complete. Beta users of Zig should use the
-Stage 1 compiler for now.*
-
-Dependencies are the same as Stage 1, except now you can use stage 1 to compile
-Zig code.
-
-```
-bin/zig build --prefix $(pwd)/stage2
-```
-
-This produces `./stage2/bin/zig` which can be used for testing and development.
-Once it is feature complete, it will be used to build stage 3 - the final compiler
-binary.
-
-### Stage 3: Rebuild Self-Hosted Zig Using the Self-Hosted Compiler
-
-*Note: Stage 2 compiler is not yet able to build Stage 3. Building Stage 3 is
-not yet supported.*
-
-Once the self-hosted compiler can build itself, this will be the actual
-compiler binary that we will install to the system. Until then, users should
-use stage 1.
-
-#### Debug / Development Build
-
-```
-./stage2/bin/zig build --prefix $(pwd)/stage3
-```
-
-#### Release / Install Build
-
-```
-./stage2/bin/zig build install -Drelease
-```

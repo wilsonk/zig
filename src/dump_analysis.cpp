@@ -693,6 +693,18 @@ static void anal_dump_value(AnalDumpCtx *ctx, AstNode *source_node, ZigType *ty,
             }
             return;
         }
+        case ZigTypeIdOptional: {
+            if(optional_value_is_null(value)){
+                jw_string(&ctx->jw, "null");
+            } else {
+                jw_null(&ctx->jw);
+            }
+            return;
+        }
+        case ZigTypeIdInt: {
+            jw_bigint(&ctx->jw, &value->data.x_bigint);
+            return;
+        }
         default:
             jw_null(&ctx->jw);
             return;
@@ -1217,6 +1229,10 @@ void zig_print_analysis_dump(CodeGen *g, FILE *f, const char *one_indent, const 
 
     jw_object_field(jw, "rootPkg");
     anal_dump_pkg_ref(&ctx, g->main_pkg);
+
+    // FIXME: Remove this ugly workaround.
+    //        Right now the code in docs/main.js relies on the root of the main package being itself.
+    g->main_pkg->package_table.put(buf_create_from_str("root"), g->main_pkg);
 
     // Poke the functions
     for (size_t i = 0; i < g->fn_defs.length; i += 1) {

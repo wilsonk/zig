@@ -2002,6 +2002,7 @@ static void construct_linker_job_elf(LinkJob *lj) {
         lj->args.append(buf_ptr(compiler_rt_o_path));
     }
 
+    // libraries
     for (size_t i = 0; i < g->link_libs_list.length; i += 1) {
         LinkLib *link_lib = g->link_libs_list.at(i);
         if (buf_eql_str(link_lib->name, "c")) {
@@ -2086,12 +2087,29 @@ static void construct_linker_job_elf(LinkJob *lj) {
             lj->args.append("--allow-shlib-undefined");
             break;
     }
+    switch (g->linker_bind_global_refs_locally) {
+        case OptionalBoolNull:
+        case OptionalBoolFalse:
+            break;
+        case OptionalBoolTrue:
+            lj->args.append("-Bsymbolic");
+            break;
+    }
 }
 
 static void construct_linker_job_wasm(LinkJob *lj) {
     CodeGen *g = lj->codegen;
 
     lj->args.append("-error-limit=0");
+    // Increase the default stack size to a more reasonable value of 1MB instead of
+    // the default of 1 Wasm page being 64KB, unless overriden by the user.
+    size_t stack_size = (g->stack_size_override == 0) ? 1048576 : g->stack_size_override;
+    lj->args.append("-z");
+    lj->args.append(buf_ptr(buf_sprintf("stack-size=%" ZIG_PRI_usize, stack_size)));
+
+    // put stack before globals so that stack overflow results in segfault immediately before corrupting globals
+    // see https://github.com/ziglang/zig/issues/4496
+    lj->args.append("--stack-first");
 
     if (g->out_type != OutTypeExe) {
         lj->args.append("--no-entry"); // So lld doesn't look for _start.
@@ -2649,8 +2667,8 @@ static void construct_linker_job_coff(LinkJob *lj) {
 static void construct_linker_job_macho(LinkJob *lj) {
     CodeGen *g = lj->codegen;
 
-    // LLD MACH-O has no error limit option.
-    //lj->args.append("-error-limit=0");
+    lj->args.append("-error-limit");
+    lj->args.append("0");
     lj->args.append("-demangle");
 
     switch (g->linker_gc_sections) {
@@ -2723,6 +2741,7 @@ static void construct_linker_job_macho(LinkJob *lj) {
                 lj->args.append("-iphoneos_version_min");
             }
         }
+
         Buf *version_string = buf_sprintf("%d.%d.%d",
             g->zig_target->glibc_or_darwin_version->major,
             g->zig_target->glibc_or_darwin_version->minor,
@@ -2731,6 +2750,12 @@ static void construct_linker_job_macho(LinkJob *lj) {
 
         lj->args.append("-sdk_version");
         lj->args.append(buf_ptr(version_string));
+    } else if (stage2_is_zig0 && g->zig_target->os == OsMacOSX) {
+        // running `zig0`; `-pie` requires versions >= 10.5; select 10.13
+        lj->args.append("-macosx_version_min");
+        lj->args.append("10.13");
+        lj->args.append("-sdk_version");
+        lj->args.append("10.13");
     }
 
     if (g->out_type == OutTypeExe) {
@@ -2760,14 +2785,9 @@ static void construct_linker_job_macho(LinkJob *lj) {
         lj->args.append(lib_dir);
     }
 
+    // .o files
     for (size_t i = 0; i < g->link_objects.length; i += 1) {
         lj->args.append((const char *)buf_ptr(g->link_objects.at(i)));
-    }
-
-    // libc++ dep
-    if (g->libcpp_link_lib != nullptr && g->out_type != OutTypeObj) {
-        lj->args.append(build_libcxxabi(g, lj->build_dep_prog_node));
-        lj->args.append(build_libcxx(g, lj->build_dep_prog_node));
     }
 
     // compiler_rt on darwin is missing some stuff, so we still build it and rely on LinkOnce
@@ -2776,39 +2796,46 @@ static void construct_linker_job_macho(LinkJob *lj) {
         lj->args.append(buf_ptr(compiler_rt_o_path));
     }
 
-    if (g->zig_target->is_native_os) {
-        for (size_t lib_i = 0; lib_i < g->link_libs_list.length; lib_i += 1) {
-            LinkLib *link_lib = g->link_libs_list.at(lib_i);
-            if (target_is_libc_lib_name(g->zig_target, buf_ptr(link_lib->name))) {
-                // handled by libSystem
-                continue;
-            }
-            if (strchr(buf_ptr(link_lib->name), '/') == nullptr) {
-                Buf *arg = buf_sprintf("-l%s", buf_ptr(link_lib->name));
-                lj->args.append(buf_ptr(arg));
-            } else {
-                lj->args.append(buf_ptr(link_lib->name));
-            }
+    // libraries
+    for (size_t lib_i = 0; lib_i < g->link_libs_list.length; lib_i += 1) {
+        LinkLib *link_lib = g->link_libs_list.at(lib_i);
+        if (buf_eql_str(link_lib->name, "c")) {
+            // libc is linked specially
+            continue;
         }
+        if (target_is_libcpp_lib_name(g->zig_target, buf_ptr(link_lib->name))) {
+            // libc++ is linked specially
+            continue;
+        }
+        if (g->zig_target->is_native_os && target_is_libc_lib_name(g->zig_target, buf_ptr(link_lib->name))) {
+            // libSystem is linked specially
+            continue;
+        }
+
+        Buf *arg;
+        if (buf_starts_with_str(link_lib->name, "/") || buf_ends_with_str(link_lib->name, ".a") ||
+            buf_ends_with_str(link_lib->name, ".dylib"))
+        {
+            arg = link_lib->name;
+        } else {
+            arg = buf_sprintf("-l%s", buf_ptr(link_lib->name));
+        }
+        lj->args.append(buf_ptr(arg));
+    }
+
+    // libc++ dep
+    if (g->libcpp_link_lib != nullptr && g->out_type != OutTypeObj) {
+        lj->args.append(build_libcxxabi(g, lj->build_dep_prog_node));
+        lj->args.append(build_libcxx(g, lj->build_dep_prog_node));
+    }
+
+    // libc dep
+    if (g->zig_target->is_native_os || stage2_is_zig0) {
         // on Darwin, libSystem has libc in it, but also you have to use it
         // to make syscalls because the syscall numbers are not documented
         // and change between versions.
         // so we always link against libSystem
         lj->args.append("-lSystem");
-    }
-    switch (g->linker_allow_shlib_undefined) {
-        case OptionalBoolNull:
-            if (!g->zig_target->is_native_os) {
-                lj->args.append("-undefined");
-                lj->args.append("dynamic_lookup");
-            }
-            break;
-        case OptionalBoolFalse:
-            break;
-        case OptionalBoolTrue:
-            lj->args.append("-undefined");
-            lj->args.append("dynamic_lookup");
-            break;
     }
 
     for (size_t i = 0; i < g->framework_dirs.length; i += 1) {
@@ -2822,6 +2849,29 @@ static void construct_linker_job_macho(LinkJob *lj) {
         lj->args.append(buf_ptr(g->darwin_frameworks.at(i)));
     }
 
+    switch (g->linker_allow_shlib_undefined) {
+        case OptionalBoolNull:
+            if (!g->zig_target->is_native_os && !stage2_is_zig0) {
+                // TODO https://github.com/ziglang/zig/issues/5059
+                lj->args.append("-undefined");
+                lj->args.append("dynamic_lookup");
+            }
+            break;
+        case OptionalBoolFalse:
+            break;
+        case OptionalBoolTrue:
+            lj->args.append("-undefined");
+            lj->args.append("dynamic_lookup");
+            break;
+    }
+    switch (g->linker_bind_global_refs_locally) {
+        case OptionalBoolNull:
+        case OptionalBoolFalse:
+            break;
+        case OptionalBoolTrue:
+            lj->args.append("-Bsymbolic");
+            break;
+    }
 }
 
 static void construct_linker_job(LinkJob *lj) {
@@ -2898,7 +2948,6 @@ void codegen_link(CodeGen *g) {
     lj.link_in_crt = (g->libc_link_lib != nullptr && g->out_type == OutTypeExe);
 
     construct_linker_job(&lj);
-
 
     if (g->verbose_link) {
         for (size_t i = 0; i < lj.args.length; i += 1) {

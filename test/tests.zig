@@ -52,6 +52,15 @@ const test_targets = blk: {
 
         TestTarget{
             .target = .{
+                .cpu_arch = .wasm32,
+                .os_tag = .wasi,
+            },
+            .link_libc = false,
+            .single_threaded = true,
+        },
+
+        TestTarget{
+            .target = .{
                 .cpu_arch = .x86_64,
                 .os_tag = .linux,
                 .abi = .none,
@@ -142,6 +151,31 @@ const test_targets = blk: {
         //        .arch_os_abi = "arm-linux-gnueabihf",
         //        .cpu_features = "generic+v8a",
         //    }) catch unreachable,
+        //    .link_libc = true,
+        //},
+
+        TestTarget{
+            .target = .{
+                .cpu_arch = .mips,
+                .os_tag = .linux,
+                .abi = .none,
+            },
+        },
+        TestTarget{
+            .target = .{
+                .cpu_arch = .mips,
+                .os_tag = .linux,
+                .abi = .musl,
+            },
+            .link_libc = true,
+        },
+        // https://github.com/ziglang/zig/issues/4927
+        //TestTarget{
+        //    .target = .{
+        //        .cpu_arch = .mips,
+        //        .os_tag = .linux,
+        //        .abi = .gnu,
+        //    },
         //    .link_libc = true,
         //},
 
@@ -440,6 +474,7 @@ pub fn addPkgTests(
     skip_libc: bool,
     is_wine_enabled: bool,
     is_qemu_enabled: bool,
+    is_wasmtime_enabled: bool,
     glibc_dir: ?[]const u8,
 ) *build.Step {
     const step = b.step(b.fmt("test-{}", .{name}), desc);
@@ -500,7 +535,9 @@ pub fn addPkgTests(
         these_tests.overrideZigLibDir("lib");
         these_tests.enable_wine = is_wine_enabled;
         these_tests.enable_qemu = is_qemu_enabled;
+        these_tests.enable_wasmtime = is_wasmtime_enabled;
         these_tests.glibc_multi_install_dir = glibc_dir;
+        these_tests.addIncludeDir("test");
 
         step.dependOn(&these_tests.step);
     }
@@ -573,7 +610,7 @@ pub const StackTracesContext = struct {
             const allocator = context.b.allocator;
             const ptr = allocator.create(RunAndCompareStep) catch unreachable;
             ptr.* = RunAndCompareStep{
-                .step = build.Step.init("StackTraceCompareOutputStep", allocator, make),
+                .step = build.Step.init(.Custom, "StackTraceCompareOutputStep", allocator, make),
                 .context = context,
                 .exe = exe,
                 .name = name,
@@ -612,8 +649,9 @@ pub const StackTracesContext = struct {
 
             const stdout = child.stdout.?.inStream().readAllAlloc(b.allocator, max_stdout_size) catch unreachable;
             defer b.allocator.free(stdout);
-            const stderr = child.stderr.?.inStream().readAllAlloc(b.allocator, max_stdout_size) catch unreachable;
-            defer b.allocator.free(stderr);
+            const stderrFull = child.stderr.?.inStream().readAllAlloc(b.allocator, max_stdout_size) catch unreachable;
+            defer b.allocator.free(stderrFull);
+            var stderr = stderrFull;
 
             const term = child.wait() catch |err| {
                 debug.panic("Unable to spawn {}: {}\n", .{ full_exe_path, @errorName(err) });
@@ -772,7 +810,7 @@ pub const CompileErrorContext = struct {
             const allocator = context.b.allocator;
             const ptr = allocator.create(CompileCmpOutputStep) catch unreachable;
             ptr.* = CompileCmpOutputStep{
-                .step = build.Step.init("CompileCmpOutput", allocator, make),
+                .step = build.Step.init(.Custom, "CompileCmpOutput", allocator, make),
                 .context = context,
                 .name = name,
                 .test_index = context.test_index,
@@ -880,7 +918,7 @@ pub const CompileErrorContext = struct {
                 var i: usize = 0;
                 ok = while (err_iter.next()) |line| : (i += 1) {
                     if (i >= self.case.expected_errors.items.len) break false;
-                    const expected = self.case.expected_errors.at(i);
+                    const expected = self.case.expected_errors.items[i];
                     if (mem.indexOf(u8, line, expected) == null) break false;
                     continue;
                 } else true;
@@ -1120,7 +1158,7 @@ pub const GenHContext = struct {
             const allocator = context.b.allocator;
             const ptr = allocator.create(GenHCmpOutputStep) catch unreachable;
             ptr.* = GenHCmpOutputStep{
-                .step = build.Step.init("ParseCCmpOutput", allocator, make),
+                .step = build.Step.init(.Custom, "ParseCCmpOutput", allocator, make),
                 .context = context,
                 .obj = obj,
                 .name = name,

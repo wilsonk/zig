@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const std = @import("std");
 const builtin = std.builtin;
 const is_test = builtin.is_test;
@@ -92,6 +97,7 @@ comptime {
     @export(@import("compiler_rt/floatunsidf.zig").__floatunsidf, .{ .name = "__floatunsidf", .linkage = linkage });
     @export(@import("compiler_rt/floatundidf.zig").__floatundidf, .{ .name = "__floatundidf", .linkage = linkage });
 
+    @export(@import("compiler_rt/floatditf.zig").__floatditf, .{ .name = "__floatditf", .linkage = linkage });
     @export(@import("compiler_rt/floattitf.zig").__floattitf, .{ .name = "__floattitf", .linkage = linkage });
     @export(@import("compiler_rt/floattidf.zig").__floattidf, .{ .name = "__floattidf", .linkage = linkage });
     @export(@import("compiler_rt/floattisf.zig").__floattisf, .{ .name = "__floattisf", .linkage = linkage });
@@ -291,7 +297,7 @@ comptime {
                 @export(@import("compiler_rt/umodti3.zig").__umodti3, .{ .name = "__umodti3", .linkage = linkage });
             },
             .x86_64 => {
-                // The "ti" functions must use @Vector(2, u64) parameter types to adhere to the ABI
+                // The "ti" functions must use Vector(2, u64) parameter types to adhere to the ABI
                 // that LLVM expects compiler-rt to have.
                 @export(@import("compiler_rt/divti3.zig").__divti3_windows_x86_64, .{ .name = "__divti3", .linkage = linkage });
                 @export(@import("compiler_rt/modti3.zig").__modti3_windows_x86_64, .{ .name = "__modti3", .linkage = linkage });
@@ -334,7 +340,7 @@ fn __stack_chk_fail() callconv(.C) noreturn {
     @panic("stack smashing detected");
 }
 
-extern var __stack_chk_guard: usize = blk: {
+var __stack_chk_guard: usize = blk: {
     var buf = [1]u8{0} ** @sizeOf(usize);
     buf[@sizeOf(usize) - 1] = 255;
     buf[@sizeOf(usize) - 2] = '\n';

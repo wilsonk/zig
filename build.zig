@@ -10,9 +10,12 @@ const io = std.io;
 const fs = std.fs;
 const InstallDirectoryOptions = std.build.InstallDirectoryOptions;
 
+const zig_version = std.builtin.Version{ .major = 0, .minor = 6, .patch = 0 };
+
 pub fn build(b: *Builder) !void {
     b.setPreferredReleaseMode(.ReleaseFast);
     const mode = b.standardReleaseOptions();
+    const target = b.standardTargetOptions(.{});
 
     var docgen_exe = b.addExecutable("docgen", "doc/docgen.zig");
 
@@ -34,23 +37,11 @@ pub fn build(b: *Builder) !void {
 
     const test_step = b.step("test", "Run all the tests");
 
-    const config_h_text = if (b.option(
-        []const u8,
-        "config_h",
-        "Path to the generated config.h",
-    )) |config_h_path|
-        try std.fs.cwd().readFileAlloc(b.allocator, toNativePathSep(b, config_h_path), max_config_h_bytes)
-    else
-        try findAndReadConfigH(b);
-
     var test_stage2 = b.addTest("src-self-hosted/test.zig");
-    test_stage2.setBuildMode(builtin.Mode.Debug);
+    test_stage2.setBuildMode(mode);
     test_stage2.addPackagePath("stage2_tests", "test/stage2/test.zig");
 
     const fmt_build_zig = b.addFmt(&[_][]const u8{"build.zig"});
-
-    var exe = b.addExecutable("zig", "src-self-hosted/main.zig");
-    exe.setBuildMode(mode);
 
     const skip_release = b.option(bool, "skip-release", "Main test suite skips release builds") orelse false;
     const skip_release_small = b.option(bool, "skip-release-small", "Main test suite skips release-small builds") orelse skip_release;
@@ -58,21 +49,71 @@ pub fn build(b: *Builder) !void {
     const skip_release_safe = b.option(bool, "skip-release-safe", "Main test suite skips release-safe builds") orelse skip_release;
     const skip_non_native = b.option(bool, "skip-non-native", "Main test suite skips non-native builds") orelse false;
     const skip_libc = b.option(bool, "skip-libc", "Main test suite skips tests that link libc") orelse false;
-    const skip_self_hosted = (b.option(bool, "skip-self-hosted", "Main test suite skips building self hosted compiler") orelse false) or true; // TODO evented I/O good enough that this passes everywhere
-    if (!skip_self_hosted) {
-        test_step.dependOn(&exe.step);
-    }
 
     const only_install_lib_files = b.option(bool, "lib-files-only", "Only install library files") orelse false;
-    if (!only_install_lib_files and !skip_self_hosted) {
-        var ctx = parseConfigH(b, config_h_text);
-        ctx.llvm = try findLLVM(b, ctx.llvm_config_exe);
+    const enable_llvm = b.option(bool, "enable-llvm", "Build self-hosted compiler with LLVM backend enabled") orelse false;
+    const config_h_path_option = b.option([]const u8, "config_h", "Path to the generated config.h");
 
-        try configureStage2(b, test_stage2, ctx);
-        try configureStage2(b, exe, ctx);
-
+    if (!only_install_lib_files) {
+        var exe = b.addExecutable("zig", "src-self-hosted/main.zig");
+        exe.setBuildMode(mode);
+        exe.setTarget(target);
+        test_step.dependOn(&exe.step);
         b.default_step.dependOn(&exe.step);
-        exe.install();
+
+        if (enable_llvm) {
+            const config_h_text = if (config_h_path_option) |config_h_path|
+                try std.fs.cwd().readFileAlloc(b.allocator, toNativePathSep(b, config_h_path), max_config_h_bytes)
+            else
+                try findAndReadConfigH(b);
+
+            var ctx = parseConfigH(b, config_h_text);
+            ctx.llvm = try findLLVM(b, ctx.llvm_config_exe);
+
+            try configureStage2(b, exe, ctx);
+        }
+        if (!only_install_lib_files) {
+            exe.install();
+        }
+        const tracy = b.option([]const u8, "tracy", "Enable Tracy integration. Supply path to Tracy source");
+        const link_libc = b.option(bool, "force-link-libc", "Force self-hosted compiler to link libc") orelse false;
+        if (link_libc) {
+            exe.linkLibC();
+            test_stage2.linkLibC();
+        }
+
+        const log_scopes = b.option([]const []const u8, "log", "Which log scopes to enable") orelse &[0][]const u8{};
+
+        const opt_version_string = b.option([]const u8, "version-string", "Override Zig version string. Default is to find out with git.");
+        const version = if (opt_version_string) |version| version else v: {
+            var code: u8 = undefined;
+            const version_untrimmed = b.execAllowFail(&[_][]const u8{
+                "git",    "-C",          b.build_root,     "name-rev", "HEAD",
+                "--tags", "--name-only", "--no-undefined", "--always",
+            }, &code, .Ignore) catch |err| {
+                std.debug.print(
+                    \\Unable to determine zig version string: {}
+                    \\Provide the zig version string explicitly using the `version-string` build option.
+                , .{err});
+                std.process.exit(1);
+            };
+            const trimmed = mem.trim(u8, version_untrimmed, " \n\r");
+            break :v b.fmt("{}.{}.{}+{}", .{ zig_version.major, zig_version.minor, zig_version.patch, trimmed });
+        };
+        exe.addBuildOption([]const u8, "version", version);
+
+        exe.addBuildOption([]const []const u8, "log_scopes", log_scopes);
+        exe.addBuildOption(bool, "enable_tracy", tracy != null);
+        if (tracy) |tracy_path| {
+            const client_cpp = fs.path.join(
+                b.allocator,
+                &[_][]const u8{ tracy_path, "TracyClient.cpp" },
+            ) catch unreachable;
+            exe.addIncludeDir(tracy_path);
+            exe.addCSourceFile(client_cpp, &[_][]const u8{ "-DTRACY_ENABLE=1", "-fno-sanitize=undefined" });
+            exe.linkSystemLibraryName("c++");
+            exe.linkLibC();
+        }
     }
 
     b.installDirectory(InstallDirectoryOptions{
@@ -86,7 +127,13 @@ pub fn build(b: *Builder) !void {
 
     const is_wine_enabled = b.option(bool, "enable-wine", "Use Wine to run cross compiled Windows tests") orelse false;
     const is_qemu_enabled = b.option(bool, "enable-qemu", "Use QEMU to run cross compiled foreign architecture tests") orelse false;
+    const is_wasmtime_enabled = b.option(bool, "enable-wasmtime", "Use Wasmtime to enable and run WASI libstd tests") orelse false;
     const glibc_multi_dir = b.option([]const u8, "enable-foreign-glibc", "Provide directory with glibc installations to run cross compiled tests that link glibc");
+
+    test_stage2.addBuildOption(bool, "enable_qemu", is_qemu_enabled);
+    test_stage2.addBuildOption(bool, "enable_wine", is_wine_enabled);
+    test_stage2.addBuildOption(bool, "enable_wasmtime", is_wasmtime_enabled);
+    test_stage2.addBuildOption(?[]const u8, "glibc_multi_install_dir", glibc_multi_dir);
 
     const test_stage2_step = b.step("test-stage2", "Run the stage2 compiler tests");
     test_stage2_step.dependOn(&test_stage2.step);
@@ -115,35 +162,39 @@ pub fn build(b: *Builder) !void {
     const fmt_step = b.step("test-fmt", "Run zig fmt against build.zig to make sure it works");
     fmt_step.dependOn(&fmt_build_zig.step);
 
-    test_step.dependOn(tests.addPkgTests(b, test_filter, "test/stage1/behavior.zig", "behavior", "Run the behavior tests", modes, false, skip_non_native, skip_libc, is_wine_enabled, is_qemu_enabled, glibc_multi_dir));
+    // TODO for the moment, skip wasm32-wasi until bugs are sorted out.
+    test_step.dependOn(tests.addPkgTests(b, test_filter, "test/stage1/behavior.zig", "behavior", "Run the behavior tests", modes, false, skip_non_native, skip_libc, is_wine_enabled, is_qemu_enabled, is_wasmtime_enabled, glibc_multi_dir));
 
-    test_step.dependOn(tests.addPkgTests(b, test_filter, "lib/std/std.zig", "std", "Run the standard library tests", modes, false, skip_non_native, skip_libc, is_wine_enabled, is_qemu_enabled, glibc_multi_dir));
+    test_step.dependOn(tests.addPkgTests(b, test_filter, "lib/std/std.zig", "std", "Run the standard library tests", modes, false, skip_non_native, skip_libc, is_wine_enabled, is_qemu_enabled, is_wasmtime_enabled, glibc_multi_dir));
 
-    test_step.dependOn(tests.addPkgTests(b, test_filter, "lib/std/special/compiler_rt.zig", "compiler-rt", "Run the compiler_rt tests", modes, true, skip_non_native, true, is_wine_enabled, is_qemu_enabled, glibc_multi_dir));
+    test_step.dependOn(tests.addPkgTests(b, test_filter, "lib/std/special/compiler_rt.zig", "compiler-rt", "Run the compiler_rt tests", modes, true, skip_non_native, true, is_wine_enabled, is_qemu_enabled, is_wasmtime_enabled, glibc_multi_dir));
 
     test_step.dependOn(tests.addCompareOutputTests(b, test_filter, modes));
     test_step.dependOn(tests.addStandaloneTests(b, test_filter, modes));
     test_step.dependOn(tests.addStackTraceTests(b, test_filter, modes));
-    test_step.dependOn(tests.addCliTests(b, test_filter, modes));
+    const test_cli = tests.addCliTests(b, test_filter, modes);
+    const test_cli_step = b.step("test-cli", "Run zig cli tests");
+    test_cli_step.dependOn(test_cli);
+    test_step.dependOn(test_cli);
     test_step.dependOn(tests.addAssembleAndLinkTests(b, test_filter, modes));
     test_step.dependOn(tests.addRuntimeSafetyTests(b, test_filter, modes));
     test_step.dependOn(tests.addTranslateCTests(b, test_filter));
     test_step.dependOn(tests.addRunTranslatedCTests(b, test_filter));
     // tests for this feature are disabled until we have the self-hosted compiler available
-    //test_step.dependOn(tests.addGenHTests(b, test_filter));
+    // test_step.dependOn(tests.addGenHTests(b, test_filter));
     test_step.dependOn(tests.addCompileErrorTests(b, test_filter, modes));
     test_step.dependOn(docs_step);
 }
 
-fn dependOnLib(b: *Builder, lib_exe_obj: var, dep: LibraryDep) void {
-    for (dep.libdirs.toSliceConst()) |lib_dir| {
+fn dependOnLib(b: *Builder, lib_exe_obj: anytype, dep: LibraryDep) void {
+    for (dep.libdirs.items) |lib_dir| {
         lib_exe_obj.addLibPath(lib_dir);
     }
     const lib_dir = fs.path.join(
         b.allocator,
         &[_][]const u8{ dep.prefix, "lib" },
     ) catch unreachable;
-    for (dep.system_libs.toSliceConst()) |lib| {
+    for (dep.system_libs.items) |lib| {
         const static_bare_name = if (mem.eql(u8, lib, "curses"))
             @as([]const u8, "libncurses.a")
         else
@@ -159,10 +210,10 @@ fn dependOnLib(b: *Builder, lib_exe_obj: var, dep: LibraryDep) void {
             lib_exe_obj.linkSystemLibrary(lib);
         }
     }
-    for (dep.libs.toSliceConst()) |lib| {
+    for (dep.libs.items) |lib| {
         lib_exe_obj.addObjectFile(lib);
     }
-    for (dep.includes.toSliceConst()) |include_path| {
+    for (dep.includes.items) |include_path| {
         lib_exe_obj.addIncludeDir(include_path);
     }
 }
@@ -175,7 +226,7 @@ fn fileExists(filename: []const u8) !bool {
     return true;
 }
 
-fn addCppLib(b: *Builder, lib_exe_obj: var, cmake_binary_dir: []const u8, lib_name: []const u8) void {
+fn addCppLib(b: *Builder, lib_exe_obj: anytype, cmake_binary_dir: []const u8, lib_name: []const u8) void {
     lib_exe_obj.addObjectFile(fs.path.join(b.allocator, &[_][]const u8{
         cmake_binary_dir,
         "zig_cpp",
@@ -225,10 +276,11 @@ fn findLLVM(b: *Builder, llvm_config_exe: []const u8) !LibraryDep {
                 if (fs.path.isAbsolute(lib_arg)) {
                     try result.libs.append(lib_arg);
                 } else {
+                    var lib_arg_copy = lib_arg;
                     if (mem.endsWith(u8, lib_arg, ".lib")) {
-                        lib_arg = lib_arg[0 .. lib_arg.len - 4];
+                        lib_arg_copy = lib_arg[0 .. lib_arg.len - 4];
                     }
-                    try result.system_libs.append(lib_arg);
+                    try result.system_libs.append(lib_arg_copy);
                 }
             }
         }
@@ -256,7 +308,7 @@ fn findLLVM(b: *Builder, llvm_config_exe: []const u8) !LibraryDep {
     return result;
 }
 
-fn configureStage2(b: *Builder, exe: var, ctx: Context) !void {
+fn configureStage2(b: *Builder, exe: anytype, ctx: Context) !void {
     exe.addIncludeDir("src");
     exe.addIncludeDir(ctx.cmake_binary_dir);
     addCppLib(b, exe, ctx.cmake_binary_dir, "zig_cpp");
@@ -321,7 +373,7 @@ fn configureStage2(b: *Builder, exe: var, ctx: Context) !void {
 fn addCxxKnownPath(
     b: *Builder,
     ctx: Context,
-    exe: var,
+    exe: anytype,
     objname: []const u8,
     errtxt: ?[]const u8,
 ) !void {

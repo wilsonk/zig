@@ -1,5 +1,11 @@
 cmake_minimum_required(VERSION 2.8.5)
 
+# Use ccache if possible
+FIND_PROGRAM(CCACHE_PROGRAM ccache)
+IF(CCACHE_PROGRAM)
+    MESSAGE(STATUS "Found ccache ${CCACHE_PROGRAM}")
+ENDIF()
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug" CACHE STRING
         "Choose the type of build, options are: None Debug Release RelWithDebInfo MinSizeRel." FORCE)
@@ -19,7 +25,7 @@ project(zig C CXX)
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
 set(ZIG_VERSION_MAJOR 0)
-set(ZIG_VERSION_MINOR 5)
+set(ZIG_VERSION_MINOR 6)
 set(ZIG_VERSION_PATCH 0)
 set(ZIG_VERSION "${ZIG_VERSION_MAJOR}.${ZIG_VERSION_MINOR}.${ZIG_VERSION_PATCH}")
 
@@ -46,6 +52,14 @@ message("Configuring zig version ${ZIG_VERSION}")
 set(ZIG_STATIC off CACHE BOOL "Attempt to build a static zig executable (not compatible with glibc)")
 set(ZIG_STATIC_LLVM off CACHE BOOL "Prefer linking against static LLVM libraries")
 set(ZIG_ENABLE_MEM_PROFILE off CACHE BOOL "Activate memory usage instrumentation")
+set(ZIG_PREFER_CLANG_CPP_DYLIB off CACHE BOOL "Try to link against -lclang-cpp")
+set(ZIG_WORKAROUND_4799 off CACHE BOOL "workaround for https://github.com/ziglang/zig/issues/4799")
+set(ZIG_WORKAROUND_POLLY_SO off CACHE STRING "workaround for https://github.com/ziglang/zig/issues/4799")
+set(ZIG_USE_CCACHE off CACHE BOOL "Use ccache if available")
+
+if(CCACHE_PROGRAM AND ZIG_USE_CCACHE)
+    SET_PROPERTY(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
+endif()
 
 if(ZIG_STATIC)
     set(ZIG_STATIC_LLVM "on")
@@ -63,6 +77,7 @@ option(ZIG_TEST_COVERAGE "Build Zig with test coverage instrumentation" OFF)
 option(ZIG_FORCE_EXTERNAL_LLD "does nothing" OFF)
 
 set(ZIG_TARGET_TRIPLE "native" CACHE STRING "arch-os-abi to output binaries for")
+set(ZIG_TARGET_MCPU "baseline" CACHE STRING "-mcpu parameter to output binaries for")
 set(ZIG_EXECUTABLE "" CACHE STRING "(when cross compiling) path to already-built zig binary")
 
 find_package(llvm)
@@ -73,6 +88,11 @@ if(APPLE AND ZIG_STATIC)
     list(REMOVE_ITEM LLVM_LIBRARIES "-lz")
     find_library(ZLIB NAMES z zlib libz)
     list(APPEND LLVM_LIBRARIES "${ZLIB}")
+endif()
+
+if(APPLE AND ZIG_WORKAROUND_4799)
+  # eg: ${CMAKE_PREFIX_PATH} could be /usr/local/opt/llvm/
+  list(APPEND LLVM_LIBRARIES "-Wl,${CMAKE_PREFIX_PATH}/lib/libPolly.a" "-Wl,${CMAKE_PREFIX_PATH}/lib/libPollyPPCG.a" "-Wl,${CMAKE_PREFIX_PATH}/lib/libPollyISL.a")
 endif()
 
 set(ZIG_CPP_LIB_DIR "${CMAKE_BINARY_DIR}/zig_cpp")
@@ -237,6 +257,7 @@ target_include_directories(embedded_softfloat PUBLIC
 )
 include_directories("${CMAKE_SOURCE_DIR}/deps/SoftFloat-3e/source/include")
 set(SOFTFLOAT_LIBRARIES embedded_softfloat)
+include_directories("${CMAKE_SOURCE_DIR}/deps/dbg-macro")
 
 find_package(Threads)
 
@@ -274,6 +295,7 @@ set(ZIG_SOURCES
     "${CMAKE_SOURCE_DIR}/src/target.cpp"
     "${CMAKE_SOURCE_DIR}/src/tokenizer.cpp"
     "${CMAKE_SOURCE_DIR}/src/util.cpp"
+    "${CMAKE_SOURCE_DIR}/src/softfloat_ext.cpp"
     "${ZIG_SOURCES_MEM_PROFILE}"
 )
 set(OPTIMIZED_C_SOURCES
@@ -304,9 +326,14 @@ set(LIBUNWIND_FILES_DEST "${ZIG_LIB_DIR}/libunwind")
 set(LIBCXX_FILES_DEST "${ZIG_LIB_DIR}/libcxx")
 set(ZIG_STD_DEST "${ZIG_LIB_DIR}/std")
 set(ZIG_CONFIG_H_OUT "${CMAKE_BINARY_DIR}/config.h")
+set(ZIG_CONFIG_ZIG_OUT "${CMAKE_BINARY_DIR}/config.zig")
 configure_file (
     "${CMAKE_SOURCE_DIR}/src/config.h.in"
     "${ZIG_CONFIG_H_OUT}"
+)
+configure_file (
+    "${CMAKE_SOURCE_DIR}/src/config.zig.in"
+    "${ZIG_CONFIG_ZIG_OUT}"
 )
 
 include_directories(
@@ -326,7 +353,11 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
     if(MSVC)
         set(EXE_CFLAGS "${EXE_CFLAGS} /w")
     else()
-        set(EXE_CFLAGS "${EXE_CFLAGS} -Werror -Wall -Werror=implicit-fallthrough")
+        set(EXE_CFLAGS "${EXE_CFLAGS} -Werror -Wall")
+        # fallthrough support was added in GCC 7.0
+        if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 7.0)
+            set(EXE_CFLAGS "${EXE_CFLAGS} -Werror=implicit-fallthrough")
+        endif()
     endif()
 endif()
 
@@ -378,11 +409,15 @@ add_library(zig_cpp STATIC ${ZIG_CPP_SOURCES})
 set_target_properties(zig_cpp PROPERTIES
     COMPILE_FLAGS ${EXE_CFLAGS}
 )
+
 target_link_libraries(zig_cpp LINK_PUBLIC
     ${CLANG_LIBRARIES}
     ${LLD_LIBRARIES}
     ${LLVM_LIBRARIES}
 )
+if(ZIG_WORKAROUND_POLLY_SO)
+  target_link_libraries(zig_cpp LINK_PUBLIC "-Wl,${ZIG_WORKAROUND_POLLY_SO}")
+endif()
 
 add_library(opt_c_util STATIC ${OPTIMIZED_C_SOURCES})
 set_target_properties(opt_c_util PROPERTIES
@@ -433,7 +468,7 @@ endif()
 set(BUILD_LIBSTAGE2_ARGS "build-lib"
     "src-self-hosted/stage2.zig"
     -target "${ZIG_TARGET_TRIPLE}"
-    -mcpu=baseline
+    "-mcpu=${ZIG_TARGET_MCPU}"
     --name zigstage2
     --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
     --cache on
@@ -442,6 +477,8 @@ set(BUILD_LIBSTAGE2_ARGS "build-lib"
     --bundle-compiler-rt
     -fPIC
     -lc
+    --pkg-begin build_options "${ZIG_CONFIG_ZIG_OUT}"
+    --pkg-end
 )
 
 if("${ZIG_TARGET_TRIPLE}" STREQUAL "native")
@@ -452,6 +489,9 @@ if("${ZIG_TARGET_TRIPLE}" STREQUAL "native")
       WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
   )
   set(ZIG_EXECUTABLE "${zig_BINARY_DIR}/zig")
+  if (WIN32)
+    set(ZIG_EXECUTABLE "${ZIG_EXECUTABLE}.exe")
+  endif()
 else()
   add_custom_target(zig_build_libstage2 ALL
       COMMAND "${ZIG_EXECUTABLE}" ${BUILD_LIBSTAGE2_ARGS}

@@ -19,6 +19,11 @@
 #include "target.hpp"
 #include "tokenizer.hpp"
 
+#ifndef NDEBUG
+#define DBG_MACRO_NO_WARNING
+#include <dbg.h>
+#endif
+
 struct AstNode;
 struct ZigFn;
 struct Scope;
@@ -524,9 +529,10 @@ struct ZigValue {
         RuntimeHintSlice rh_slice;
     } data;
 
-    // uncomment these to find bugs. can't leave them uncommented because of a gcc-9 warning
-    //ZigValue(const ZigValue &other) = delete; // plz zero initialize with {}
+    // uncomment this to find bugs. can't leave it uncommented because of a gcc-9 warning
     //ZigValue& operator= (const ZigValue &other) = delete; // use copy_const_val
+
+    ZigValue(const ZigValue &other) = delete; // plz zero initialize with ZigValue val = {};
 
     // for use in debuggers
     void dump();
@@ -666,7 +672,7 @@ enum NodeType {
     NodeTypeSwitchProng,
     NodeTypeSwitchRange,
     NodeTypeCompTime,
-    NodeTypeNoAsync,
+    NodeTypeNoSuspend,
     NodeTypeBreak,
     NodeTypeContinue,
     NodeTypeAsmExpr,
@@ -686,7 +692,7 @@ enum NodeType {
     NodeTypeSuspend,
     NodeTypeAnyFrameType,
     NodeTypeEnumLiteral,
-    NodeTypeVarFieldType,
+    NodeTypeAnyTypeField,
 };
 
 enum FnInline {
@@ -699,7 +705,7 @@ struct AstNodeFnProto {
     Buf *name;
     ZigList<AstNode *> params;
     AstNode *return_type;
-    Token *return_var_token;
+    Token *return_anytype_token;
     AstNode *fn_def_node;
     // populated if this is an extern declaration
     Buf *lib_name;
@@ -712,7 +718,6 @@ struct AstNodeFnProto {
     Buf doc_comments;
 
     FnInline fn_inline;
-    bool is_async;
 
     VisibMod visib_mod;
     bool auto_err_set;
@@ -729,7 +734,7 @@ struct AstNodeFnDef {
 struct AstNodeParamDecl {
     Buf *name;
     AstNode *type;
-    Token *var_token;
+    Token *anytype_token;
     Buf doc_comments;
     bool is_noalias;
     bool is_comptime;
@@ -856,7 +861,7 @@ enum CallModifier {
     CallModifierAsync,
     CallModifierNeverTail,
     CallModifierNeverInline,
-    CallModifierNoAsync,
+    CallModifierNoSuspend,
     CallModifierAlwaysTail,
     CallModifierAlwaysInline,
     CallModifierCompileTime,
@@ -1008,7 +1013,7 @@ struct AstNodeCompTime {
     AstNode *expr;
 };
 
-struct AstNodeNoAsync {
+struct AstNodeNoSuspend {
     AstNode *expr;
 };
 
@@ -1219,7 +1224,7 @@ struct AstNode {
         AstNodeSwitchProng switch_prong;
         AstNodeSwitchRange switch_range;
         AstNodeCompTime comptime_expr;
-        AstNodeNoAsync noasync_expr;
+        AstNodeNoSuspend nosuspend_expr;
         AstNodeAsmExpr asm_expr;
         AstNodeFieldAccessExpr field_access_expr;
         AstNodePtrDerefExpr ptr_deref_expr;
@@ -1415,6 +1420,7 @@ struct ZigTypeStruct {
     bool requires_comptime;
     bool resolve_loop_flag_zero_bits;
     bool resolve_loop_flag_other;
+    bool created_by_at_type;
 };
 
 struct ZigTypeOptional {
@@ -1820,6 +1826,9 @@ enum BuiltinFnId {
     BuiltinFnIdAs,
     BuiltinFnIdCall,
     BuiltinFnIdBitSizeof,
+    BuiltinFnIdWasmMemorySize,
+    BuiltinFnIdWasmMemoryGrow,
+    BuiltinFnIdSrc,
 };
 
 struct BuiltinFnEntry {
@@ -1852,7 +1861,7 @@ enum PanicMsgId {
     PanicMsgIdResumedAnAwaitingFn,
     PanicMsgIdFrameTooSmall,
     PanicMsgIdResumedFnPendingAwait,
-    PanicMsgIdBadNoAsyncCall,
+    PanicMsgIdBadNoSuspendCall,
     PanicMsgIdResumeNotSuspendedFn,
     PanicMsgIdBadSentinel,
     PanicMsgIdShxTooBigRhs,
@@ -2070,6 +2079,8 @@ struct CodeGen {
     LLVMValueRef err_name_table;
     LLVMValueRef safety_crash_err_fn;
     LLVMValueRef return_err_fn;
+    LLVMValueRef wasm_memory_size;
+    LLVMValueRef wasm_memory_grow;
     LLVMTypeRef anyframe_fn_type;
 
     // reminder: hash tables must be initialized before use
@@ -2135,7 +2146,7 @@ struct CodeGen {
         ZigType *entry_num_lit_float;
         ZigType *entry_undef;
         ZigType *entry_null;
-        ZigType *entry_var;
+        ZigType *entry_anytype;
         ZigType *entry_global_error_set;
         ZigType *entry_enum_literal;
         ZigType *entry_any_frame;
@@ -2269,6 +2280,7 @@ struct CodeGen {
     CodeModel code_model;
     OptionalBool linker_gc_sections;
     OptionalBool linker_allow_shlib_undefined;
+    OptionalBool linker_bind_global_refs_locally;
     bool strip_debug_symbols;
     bool is_test_build;
     bool is_single_threaded;
@@ -2369,7 +2381,7 @@ enum ScopeId {
     ScopeIdRuntime,
     ScopeIdTypeOf,
     ScopeIdExpr,
-    ScopeIdNoAsync,
+    ScopeIdNoSuspend,
 };
 
 struct Scope {
@@ -2406,6 +2418,7 @@ struct ScopeDecls {
 enum LVal {
     LValNone,
     LValPtr,
+    LValAssign,
 };
 
 // This scope comes from a block expression in user code.
@@ -2426,6 +2439,7 @@ struct ScopeBlock {
     LVal lval;
     bool safety_off;
     bool fast_math_on;
+    bool name_used;
 };
 
 // This scope is created from every defer expression.
@@ -2476,6 +2490,8 @@ struct ScopeLoop {
     ZigList<IrBasicBlockSrc *> *incoming_blocks;
     ResultLocPeerParent *peer_parent;
     ScopeExpr *spill_scope;
+
+    bool name_used;
 };
 
 // This scope blocks certain things from working such as comptime continue
@@ -2502,9 +2518,9 @@ struct ScopeCompTime {
     Scope base;
 };
 
-// This scope is created for a noasync expression.
-// NodeTypeNoAsync
-struct ScopeNoAsync {
+// This scope is created for a nosuspend expression.
+// NodeTypeNoSuspend
+struct ScopeNoSuspend {
     Scope base;
 };
 
@@ -2588,11 +2604,8 @@ struct IrBasicBlockSrc {
 
 struct IrBasicBlockGen {
     ZigList<IrInstGen *> instruction_list;
-    IrBasicBlockSrc *parent;
     Scope *scope;
     const char *name_hint;
-    uint32_t index; // index into the basic block list
-    uint32_t ref_count;
     LLVMBasicBlockRef llvm_block;
     LLVMBasicBlockRef llvm_exit_block;
     // The instruction that referenced this basic block and caused us to
@@ -2632,6 +2645,7 @@ enum IrInstSrcId {
     IrInstSrcIdCall,
     IrInstSrcIdCallArgs,
     IrInstSrcIdCallExtra,
+    IrInstSrcIdAsyncCallExtra,
     IrInstSrcIdConst,
     IrInstSrcIdReturn,
     IrInstSrcIdContainerInitList,
@@ -2744,6 +2758,9 @@ enum IrInstSrcId {
     IrInstSrcIdResume,
     IrInstSrcIdSpillBegin,
     IrInstSrcIdSpillEnd,
+    IrInstSrcIdWasmMemorySize,
+    IrInstSrcIdWasmMemoryGrow,
+    IrInstSrcIdSrc,
 };
 
 // ir_render_* functions in codegen.cpp consume Gen instructions and produce LLVM IR.
@@ -2836,6 +2853,8 @@ enum IrInstGenId {
     IrInstGenIdVectorExtractElem,
     IrInstGenIdAlloca,
     IrInstGenIdConst,
+    IrInstGenIdWasmMemorySize,
+    IrInstGenIdWasmMemoryGrow,
 };
 
 // Common fields between IrInstSrc and IrInstGen. This allows future passes
@@ -3241,6 +3260,20 @@ struct IrInstSrcCallExtra {
     ResultLoc *result_loc;
 };
 
+// This is a pass1 instruction, used by @asyncCall, when the args node
+// is not a literal.
+// `args` is expected to be either a struct or a tuple.
+struct IrInstSrcAsyncCallExtra {
+    IrInstSrc base;
+
+    CallModifier modifier;
+    IrInstSrc *fn_ref;
+    IrInstSrc *ret_ptr;
+    IrInstSrc *new_stack;
+    IrInstSrc *args;
+    ResultLoc *result_loc;
+};
+
 struct IrInstGenCall {
     IrInstGen base;
 
@@ -3453,7 +3486,6 @@ struct IrInstSrcOptionalUnwrapPtr {
 
     IrInstSrc *base_ptr;
     bool safety_check_on;
-    bool initializing;
 };
 
 struct IrInstGenOptionalUnwrapPtr {
@@ -3722,6 +3754,36 @@ struct IrInstGenMemcpy {
     IrInstGen *dest_ptr;
     IrInstGen *src_ptr;
     IrInstGen *count;
+};
+
+struct IrInstSrcWasmMemorySize {
+    IrInstSrc base;
+
+    IrInstSrc *index;
+};
+
+struct IrInstGenWasmMemorySize {
+    IrInstGen base;
+
+    IrInstGen *index;
+};
+
+struct IrInstSrcWasmMemoryGrow {
+    IrInstSrc base;
+
+    IrInstSrc *index;
+    IrInstSrc *delta;
+};
+
+struct IrInstGenWasmMemoryGrow {
+    IrInstGen base;
+
+    IrInstGen *index;
+    IrInstGen *delta;
+};
+
+struct IrInstSrcSrc {
+    IrInstSrc base;
 };
 
 struct IrInstSrcSlice {
@@ -4052,7 +4114,7 @@ struct IrInstSrcCheckSwitchProngs {
     IrInstSrc *target_value;
     IrInstSrcCheckSwitchProngsRange *ranges;
     size_t range_count;
-    bool have_else_prong;
+    AstNode* else_prong;
     bool have_underscore_prong;
 };
 
@@ -4484,7 +4546,7 @@ struct IrInstSrcAwait {
 
     IrInstSrc *frame;
     ResultLoc *result_loc;
-    bool is_noasync;
+    bool is_nosuspend;
 };
 
 struct IrInstGenAwait {
@@ -4493,7 +4555,7 @@ struct IrInstGenAwait {
     IrInstGen *frame;
     IrInstGen *result_loc;
     ZigFn *target_fn;
-    bool is_noasync;
+    bool is_nosuspend;
 };
 
 struct IrInstSrcResume {

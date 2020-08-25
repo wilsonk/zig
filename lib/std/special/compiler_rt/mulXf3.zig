@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 // Ported from:
 //
 // https://github.com/llvm/llvm-project/blob/2ffb1b0413efa9a24eb3c49e710e36f92e2cb50b/compiler-rt/lib/builtins/fp_mul_impl.inc
@@ -28,7 +33,7 @@ pub fn __aeabi_dmul(a: f64, b: f64) callconv(.C) f64 {
 
 fn mulXf3(comptime T: type, a: T, b: T) T {
     @setRuntimeSafety(builtin.is_test);
-    const Z = std.meta.IntType(false, T.bit_count);
+    const Z = std.meta.Int(false, T.bit_count);
 
     const typeWidth = T.bit_count;
     const significandBits = std.math.floatMantissaBits(T);
@@ -264,9 +269,9 @@ fn wideMultiply(comptime Z: type, a: Z, b: Z, hi: *Z, lo: *Z) void {
     }
 }
 
-fn normalize(comptime T: type, significand: *std.meta.IntType(false, T.bit_count)) i32 {
+fn normalize(comptime T: type, significand: *std.meta.Int(false, T.bit_count)) i32 {
     @setRuntimeSafety(builtin.is_test);
-    const Z = std.meta.IntType(false, T.bit_count);
+    const Z = std.meta.Int(false, T.bit_count);
     const significandBits = std.math.floatMantissaBits(T);
     const implicitBit = @as(Z, 1) << significandBits;
 

@@ -1,14 +1,25 @@
-pub const AlignedArrayList = @import("array_list.zig").AlignedArrayList;
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 pub const ArrayList = @import("array_list.zig").ArrayList;
+pub const ArrayListAligned = @import("array_list.zig").ArrayListAligned;
+pub const ArrayListAlignedUnmanaged = @import("array_list.zig").ArrayListAlignedUnmanaged;
 pub const ArrayListSentineled = @import("array_list_sentineled.zig").ArrayListSentineled;
-pub const AutoHashMap = @import("hash_map.zig").AutoHashMap;
+pub const ArrayListUnmanaged = @import("array_list.zig").ArrayListUnmanaged;
+pub const AutoHashMap = hash_map.AutoHashMap;
+pub const AutoHashMapUnmanaged = hash_map.AutoHashMapUnmanaged;
 pub const BloomFilter = @import("bloom_filter.zig").BloomFilter;
 pub const BufMap = @import("buf_map.zig").BufMap;
 pub const BufSet = @import("buf_set.zig").BufSet;
 pub const ChildProcess = @import("child_process.zig").ChildProcess;
+pub const ComptimeStringMap = @import("comptime_string_map.zig").ComptimeStringMap;
 pub const DynLib = @import("dynamic_library.zig").DynLib;
-pub const HashMap = @import("hash_map.zig").HashMap;
-pub const Mutex = @import("mutex.zig").Mutex;
+pub const HashMap = hash_map.HashMap;
+pub const HashMapUnmanaged = hash_map.HashMapUnmanaged;
+pub const mutex = @import("mutex.zig");
+pub const Mutex = mutex.Mutex;
 pub const PackedIntArray = @import("packed_int_array.zig").PackedIntArray;
 pub const PackedIntArrayEndian = @import("packed_int_array.zig").PackedIntArrayEndian;
 pub const PackedIntSlice = @import("packed_int_array.zig").PackedIntSlice;
@@ -19,7 +30,8 @@ pub const ResetEvent = @import("reset_event.zig").ResetEvent;
 pub const SegmentedList = @import("segmented_list.zig").SegmentedList;
 pub const SinglyLinkedList = @import("linked_list.zig").SinglyLinkedList;
 pub const SpinLock = @import("spinlock.zig").SpinLock;
-pub const StringHashMap = @import("hash_map.zig").StringHashMap;
+pub const StringHashMap = hash_map.StringHashMap;
+pub const StringHashMapUnmanaged = hash_map.StringHashMapUnmanaged;
 pub const TailQueue = @import("linked_list.zig").TailQueue;
 pub const Target = @import("target.zig").Target;
 pub const Thread = @import("thread.zig").Thread;
@@ -29,6 +41,7 @@ pub const base64 = @import("base64.zig");
 pub const build = @import("build.zig");
 pub const builtin = @import("builtin.zig");
 pub const c = @import("c.zig");
+pub const cache_hash = @import("cache_hash.zig");
 pub const coff = @import("coff.zig");
 pub const crypto = @import("crypto.zig");
 pub const cstr = @import("cstr.zig");
@@ -45,13 +58,14 @@ pub const heap = @import("heap.zig");
 pub const http = @import("http.zig");
 pub const io = @import("io.zig");
 pub const json = @import("json.zig");
-pub const lazyInit = @import("lazy_init.zig").lazyInit;
+pub const log = @import("log.zig");
 pub const macho = @import("macho.zig");
 pub const math = @import("math.zig");
 pub const mem = @import("mem.zig");
 pub const meta = @import("meta.zig");
 pub const net = @import("net.zig");
 pub const os = @import("os.zig");
+pub const once = @import("once.zig").once;
 pub const packed_int_array = @import("packed_int_array.zig");
 pub const pdb = @import("pdb.zig");
 pub const process = @import("process.zig");

@@ -1,6 +1,5 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const util = @import("util.zig");
 const Target = std.Target;
 const fs = std.fs;
 const Allocator = std.mem.Allocator;
@@ -38,7 +37,7 @@ pub const LibCInstallation = struct {
     pub fn parse(
         allocator: *Allocator,
         libc_file: []const u8,
-        stderr: var,
+        stderr: anytype,
     ) !LibCInstallation {
         var self: LibCInstallation = .{};
 
@@ -116,7 +115,7 @@ pub const LibCInstallation = struct {
         return self;
     }
 
-    pub fn render(self: LibCInstallation, out: var) !void {
+    pub fn render(self: LibCInstallation, out: anytype) !void {
         @setEvalBranchQuota(4000);
         const include_dir = self.include_dir orelse "";
         const sys_include_dir = self.sys_include_dir orelse "";
@@ -281,7 +280,7 @@ pub const LibCInstallation = struct {
         var path_i: usize = 0;
         while (path_i < search_paths.items.len) : (path_i += 1) {
             // search in reverse order
-            const search_path_untrimmed = search_paths.at(search_paths.items.len - path_i - 1);
+            const search_path_untrimmed = search_paths.items[search_paths.items.len - path_i - 1];
             const search_path = std.mem.trimLeft(u8, search_path_untrimmed, " ");
             var search_dir = fs.cwd().openDir(search_path, .{}) catch |err| switch (err) {
                 error.FileNotFound,

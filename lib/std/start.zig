@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 // This file is included in the compilation unit when exporting an executable.
 
 const root = @import("root");
@@ -108,7 +113,7 @@ fn _start() callconv(.Naked) noreturn {
                 : [argc] "=r" (-> [*]usize)
             );
         },
-        .mipsel => {
+        .mips, .mipsel => {
             // Need noat here because LLVM is free to pick any register
             starting_stack_ptr = asm (
                 \\ .set noat
@@ -214,7 +219,7 @@ inline fn initEventLoopAndCallMain() u8 {
 
             var result: u8 = undefined;
             var frame: @Frame(callMainAsync) = undefined;
-            _ = @asyncCall(&frame, &result, callMainAsync, loop);
+            _ = @asyncCall(&frame, &result, callMainAsync, .{loop});
             loop.run();
             return result;
         }
@@ -224,8 +229,7 @@ inline fn initEventLoopAndCallMain() u8 {
     // and we want fewer call frames in stack traces.
     return @call(.{ .modifier = .always_inline }, callMain, .{});
 }
-
-async fn callMainAsync(loop: *std.event.Loop) u8 {
+fn callMainAsync(loop: *std.event.Loop) callconv(.Async) u8 {
     // This prevents the event loop from terminating at least until main() has returned.
     loop.beginOneEvent();
     defer loop.finishOneEvent();

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const std = @import("std.zig");
 const builtin = std.builtin;
 const os = std.os;
@@ -143,7 +148,7 @@ pub const Thread = struct {
     /// fn startFn(@TypeOf(context)) T
     /// where T is u8, noreturn, void, or !void
     /// caller must call wait on the returned thread
-    pub fn spawn(context: var, comptime startFn: var) SpawnError!*Thread {
+    pub fn spawn(context: anytype, comptime startFn: anytype) SpawnError!*Thread {
         if (builtin.single_threaded) @compileError("cannot spawn thread when building in single-threaded mode");
         // TODO compile-time call graph analysis to determine stack upper bound
         // https://github.com/ziglang/zig/issues/157
@@ -252,12 +257,37 @@ pub const Thread = struct {
                 }
             }
             fn posixThreadMain(ctx: ?*c_void) callconv(.C) ?*c_void {
-                if (@sizeOf(Context) == 0) {
-                    _ = startFn({});
-                    return null;
-                } else {
-                    _ = startFn(@ptrCast(*const Context, @alignCast(@alignOf(Context), ctx)).*);
-                    return null;
+                const arg = if (@sizeOf(Context) == 0) {} else @ptrCast(*Context, @alignCast(@alignOf(Context), ctx)).*;
+
+                switch (@typeInfo(@TypeOf(startFn).ReturnType)) {
+                    .NoReturn => {
+                        startFn(arg);
+                    },
+                    .Void => {
+                        startFn(arg);
+                        return null;
+                    },
+                    .Int => |info| {
+                        if (info.bits != 8) {
+                            @compileError(bad_startfn_ret);
+                        }
+                        // pthreads don't support exit status, ignore value
+                        _ = startFn(arg);
+                        return null;
+                    },
+                    .ErrorUnion => |info| {
+                        if (info.payload != void) {
+                            @compileError(bad_startfn_ret);
+                        }
+                        startFn(arg) catch |err| {
+                            std.debug.warn("error: {}\n", .{@errorName(err)});
+                            if (@errorReturnTrace()) |trace| {
+                                std.debug.dumpStackTrace(trace.*);
+                            }
+                        };
+                        return null;
+                    },
+                    else => @compileError(bad_startfn_ret),
                 }
             }
         };

@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const builtin = @import("builtin");
 const std = @import("std.zig");
 const math = std.math;
@@ -153,13 +158,16 @@ pub fn BloomFilter(
 }
 
 fn hashFunc(out: []u8, Ki: usize, in: []const u8) void {
-    var st = std.crypto.gimli.Hash.init();
+    var st = std.crypto.hash.Gimli.init(.{});
     st.update(std.mem.asBytes(&Ki));
     st.update(in);
     st.final(out);
 }
 
 test "std.BloomFilter" {
+    // https://github.com/ziglang/zig/issues/5127
+    if (std.Target.current.cpu.arch == .mips) return error.SkipZigTest;
+
     inline for ([_]type{ bool, u1, u2, u3, u4 }) |Cell| {
         const emptyCell = if (Cell == bool) false else @as(Cell, 0);
         const BF = BloomFilter(128 * 8, 8, Cell, builtin.endian, hashFunc);

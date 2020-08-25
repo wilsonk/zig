@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 // This is Zig's multi-target implementation of libc.
 // When builtin.link_libc is true, we need to export all the functions and
 // provide an entire C API.
@@ -35,7 +40,7 @@ comptime {
     }
 }
 
-extern var _fltused: c_int = 1;
+var _fltused: c_int = 1;
 
 extern fn main(argc: c_int, argv: [*:null]?[*:0]u8) c_int;
 fn wasm_start() callconv(.C) void {
@@ -354,7 +359,7 @@ fn clone() callconv(.Naked) void {
                 \\    ecall
             );
         },
-        .mipsel => {
+        .mips, .mipsel => {
             asm volatile (
                 \\  # Save function pointer and argument pointer on new thread stack
                 \\  and $5, $5, -8
@@ -511,7 +516,7 @@ export fn roundf(a: f32) f32 {
 fn generic_fmod(comptime T: type, x: T, y: T) T {
     @setRuntimeSafety(false);
 
-    const uint = std.meta.IntType(false, T.bit_count);
+    const uint = std.meta.Int(false, T.bit_count);
     const log2uint = math.Log2Int(uint);
     const digits = if (T == f32) 23 else 52;
     const exp_bits = if (T == f32) 9 else 12;
@@ -536,7 +541,7 @@ fn generic_fmod(comptime T: type, x: T, y: T) T {
     // normalize x and y
     if (ex == 0) {
         i = ux << exp_bits;
-        while (i >> bits_minus_1 == 0) : (b: {
+        while (i >> bits_minus_1 == 0) : ({
             ex -= 1;
             i <<= 1;
         }) {}
@@ -547,7 +552,7 @@ fn generic_fmod(comptime T: type, x: T, y: T) T {
     }
     if (ey == 0) {
         i = uy << exp_bits;
-        while (i >> bits_minus_1 == 0) : (b: {
+        while (i >> bits_minus_1 == 0) : ({
             ey -= 1;
             i <<= 1;
         }) {}
@@ -573,7 +578,7 @@ fn generic_fmod(comptime T: type, x: T, y: T) T {
             return 0 * x;
         ux = i;
     }
-    while (ux >> digits == 0) : (b: {
+    while (ux >> digits == 0) : ({
         ux <<= 1;
         ex -= 1;
     }) {}

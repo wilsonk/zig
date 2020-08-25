@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const root = @import("@build");
 const std = @import("std");
 const builtin = @import("builtin");
@@ -135,7 +140,7 @@ fn runBuild(builder: *Builder) anyerror!void {
     }
 }
 
-fn usage(builder: *Builder, already_ran_build: bool, out_stream: var) !void {
+fn usage(builder: *Builder, already_ran_build: bool, out_stream: anytype) !void {
     // run the build script to collect the options
     if (!already_ran_build) {
         builder.setInstallPrefix(null);
@@ -202,7 +207,7 @@ fn usage(builder: *Builder, already_ran_build: bool, out_stream: var) !void {
     );
 }
 
-fn usageAndErr(builder: *Builder, already_ran_build: bool, out_stream: var) void {
+fn usageAndErr(builder: *Builder, already_ran_build: bool, out_stream: anytype) void {
     usage(builder, already_ran_build, out_stream) catch {};
     process.exit(1);
 }

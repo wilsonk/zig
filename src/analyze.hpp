@@ -77,7 +77,7 @@ void resolve_top_level_decl(CodeGen *g, Tld *tld, AstNode *source_node, bool all
 ZigType *get_src_ptr_type(ZigType *type);
 uint32_t get_ptr_align(CodeGen *g, ZigType *type);
 bool get_ptr_const(CodeGen *g, ZigType *type);
-ZigType *validate_var_type(CodeGen *g, AstNode *source_node, ZigType *type_entry);
+ZigType *validate_var_type(CodeGen *g, AstNodeVariableDeclaration *source_node, ZigType *type_entry);
 ZigType *container_ref_type(ZigType *type_entry);
 bool type_is_complete(ZigType *type_entry);
 bool type_is_resolved(ZigType *type_entry, ResolveStatus status);
@@ -116,6 +116,7 @@ void eval_min_max_value_int(CodeGen *g, ZigType *int_type, BigInt *bigint, bool 
 
 void render_const_value(CodeGen *g, Buf *buf, ZigValue *const_val);
 
+ScopeDecls *create_decls_scope(CodeGen *g, AstNode *node, Scope *parent, ZigType *container_type, ZigType *import, Buf *bare_name);
 ScopeBlock *create_block_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeDefer *create_defer_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeDeferExpr *create_defer_expr_scope(CodeGen *g, AstNode *node, Scope *parent);
@@ -125,7 +126,7 @@ ScopeLoop *create_loop_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeSuspend *create_suspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeFnDef *create_fndef_scope(CodeGen *g, AstNode *node, Scope *parent, ZigFn *fn_entry);
 Scope *create_comptime_scope(CodeGen *g, AstNode *node, Scope *parent);
-Scope *create_noasync_scope(CodeGen *g, AstNode *node, Scope *parent);
+Scope *create_nosuspend_scope(CodeGen *g, AstNode *node, Scope *parent);
 Scope *create_runtime_scope(CodeGen *g, AstNode *node, Scope *parent, IrInstSrc *is_comptime);
 Scope *create_typeof_scope(CodeGen *g, AstNode *node, Scope *parent);
 ScopeExpr *create_expr_scope(CodeGen *g, AstNode *node, Scope *parent);
@@ -179,6 +180,9 @@ ZigValue *create_const_slice(CodeGen *g, ZigValue *array_val, size_t start, size
 
 void init_const_null(ZigValue *const_val, ZigType *type);
 ZigValue *create_const_null(CodeGen *g, ZigType *type);
+
+void init_const_fn(ZigValue *const_val, ZigFn *fn);
+ZigValue *create_const_fn(CodeGen *g, ZigFn *fn);
 
 ZigValue **alloc_const_vals_ptrs(CodeGen *g, size_t count);
 ZigValue **realloc_const_vals_ptrs(CodeGen *g, ZigValue **ptr, size_t old_count, size_t new_count);
@@ -260,7 +264,7 @@ ZigLLVMDIType *get_llvm_di_type(CodeGen *g, ZigType *type);
 void add_cc_args(CodeGen *g, ZigList<const char *> &args, const char *out_dep_path, bool translate_c,
         FileExt source_kind);
 
-void src_assert(bool ok, AstNode *source_node);
+void src_assert_impl(bool ok, AstNode *source_node, const char *file, unsigned int line);
 bool is_container(ZigType *type_entry);
 ZigValue *analyze_const_value(CodeGen *g, Scope *scope, AstNode *node, ZigType *type_entry,
         Buf *type_name, UndefAllowed undef);
@@ -269,6 +273,7 @@ void resolve_llvm_types_fn(CodeGen *g, ZigFn *fn);
 bool fn_is_async(ZigFn *fn);
 CallingConvention cc_from_fn_proto(AstNodeFnProto *fn_proto);
 bool is_valid_return_type(ZigType* type);
+bool is_valid_param_type(ZigType* type);
 
 Error type_val_resolve_abi_align(CodeGen *g, AstNode *source_node, ZigValue *type_val, uint32_t *abi_align);
 Error type_val_resolve_abi_size(CodeGen *g, AstNode *source_node, ZigValue *type_val,
@@ -289,4 +294,7 @@ bool type_has_optional_repr(ZigType *ty);
 bool is_opt_err_set(ZigType *ty);
 bool type_is_numeric(ZigType *ty);
 const char *float_op_to_name(BuiltinFnId op);
+
+#define src_assert(OK, SOURCE_NODE) src_assert_impl((OK), (SOURCE_NODE), __FILE__, __LINE__)
+
 #endif

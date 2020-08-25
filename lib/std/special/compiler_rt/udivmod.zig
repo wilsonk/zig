@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const builtin = @import("builtin");
 const is_test = builtin.is_test;
 
@@ -10,8 +15,8 @@ const high = 1 - low;
 pub fn udivmod(comptime DoubleInt: type, a: DoubleInt, b: DoubleInt, maybe_rem: ?*DoubleInt) DoubleInt {
     @setRuntimeSafety(is_test);
 
-    const SingleInt = @import("std").meta.IntType(false, @divExact(DoubleInt.bit_count, 2));
-    const SignedDoubleInt = @import("std").meta.IntType(true, DoubleInt.bit_count);
+    const SingleInt = @import("std").meta.Int(false, @divExact(DoubleInt.bit_count, 2));
+    const SignedDoubleInt = @import("std").meta.Int(true, DoubleInt.bit_count);
     const Log2SingleInt = @import("std").math.Log2Int(SingleInt);
 
     const n = @ptrCast(*const [2]SingleInt, &a).*; // TODO issue #421
@@ -184,7 +189,7 @@ pub fn udivmod(comptime DoubleInt: type, a: DoubleInt, b: DoubleInt, maybe_rem: 
         //      carry = 1;
         // }
         r_all = @ptrCast(*align(@alignOf(SingleInt)) DoubleInt, &r[0]).*; // TODO issue #421
-        const s: SignedDoubleInt = @intCast(SignedDoubleInt, b -% r_all -% 1) >> (DoubleInt.bit_count - 1);
+        const s: SignedDoubleInt = @bitCast(SignedDoubleInt, b -% r_all -% 1) >> (DoubleInt.bit_count - 1);
         carry = @intCast(u32, s & 1);
         r_all -= b & @bitCast(DoubleInt, s);
         r = @ptrCast(*[2]SingleInt, &r_all).*; // TODO issue #421
