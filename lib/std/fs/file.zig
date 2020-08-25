@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const std = @import("../std.zig");
 const builtin = @import("builtin");
 const os = std.os;
@@ -96,6 +101,10 @@ pub const File = struct {
         /// if `std.io.is_async`. It allows the use of `nosuspend` when calling functions
         /// related to opening the file, reading, writing, and locking.
         intended_io_mode: io.ModeOverride = io.default_mode,
+
+        /// Set this to allow the opened file to automatically become the
+        /// controlling TTY for the current process.
+        allow_ctty: bool = false,
     };
 
     /// TODO https://github.com/ziglang/zig/issues/3802

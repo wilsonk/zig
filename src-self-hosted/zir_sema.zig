@@ -29,7 +29,7 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .alloc => return analyzeInstAlloc(mod, scope, old_inst.castTag(.alloc).?),
         .alloc_inferred => return analyzeInstAllocInferred(mod, scope, old_inst.castTag(.alloc_inferred).?),
         .arg => return analyzeInstArg(mod, scope, old_inst.castTag(.arg).?),
-        .bitcast_lvalue => return analyzeInstBitCastLValue(mod, scope, old_inst.castTag(.bitcast_lvalue).?),
+        .bitcast_ref => return analyzeInstBitCastRef(mod, scope, old_inst.castTag(.bitcast_ref).?),
         .bitcast_result_ptr => return analyzeInstBitCastResultPtr(mod, scope, old_inst.castTag(.bitcast_result_ptr).?),
         .block => return analyzeInstBlock(mod, scope, old_inst.castTag(.block).?),
         .@"break" => return analyzeInstBreak(mod, scope, old_inst.castTag(.@"break").?),
@@ -51,8 +51,15 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .ref => return analyzeInstRef(mod, scope, old_inst.castTag(.ref).?),
         .ret_ptr => return analyzeInstRetPtr(mod, scope, old_inst.castTag(.ret_ptr).?),
         .ret_type => return analyzeInstRetType(mod, scope, old_inst.castTag(.ret_type).?),
-        .single_const_ptr_type => return analyzeInstSingleConstPtrType(mod, scope, old_inst.castTag(.single_const_ptr_type).?),
-        .single_mut_ptr_type => return analyzeInstSingleMutPtrType(mod, scope, old_inst.castTag(.single_mut_ptr_type).?),
+        .single_const_ptr_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.single_const_ptr_type).?, false, .One),
+        .single_mut_ptr_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.single_mut_ptr_type).?, true, .One),
+        .many_const_ptr_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.many_const_ptr_type).?, false, .Many),
+        .many_mut_ptr_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.many_mut_ptr_type).?, true, .Many),
+        .c_const_ptr_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.c_const_ptr_type).?, false, .C),
+        .c_mut_ptr_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.c_mut_ptr_type).?, true, .C),
+        .const_slice_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.const_slice_type).?, false, .Slice),
+        .mut_slice_type => return analyzeInstSimplePtrType(mod, scope, old_inst.castTag(.mut_slice_type).?, true, .Slice),
+        .ptr_type => return analyzeInstPtrType(mod, scope, old_inst.castTag(.ptr_type).?),
         .store => return analyzeInstStore(mod, scope, old_inst.castTag(.store).?),
         .str => return analyzeInstStr(mod, scope, old_inst.castTag(.str).?),
         .int => {
@@ -90,6 +97,7 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .array_cat => return analyzeInstArrayCat(mod, scope, old_inst.castTag(.array_cat).?),
         .array_mul => return analyzeInstArrayMul(mod, scope, old_inst.castTag(.array_mul).?),
         .bitand => return analyzeInstBitwise(mod, scope, old_inst.castTag(.bitand).?),
+        .bitnot => return analyzeInstBitNot(mod, scope, old_inst.castTag(.bitnot).?),
         .bitor => return analyzeInstBitwise(mod, scope, old_inst.castTag(.bitor).?),
         .xor => return analyzeInstBitwise(mod, scope, old_inst.castTag(.xor).?),
         .shl => return analyzeInstShl(mod, scope, old_inst.castTag(.shl).?),
@@ -103,11 +111,22 @@ pub fn analyzeInst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!
         .condbr => return analyzeInstCondBr(mod, scope, old_inst.castTag(.condbr).?),
         .isnull => return analyzeInstIsNonNull(mod, scope, old_inst.castTag(.isnull).?, true),
         .isnonnull => return analyzeInstIsNonNull(mod, scope, old_inst.castTag(.isnonnull).?, false),
+        .iserr => return analyzeInstIsErr(mod, scope, old_inst.castTag(.iserr).?, true),
         .boolnot => return analyzeInstBoolNot(mod, scope, old_inst.castTag(.boolnot).?),
         .typeof => return analyzeInstTypeOf(mod, scope, old_inst.castTag(.typeof).?),
         .optional_type => return analyzeInstOptionalType(mod, scope, old_inst.castTag(.optional_type).?),
         .unwrap_optional_safe => return analyzeInstUnwrapOptional(mod, scope, old_inst.castTag(.unwrap_optional_safe).?, true),
         .unwrap_optional_unsafe => return analyzeInstUnwrapOptional(mod, scope, old_inst.castTag(.unwrap_optional_unsafe).?, false),
+        .unwrap_err_safe => return analyzeInstUnwrapErr(mod, scope, old_inst.castTag(.unwrap_err_safe).?, true),
+        .unwrap_err_unsafe => return analyzeInstUnwrapErr(mod, scope, old_inst.castTag(.unwrap_err_unsafe).?, false),
+        .ensure_err_payload_void => return analyzeInstEnsureErrPayloadVoid(mod, scope, old_inst.castTag(.ensure_err_payload_void).?),
+        .array_type => return analyzeInstArrayType(mod, scope, old_inst.castTag(.array_type).?),
+        .array_type_sentinel => return analyzeInstArrayTypeSentinel(mod, scope, old_inst.castTag(.array_type_sentinel).?),
+        .enum_literal => return analyzeInstEnumLiteral(mod, scope, old_inst.castTag(.enum_literal).?),
+        .merge_error_sets => return analyzeInstMergeErrorSets(mod, scope, old_inst.castTag(.merge_error_sets).?),
+        .error_union_type => return analyzeInstErrorUnionType(mod, scope, old_inst.castTag(.error_union_type).?),
+        .anyframe_type => return analyzeInstAnyframeType(mod, scope, old_inst.castTag(.anyframe_type).?),
+        .error_set => return analyzeInstErrorSet(mod, scope, old_inst.castTag(.error_set).?),
     }
 }
 
@@ -131,7 +150,7 @@ pub fn analyzeBodyValueAsType(mod: *Module, block_scope: *Scope.Block, body: zir
     for (block_scope.instructions.items) |inst| {
         if (inst.castTag(.ret)) |ret| {
             const val = try mod.resolveConstValue(&block_scope.base, ret.operand);
-            return val.toType();
+            return val.toType(block_scope.base.arena());
         } else {
             return mod.fail(&block_scope.base, inst.src, "unable to resolve comptime value", .{});
         }
@@ -256,7 +275,15 @@ fn resolveType(mod: *Module, scope: *Scope, old_inst: *zir.Inst) !Type {
     const wanted_type = Type.initTag(.@"type");
     const coerced_inst = try mod.coerce(scope, wanted_type, new_inst);
     const val = try mod.resolveConstValue(scope, coerced_inst);
-    return val.toType();
+    return val.toType(scope.arena());
+}
+
+fn resolveInt(mod: *Module, scope: *Scope, old_inst: *zir.Inst, dest_type: Type) !u64 {
+    const new_inst = try resolveInst(mod, scope, old_inst);
+    const coerced = try mod.coerce(scope, dest_type, new_inst);
+    const val = try mod.resolveConstValue(scope, coerced);
+
+    return val.toUnsignedInt();
 }
 
 pub fn resolveInstConst(mod: *Module, scope: *Scope, old_inst: *zir.Inst) InnerError!TypedValue {
@@ -291,8 +318,8 @@ fn analyzeInstCoerceResultBlockPtr(
     return mod.fail(scope, inst.base.src, "TODO implement analyzeInstCoerceResultBlockPtr", .{});
 }
 
-fn analyzeInstBitCastLValue(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
-    return mod.fail(scope, inst.base.src, "TODO implement analyzeInstBitCastLValue", .{});
+fn analyzeInstBitCastRef(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+    return mod.fail(scope, inst.base.src, "TODO implement analyzeInstBitCastRef", .{});
 }
 
 fn analyzeInstBitCastResultPtr(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
@@ -316,7 +343,7 @@ fn analyzeInstRetPtr(mod: *Module, scope: *Scope, inst: *zir.Inst.NoOp) InnerErr
 
 fn analyzeInstRef(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
     const operand = try resolveInst(mod, scope, inst.positionals.operand);
-    const ptr_type = try mod.singleConstPtrType(scope, inst.base.src, operand.ty);
+    const ptr_type = try mod.simplePtrType(scope, inst.base.src, operand.ty, false, .One);
 
     if (operand.value()) |val| {
         const ref_payload = try scope.arena().create(Value.Payload.RefVal);
@@ -357,7 +384,11 @@ fn analyzeInstEnsureResultNonError(mod: *Module, scope: *Scope, inst: *zir.Inst.
 
 fn analyzeInstAlloc(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
     const var_type = try resolveType(mod, scope, inst.positionals.operand);
-    const ptr_type = try mod.singleMutPtrType(scope, inst.base.src, var_type);
+    // TODO this should happen only for var allocs
+    if (!var_type.isValidVarType(false)) {
+        return mod.fail(scope, inst.base.src, "variable of type '{}' must be const or comptime", .{var_type});
+    }
+    const ptr_type = try mod.simplePtrType(scope, inst.base.src, var_type, true, .One);
     const b = try mod.requireRuntimeBlock(scope, inst.base.src);
     return mod.addNoOp(b, inst.base.src, ptr_type, .alloc);
 }
@@ -389,7 +420,7 @@ fn analyzeInstParamType(mod: *Module, scope: *Scope, inst: *zir.Inst.ParamType) 
     // TODO support C-style var args
     const param_count = fn_ty.fnParamLen();
     if (arg_index >= param_count) {
-        return mod.fail(scope, inst.base.src, "arg index {} out of bounds; '{}' has {} arguments", .{
+        return mod.fail(scope, inst.base.src, "arg index {} out of bounds; '{}' has {} argument(s)", .{
             arg_index,
             fn_ty,
             param_count,
@@ -405,6 +436,7 @@ fn analyzeInstStr(mod: *Module, scope: *Scope, str_inst: *zir.Inst.Str) InnerErr
     // The bytes references memory inside the ZIR module, which can get deallocated
     // after semantic analysis is complete. We need the memory to be in the new anonymous Decl's arena.
     var new_decl_arena = std.heap.ArenaAllocator.init(mod.gpa);
+    errdefer new_decl_arena.deinit();
     const arena_bytes = try new_decl_arena.allocator.dupe(u8, str_inst.positionals.bytes);
 
     const ty_payload = try scope.arena().create(Type.Payload.Array_u8_Sentinel0);
@@ -569,8 +601,7 @@ fn analyzeInstDeclVal(mod: *Module, scope: *Scope, inst: *zir.Inst.DeclVal) Inne
 
 fn analyzeInstDeclValInModule(mod: *Module, scope: *Scope, inst: *zir.Inst.DeclValInModule) InnerError!*Inst {
     const decl = inst.positionals.decl;
-    const ptr = try mod.analyzeDeclRef(scope, inst.base.src, decl);
-    return mod.analyzeDeref(scope, inst.base.src, ptr, inst.base.src);
+    return mod.analyzeDeclRef(scope, inst.base.src, decl);
 }
 
 fn analyzeInstCall(mod: *Module, scope: *Scope, inst: *zir.Inst.Call) InnerError!*Inst {
@@ -596,7 +627,7 @@ fn analyzeInstCall(mod: *Module, scope: *Scope, inst: *zir.Inst.Call) InnerError
             return mod.fail(
                 scope,
                 inst.positionals.func.src,
-                "expected at least {} arguments, found {}",
+                "expected at least {} argument(s), found {}",
                 .{ fn_params_len, call_params_len },
             );
         }
@@ -606,7 +637,7 @@ fn analyzeInstCall(mod: *Module, scope: *Scope, inst: *zir.Inst.Call) InnerError
         return mod.fail(
             scope,
             inst.positionals.func.src,
-            "expected {} arguments, found {}",
+            "expected {} argument(s), found {}",
             .{ fn_params_len, call_params_len },
         );
     }
@@ -671,29 +702,84 @@ fn analyzeInstIntType(mod: *Module, scope: *Scope, inttype: *zir.Inst.IntType) I
 fn analyzeInstOptionalType(mod: *Module, scope: *Scope, optional: *zir.Inst.UnOp) InnerError!*Inst {
     const child_type = try resolveType(mod, scope, optional.positionals.operand);
 
-    return mod.constType(scope, optional.base.src, Type.initPayload(switch (child_type.tag()) {
-        .single_const_pointer => blk: {
-            const payload = try scope.arena().create(Type.Payload.OptionalSingleConstPointer);
-            payload.* = .{
-                .pointee_type = child_type.elemType(),
-            };
-            break :blk &payload.base;
-        },
-        .single_mut_pointer => blk: {
-            const payload = try scope.arena().create(Type.Payload.OptionalSingleMutPointer);
-            payload.* = .{
-                .pointee_type = child_type.elemType(),
-            };
-            break :blk &payload.base;
-        },
-        else => blk: {
-            const payload = try scope.arena().create(Type.Payload.Optional);
-            payload.* = .{
-                .child_type = child_type,
-            };
-            break :blk &payload.base;
-        },
-    }));
+    return mod.constType(scope, optional.base.src, try mod.optionalType(scope, child_type));
+}
+
+fn analyzeInstArrayType(mod: *Module, scope: *Scope, array: *zir.Inst.BinOp) InnerError!*Inst {
+    // TODO these should be lazily evaluated
+    const len = try resolveInstConst(mod, scope, array.positionals.lhs);
+    const elem_type = try resolveType(mod, scope, array.positionals.rhs);
+
+    return mod.constType(scope, array.base.src, try mod.arrayType(scope, len.val.toUnsignedInt(), null, elem_type));
+}
+
+fn analyzeInstArrayTypeSentinel(mod: *Module, scope: *Scope, array: *zir.Inst.ArrayTypeSentinel) InnerError!*Inst {
+    // TODO these should be lazily evaluated
+    const len = try resolveInstConst(mod, scope, array.positionals.len);
+    const sentinel = try resolveInstConst(mod, scope, array.positionals.sentinel);
+    const elem_type = try resolveType(mod, scope, array.positionals.elem_type);
+
+    return mod.constType(scope, array.base.src, try mod.arrayType(scope, len.val.toUnsignedInt(), sentinel.val, elem_type));
+}
+
+fn analyzeInstErrorUnionType(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
+    const error_union = try resolveType(mod, scope, inst.positionals.lhs);
+    const payload = try resolveType(mod, scope, inst.positionals.rhs);
+
+    if (error_union.zigTypeTag() != .ErrorSet) {
+        return mod.fail(scope, inst.base.src, "expected error set type, found {}", .{error_union.elemType()});
+    }
+
+    return mod.constType(scope, inst.base.src, try mod.errorUnionType(scope, error_union, payload));
+}
+
+fn analyzeInstAnyframeType(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+    const return_type = try resolveType(mod, scope, inst.positionals.operand);
+
+    return mod.constType(scope, inst.base.src, try mod.anyframeType(scope, return_type));
+}
+
+fn analyzeInstErrorSet(mod: *Module, scope: *Scope, inst: *zir.Inst.ErrorSet) InnerError!*Inst {
+    // The declarations arena will store the hashmap.
+    var new_decl_arena = std.heap.ArenaAllocator.init(mod.gpa);
+    errdefer new_decl_arena.deinit();
+
+    const payload = try scope.arena().create(Value.Payload.ErrorSet);
+    payload.* = .{
+        .fields = .{},
+        .decl = undefined, // populated below
+    };
+    try payload.fields.ensureCapacity(&new_decl_arena.allocator, inst.positionals.fields.len);
+
+    for (inst.positionals.fields) |field_name| {
+        const entry = try mod.getErrorValue(field_name);
+        if (payload.fields.fetchPutAssumeCapacity(entry.key, entry.value)) |prev| {
+            return mod.fail(scope, inst.base.src, "duplicate error: '{}'", .{field_name});
+        }
+    }
+    // TODO create name in format "error:line:column"
+    const new_decl = try mod.createAnonymousDecl(scope, &new_decl_arena, .{
+        .ty = Type.initTag(.type),
+        .val = Value.initPayload(&payload.base),
+    });
+    payload.decl = new_decl;
+    return mod.analyzeDeclRef(scope, inst.base.src, new_decl);
+}
+
+fn analyzeInstMergeErrorSets(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
+    return mod.fail(scope, inst.base.src, "TODO implement merge_error_sets", .{});
+}
+
+fn analyzeInstEnumLiteral(mod: *Module, scope: *Scope, inst: *zir.Inst.EnumLiteral) InnerError!*Inst {
+    const payload = try scope.arena().create(Value.Payload.Bytes);
+    payload.* = .{
+        .base = .{ .tag = .enum_literal },
+        .data = try scope.arena().dupe(u8, inst.positionals.name),
+    };
+    return mod.constInst(scope, inst.base.src, .{
+        .ty = Type.initTag(.enum_literal),
+        .val = Value.initPayload(&payload.base),
+    });
 }
 
 fn analyzeInstUnwrapOptional(mod: *Module, scope: *Scope, unwrap: *zir.Inst.UnOp, safety_check: bool) InnerError!*Inst {
@@ -704,11 +790,8 @@ fn analyzeInstUnwrapOptional(mod: *Module, scope: *Scope, unwrap: *zir.Inst.UnOp
         return mod.fail(scope, unwrap.base.src, "expected optional type, found {}", .{operand.ty.elemType()});
     }
 
-    const child_type = operand.ty.elemType().elemType();
-    const child_pointer = if (operand.ty.isConstPtr())
-        try mod.singleConstPtrType(scope, unwrap.base.src, child_type)
-    else
-        try mod.singleMutPtrType(scope, unwrap.base.src, child_type);
+    const child_type = try operand.ty.elemType().optionalChildAlloc(scope.arena());
+    const child_pointer = try mod.simplePtrType(scope, unwrap.base.src, child_type, operand.ty.isConstPtr(), .One);
 
     if (operand.value()) |val| {
         if (val.isNull()) {
@@ -726,6 +809,14 @@ fn analyzeInstUnwrapOptional(mod: *Module, scope: *Scope, unwrap: *zir.Inst.UnOp
         try mod.addSafetyCheck(b, is_non_null, .unwrap_null);
     }
     return mod.addUnOp(b, unwrap.base.src, child_pointer, .unwrap_optional, operand);
+}
+
+fn analyzeInstUnwrapErr(mod: *Module, scope: *Scope, unwrap: *zir.Inst.UnOp, safety_check: bool) InnerError!*Inst {
+    return mod.fail(scope, unwrap.base.src, "TODO implement analyzeInstUnwrapErr", .{});
+}
+
+fn analyzeInstEnsureErrPayloadVoid(mod: *Module, scope: *Scope, unwrap: *zir.Inst.UnOp) InnerError!*Inst {
+    return mod.fail(scope, unwrap.base.src, "TODO implement analyzeInstEnsureErrPayloadVoid", .{});
 }
 
 fn analyzeInstFnType(mod: *Module, scope: *Scope, fntype: *zir.Inst.FnType) InnerError!*Inst {
@@ -753,7 +844,12 @@ fn analyzeInstFnType(mod: *Module, scope: *Scope, fntype: *zir.Inst.FnType) Inne
     const arena = scope.arena();
     const param_types = try arena.alloc(Type, fntype.positionals.param_types.len);
     for (fntype.positionals.param_types) |param_type, i| {
-        param_types[i] = try resolveType(mod, scope, param_type);
+        const resolved = try resolveType(mod, scope, param_type);
+        // TODO skip for comptime params
+        if (!resolved.isValidVarType(false)) {
+            return mod.fail(scope, param_type.src, "parameter of type '{}' must be declared comptime", .{resolved});
+        }
+        param_types[i] = resolved;
     }
 
     const payload = try arena.create(Type.Payload.Function);
@@ -816,8 +912,72 @@ fn analyzeInstFieldPtr(mod: *Module, scope: *Scope, fieldptr: *zir.Inst.FieldPtr
                 );
             }
         },
-        else => return mod.fail(scope, fieldptr.base.src, "type '{}' does not support field access", .{elem_ty}),
+        .Pointer => {
+            const ptr_child = elem_ty.elemType();
+            switch (ptr_child.zigTypeTag()) {
+                .Array => {
+                    if (mem.eql(u8, field_name, "len")) {
+                        const len_payload = try scope.arena().create(Value.Payload.Int_u64);
+                        len_payload.* = .{ .int = ptr_child.arrayLen() };
+
+                        const ref_payload = try scope.arena().create(Value.Payload.RefVal);
+                        ref_payload.* = .{ .val = Value.initPayload(&len_payload.base) };
+
+                        return mod.constInst(scope, fieldptr.base.src, .{
+                            .ty = Type.initTag(.single_const_pointer_to_comptime_int),
+                            .val = Value.initPayload(&ref_payload.base),
+                        });
+                    } else {
+                        return mod.fail(
+                            scope,
+                            fieldptr.positionals.field_name.src,
+                            "no member named '{}' in '{}'",
+                            .{ field_name, elem_ty },
+                        );
+                    }
+                },
+                else => {},
+            }
+        },
+        .Type => {
+            _ = try mod.resolveConstValue(scope, object_ptr);
+            const result = try mod.analyzeDeref(scope, fieldptr.base.src, object_ptr, object_ptr.src);
+            const val = result.value().?;
+            const child_type = try val.toType(scope.arena());
+            switch (child_type.zigTypeTag()) {
+                .ErrorSet => {
+                    // TODO resolve inferred error sets
+                    const entry = if (val.cast(Value.Payload.ErrorSet)) |payload|
+                        (payload.fields.getEntry(field_name) orelse
+                            return mod.fail(scope, fieldptr.base.src, "no error named '{}' in '{}'", .{ field_name, child_type })).*
+                    else try mod.getErrorValue(field_name);
+
+                    const error_payload = try scope.arena().create(Value.Payload.Error);
+                    error_payload.* = .{
+                        .name = entry.key,
+                        .value = entry.value,
+                    };
+
+                    const ref_payload = try scope.arena().create(Value.Payload.RefVal);
+                    ref_payload.* = .{ .val = Value.initPayload(&error_payload.base) };
+
+                    const result_type = if (child_type.tag() == .anyerror) blk: {
+                        const result_payload = try scope.arena().create(Type.Payload.ErrorSetSingle);
+                        result_payload.* = .{ .name = entry.key };
+                        break :blk Type.initPayload(&result_payload.base);
+                    } else child_type;
+
+                    return mod.constInst(scope, fieldptr.base.src, .{
+                        .ty = try mod.simplePtrType(scope, fieldptr.base.src, result_type, false, .One),
+                        .val = Value.initPayload(&ref_payload.base),
+                    });
+                },
+                else => return mod.fail(scope, fieldptr.base.src, "type '{}' does not support field access", .{child_type}),
+            }
+        },
+        else => {},
     }
+    return mod.fail(scope, fieldptr.base.src, "type '{}' does not support field access", .{elem_ty});
 }
 
 fn analyzeInstIntCast(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
@@ -912,8 +1072,11 @@ fn analyzeInstElemPtr(mod: *Module, scope: *Scope, inst: *zir.Inst.ElemPtr) Inne
                 // required a larger index.
                 const elem_ptr = try array_ptr_val.elemPtr(scope.arena(), @intCast(usize, index_u64));
 
-                const type_payload = try scope.arena().create(Type.Payload.SingleConstPointer);
-                type_payload.* = .{ .pointee_type = array_ptr.ty.elemType().elemType() };
+                const type_payload = try scope.arena().create(Type.Payload.PointerSimple);
+                type_payload.* = .{
+                    .base = .{ .tag = .single_const_pointer },
+                    .pointee_type = array_ptr.ty.elemType().elemType(),
+                };
 
                 return mod.constInst(scope, inst.base.src, .{
                     .ty = Type.initPayload(&type_payload.base),
@@ -936,6 +1099,10 @@ fn analyzeInstShr(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError
 
 fn analyzeInstBitwise(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
     return mod.fail(scope, inst.base.src, "TODO implement analyzeInstBitwise", .{});
+}
+
+fn analyzeInstBitNot(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+    return mod.fail(scope, inst.base.src, "TODO implement analyzeInstBitNot", .{});
 }
 
 fn analyzeInstArrayCat(mod: *Module, scope: *Scope, inst: *zir.Inst.BinOp) InnerError!*Inst {
@@ -1165,6 +1332,10 @@ fn analyzeInstIsNonNull(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp, inver
     return mod.analyzeIsNull(scope, inst.base.src, operand, invert_logic);
 }
 
+fn analyzeInstIsErr(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp, invert_logic: bool) InnerError!*Inst {
+    return mod.fail(scope, inst.base.src, "TODO implement analyzeInstIsErr", .{});
+}
+
 fn analyzeInstCondBr(mod: *Module, scope: *Scope, inst: *zir.Inst.CondBr) InnerError!*Inst {
     const uncasted_cond = try resolveInst(mod, scope, inst.positionals.condition);
     const cond = try mod.coerce(scope, Type.initTag(.bool), uncasted_cond);
@@ -1276,14 +1447,49 @@ fn analyzeDeclVal(mod: *Module, scope: *Scope, inst: *zir.Inst.DeclVal) InnerErr
     return decl;
 }
 
-fn analyzeInstSingleConstPtrType(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
+fn analyzeInstSimplePtrType(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp, mutable: bool, size: std.builtin.TypeInfo.Pointer.Size) InnerError!*Inst {
     const elem_type = try resolveType(mod, scope, inst.positionals.operand);
-    const ty = try mod.singleConstPtrType(scope, inst.base.src, elem_type);
+    const ty = try mod.simplePtrType(scope, inst.base.src, elem_type, mutable, size);
     return mod.constType(scope, inst.base.src, ty);
 }
 
-fn analyzeInstSingleMutPtrType(mod: *Module, scope: *Scope, inst: *zir.Inst.UnOp) InnerError!*Inst {
-    const elem_type = try resolveType(mod, scope, inst.positionals.operand);
-    const ty = try mod.singleMutPtrType(scope, inst.base.src, elem_type);
+fn analyzeInstPtrType(mod: *Module, scope: *Scope, inst: *zir.Inst.PtrType) InnerError!*Inst {
+    // TODO lazy values
+    const @"align" = if (inst.kw_args.@"align") |some|
+        @truncate(u32, try resolveInt(mod, scope, some, Type.initTag(.u32)))
+    else
+        0;
+    const bit_offset = if (inst.kw_args.align_bit_start) |some|
+        @truncate(u16, try resolveInt(mod, scope, some, Type.initTag(.u16)))
+    else
+        0;
+    const host_size = if (inst.kw_args.align_bit_end) |some|
+        @truncate(u16, try resolveInt(mod, scope, some, Type.initTag(.u16)))
+    else
+        0;
+
+    if (host_size != 0 and bit_offset >= host_size * 8)
+        return mod.fail(scope, inst.base.src, "bit offset starts after end of host integer", .{});
+
+    const sentinel = if (inst.kw_args.sentinel) |some|
+        (try resolveInstConst(mod, scope, some)).val
+    else
+        null;
+
+    const elem_type = try resolveType(mod, scope, inst.positionals.child_type);
+
+    const ty = try mod.ptrType(
+        scope,
+        inst.base.src,
+        elem_type,
+        sentinel,
+        @"align",
+        bit_offset,
+        host_size,
+        inst.kw_args.mutable,
+        inst.kw_args.@"allowzero",
+        inst.kw_args.@"volatile",
+        inst.kw_args.size,
+    );
     return mod.constType(scope, inst.base.src, ty);
 }

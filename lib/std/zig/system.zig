@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2020 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
 const std = @import("../std.zig");
 const elf = std.elf;
 const mem = std.mem;
@@ -244,7 +249,7 @@ pub const NativeTargetInfo = struct {
                         // values
                         const known_build_numbers = [_]u32{
                             10240, 10586, 14393, 15063, 16299, 17134, 17763,
-                            18362, 18363,
+                            18362, 19041,
                         };
                         var last_idx: usize = 0;
                         for (known_build_numbers) |build, i| {
@@ -857,6 +862,7 @@ pub const NativeTargetInfo = struct {
             const len = file.pread(buf[i .. buf.len - i], offset + i) catch |err| switch (err) {
                 error.OperationAborted => unreachable, // Windows-only
                 error.WouldBlock => unreachable, // Did not request blocking mode
+                error.NotOpenForReading => unreachable,
                 error.SystemResources => return error.SystemResources,
                 error.IsDir => return error.UnableToReadElfFile,
                 error.BrokenPipe => return error.UnableToReadElfFile,

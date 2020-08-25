@@ -2,6 +2,47 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.add("@Type with undefined",
+        \\comptime {
+        \\    _ = @Type(.{ .Array = .{ .len = 0, .child = u8, .sentinel = undefined } });
+        \\}
+        \\comptime {
+        \\    _ = @Type(.{
+        \\        .Struct = .{
+        \\            .fields = undefined,
+        \\            .decls = undefined,
+        \\            .is_tuple = false,
+        \\            .layout = .Auto,
+        \\        },
+        \\    });
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:16: error: use of undefined value here causes undefined behavior",
+        "tmp.zig:5:16: error: use of undefined value here causes undefined behavior",
+    });
+
+    cases.add("struct with declarations unavailable for @Type",
+        \\export fn entry() void {
+        \\    _ = @Type(@typeInfo(struct { const foo = 1; }));
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:15: error: TypeInfo.Struct.decls must be empty for @Type",
+    });
+
+    cases.add("enum with declarations unavailable for @Type",
+        \\export fn entry() void {
+        \\    _ = @Type(@typeInfo(enum { foo, const bar = 1; }));
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:2:15: error: TypeInfo.Enum.decls must be empty for @Type",
+    });
+
+    cases.addTest("reject extern variables with initializers",
+        \\extern var foo: int = 2;
+    , &[_][]const u8{
+        "tmp.zig:1:1: error: extern variables have no initializers",
+    });
+
     cases.addTest("duplicate/unused labels",
         \\comptime {
         \\    blk: { blk: while (false) {} }
@@ -51,6 +92,46 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:17:23: error: cannot adjust alignment of zero sized type 'fn(u32) anytype'",
     });
 
+    cases.addTest("invalid non-exhaustive enum to union",
+        \\const E = enum(u8) {
+        \\    a,
+        \\    b,
+        \\    _,
+        \\};
+        \\const U = union(E) {
+        \\    a,
+        \\    b,
+        \\};
+        \\export fn foo() void {
+        \\    var e = @intToEnum(E, 15);
+        \\    var u: U = e;
+        \\}
+        \\export fn bar() void {
+        \\    const e = @intToEnum(E, 15);
+        \\    var u: U = e;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:12:16: error: runtime cast to union 'U' from non-exhustive enum",
+        "tmp.zig:16:16: error: no tag by value 15",
+    });
+
+    cases.addTest("switching with exhaustive enum has '_' prong ",
+        \\const E = enum{
+        \\    a,
+        \\    b,
+        \\};
+        \\pub export fn entry() void {
+        \\    var e: E = .b;
+        \\    switch (e) {
+        \\        .a => {},
+        \\        .b => {},
+        \\        _ => {},
+        \\    }
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:7:5: error: switch on exhaustive enum has `_` prong",
+    });
+
     cases.addTest("invalid pointer with @Type",
         \\export fn entry() void {
         \\    _ = @Type(.{ .Pointer = .{
@@ -77,8 +158,12 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn baz() void {
         \\    try bar();
         \\}
-        \\export fn quux() u32 {
+        \\export fn qux() u32 {
         \\    return bar();
+        \\}
+        \\export fn quux() u32 {
+        \\    var buf: u32 = 0;
+        \\    buf = bar();
         \\}
     , &[_][]const u8{
         "tmp.zig:2:17: error: expected type 'u32', found 'error{Ohno}'",
@@ -86,7 +171,9 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:8:5: error: expected type 'void', found '@TypeOf(bar).ReturnType.ErrorSet'",
         "tmp.zig:7:17: note: function cannot return an error",
         "tmp.zig:11:15: error: expected type 'u32', found '@TypeOf(bar).ReturnType.ErrorSet!u32'",
-        "tmp.zig:10:18: note: function cannot return an error",
+        "tmp.zig:10:17: note: function cannot return an error",
+        "tmp.zig:15:14: error: expected type 'u32', found '@TypeOf(bar).ReturnType.ErrorSet!u32'",
+        "tmp.zig:14:5: note: cannot store an error in type 'u32'",
     });
 
     cases.addTest("int/float conversion to comptime_int/float",
@@ -552,8 +639,8 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    _ = C;
         \\}
     , &[_][]const u8{
-        "tmp.zig:4:5: error: non-exhaustive enum must specify size",
-        "error: value assigned to '_' field of non-exhaustive enum",
+        "tmp.zig:4:5: error: value assigned to '_' field of non-exhaustive enum",
+        "error: non-exhaustive enum must specify size",
         "error: non-exhaustive enum specifies every value",
         "error: '_' field of non-exhaustive enum must be last",
     });
@@ -563,6 +650,10 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    a,
         \\    b,
         \\    _,
+        \\};
+        \\const U = union(E) {
+        \\    a: i32,
+        \\    b: u32,
         \\};
         \\pub export fn entry() void {
         \\    var e: E = .b;
@@ -574,10 +665,17 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\        .a => {},
         \\        .b => {},
         \\    }
+        \\    var u = U{.a = 2};
+        \\    switch (u) { // error: `_` prong not allowed when switching on tagged union
+        \\        .a => {},
+        \\        .b => {},
+        \\        _ => {},
+        \\    }
         \\}
     , &[_][]const u8{
-        "tmp.zig:8:5: error: enumeration value 'E.b' not handled in switch",
-        "tmp.zig:12:5: error: switch on non-exhaustive enum must include `else` or `_` prong",
+        "tmp.zig:12:5: error: enumeration value 'E.b' not handled in switch",
+        "tmp.zig:16:5: error: switch on non-exhaustive enum must include `else` or `_` prong",
+        "tmp.zig:21:5: error: `_` prong not allowed when switching on tagged union",
     });
 
     cases.add("switch expression - unreachable else prong (bool)",
@@ -705,7 +803,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    for (arr) |bits| _ = @popCount(bits);
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:26: error: expected 2 arguments, found 1",
+        "tmp.zig:3:26: error: expected 2 argument(s), found 1",
     });
 
     cases.addTest("@call rejects non comptime-known fn - always_inline",
@@ -1343,15 +1441,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     , &[_][]const u8{
         "tmp.zig:3:36: error: expected type 'std.builtin.TypeInfo', found 'std.builtin.Int'",
     });
-
-    cases.add("Struct unavailable for @Type",
-        \\export fn entry() void {
-        \\    _ = @Type(@typeInfo(struct { }));
-        \\}
-    , &[_][]const u8{
-        "tmp.zig:2:15: error: @Type not available for 'TypeInfo.Struct'",
-    });
-
     cases.add("wrong type for argument tuple to @asyncCall",
         \\export fn entry1() void {
         \\    var frame: @Frame(foo) = undefined;
@@ -4103,7 +4192,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
         \\fn b(a: i32, b: i32, c: i32) void { }
     , &[_][]const u8{
-        "tmp.zig:2:6: error: expected 3 arguments, found 1",
+        "tmp.zig:2:6: error: expected 3 argument(s), found 1",
     });
 
     cases.add("invalid type",
@@ -4716,7 +4805,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\
         \\export fn entry() usize { return @sizeOf(@TypeOf(f)); }
     , &[_][]const u8{
-        "tmp.zig:20:34: error: expected 1 arguments, found 0",
+        "tmp.zig:20:34: error: expected 1 argument(s), found 0",
     });
 
     cases.add("missing function name",
@@ -5498,7 +5587,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
         \\export fn entry() usize { return @sizeOf(@TypeOf(f)); }
     , &[_][]const u8{
-        "tmp.zig:6:15: error: expected 2 arguments, found 3",
+        "tmp.zig:6:15: error: expected 2 argument(s), found 3",
     });
 
     cases.add("assign through constant pointer",
@@ -6663,12 +6752,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
     , &[_][]const u8{
         "tmp.zig:9:13: error: type '*MyType' does not support field access",
-    });
-
-    cases.add("carriage return special case", "fn test() bool {\r\n" ++
-        "   true\r\n" ++
-        "}\r\n", &[_][]const u8{
-        "tmp.zig:1:17: error: invalid carriage return, only '\\n' line endings are supported",
     });
 
     cases.add("invalid legacy unicode escape",

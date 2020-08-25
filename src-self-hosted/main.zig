@@ -30,6 +30,7 @@ const usage =
     \\  build-obj  [source]      Create object from source or assembly
     \\  fmt        [source]      Parse file and render in canonical zig format
     \\  targets                  List available compilation targets
+    \\  env                      Print lib path, std path, compiler id and version
     \\  version                  Print version number and exit
     \\  zen                      Print zen of zig and exit
     \\
@@ -95,8 +96,9 @@ pub fn main() !void {
         const stdout = io.getStdOut().outStream();
         return @import("print_targets.zig").cmdTargets(arena, cmd_args, stdout, info.target);
     } else if (mem.eql(u8, cmd, "version")) {
-        std.io.getStdOut().writeAll(build_options.version ++ "\n") catch process.exit(1);
-        return;
+        try std.io.getStdOut().writeAll(build_options.version ++ "\n");
+    } else if (mem.eql(u8, cmd, "env")) {
+        try @import("print_env.zig").cmdEnv(arena, cmd_args, io.getStdOut().outStream());
     } else if (mem.eql(u8, cmd, "zen")) {
         try io.getStdOut().writeAll(info_zen);
     } else if (mem.eql(u8, cmd, "help")) {
@@ -150,6 +152,7 @@ const usage_build_generic =
     \\  -ofmt=[mode]              Override target object format
     \\    elf                     Executable and Linking Format
     \\    c                       Compile to C source code
+    \\    wasm                    WebAssembly
     \\    coff   (planned)        Common Object File Format (Windows)
     \\    pe     (planned)        Portable Executable (Windows)
     \\    macho  (planned)        macOS relocatables
@@ -557,7 +560,7 @@ fn updateModule(gpa: *Allocator, module: *Module, zir_out_path: ?[]const u8) !vo
             });
         }
     } else {
-        std.log.info(.compiler, "Update completed in {} ms\n", .{update_nanos / std.time.ns_per_ms});
+        std.log.scoped(.compiler).info("Update completed in {} ms\n", .{update_nanos / std.time.ns_per_ms});
     }
 
     if (zir_out_path) |zop| {
@@ -739,6 +742,7 @@ const FmtError = error{
     LinkQuotaExceeded,
     FileBusy,
     EndOfStream,
+    NotOpenForWriting,
 } || fs.File.OpenError;
 
 fn fmtPath(fmt: *Fmt, file_path: []const u8, check_mode: bool, dir: fs.Dir, sub_path: []const u8) FmtError!void {
@@ -804,6 +808,7 @@ fn fmtPathFile(
     const source_code = source_file.readAllAlloc(fmt.gpa, stat.size, max_src_size) catch |err| switch (err) {
         error.ConnectionResetByPeer => unreachable,
         error.ConnectionTimedOut => unreachable,
+        error.NotOpenForReading => unreachable,
         else => |e| return e,
     };
     source_file.close();

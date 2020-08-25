@@ -60,6 +60,8 @@ pub const Value = extern union {
         fn_ccc_void_no_args_type,
         single_const_pointer_to_comptime_int_type,
         const_slice_u8_type,
+        enum_literal_type,
+        anyframe_type,
 
         undef,
         zero,
@@ -78,6 +80,7 @@ pub const Value = extern union {
         int_big_positive,
         int_big_negative,
         function,
+        variable,
         ref_val,
         decl_ref,
         elem_ptr,
@@ -87,6 +90,9 @@ pub const Value = extern union {
         float_32,
         float_64,
         float_128,
+        enum_literal,
+        error_set,
+        @"error",
 
         pub const last_no_payload_tag = Tag.bool_false;
         pub const no_payload_count = @enumToInt(last_no_payload_tag) + 1;
@@ -164,6 +170,8 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .undef,
             .zero,
             .void_value,
@@ -193,6 +201,7 @@ pub const Value = extern union {
                 @panic("TODO implement copying of big ints");
             },
             .function => return self.copyPayloadShallow(allocator, Payload.Function),
+            .variable => return self.copyPayloadShallow(allocator, Payload.Variable),
             .ref_val => {
                 const payload = @fieldParentPtr(Payload.RefVal, "base", self.ptr_otherwise);
                 const new_payload = try allocator.create(Payload.RefVal);
@@ -227,6 +236,19 @@ pub const Value = extern union {
             .float_32 => return self.copyPayloadShallow(allocator, Payload.Float_32),
             .float_64 => return self.copyPayloadShallow(allocator, Payload.Float_64),
             .float_128 => return self.copyPayloadShallow(allocator, Payload.Float_128),
+            .enum_literal => {
+                const payload = @fieldParentPtr(Payload.Bytes, "base", self.ptr_otherwise);
+                const new_payload = try allocator.create(Payload.Bytes);
+                new_payload.* = .{
+                    .base = payload.base,
+                    .data = try allocator.dupe(u8, payload.data),
+                };
+                return Value{ .ptr_otherwise = &new_payload.base };
+            },
+            .@"error" => return self.copyPayloadShallow(allocator, Payload.Error),
+
+            // memory is managed by the declaration
+            .error_set => return self.copyPayloadShallow(allocator, Payload.ErrorSet),
         }
     }
 
@@ -285,6 +307,8 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type => return out_stream.writeAll("fn() callconv(.C) void"),
             .single_const_pointer_to_comptime_int_type => return out_stream.writeAll("*const comptime_int"),
             .const_slice_u8_type => return out_stream.writeAll("[]const u8"),
+            .enum_literal_type => return out_stream.writeAll("@TypeOf(.EnumLiteral)"),
+            .anyframe_type => return out_stream.writeAll("anyframe"),
 
             .null_value => return out_stream.writeAll("null"),
             .undef => return out_stream.writeAll("undefined"),
@@ -306,6 +330,7 @@ pub const Value = extern union {
             .int_big_positive => return out_stream.print("{}", .{val.cast(Payload.IntBigPositive).?.asBigInt()}),
             .int_big_negative => return out_stream.print("{}", .{val.cast(Payload.IntBigNegative).?.asBigInt()}),
             .function => return out_stream.writeAll("(function)"),
+            .variable => return out_stream.writeAll("(variable)"),
             .ref_val => {
                 const ref_val = val.cast(Payload.RefVal).?;
                 try out_stream.writeAll("&const ");
@@ -318,7 +343,7 @@ pub const Value = extern union {
                 val = elem_ptr.array_ptr;
             },
             .empty_array => return out_stream.writeAll(".{}"),
-            .bytes => return std.zig.renderStringLiteral(self.cast(Payload.Bytes).?.data, out_stream),
+            .enum_literal, .bytes => return std.zig.renderStringLiteral(self.cast(Payload.Bytes).?.data, out_stream),
             .repeated => {
                 try out_stream.writeAll("(repeated) ");
                 val = val.cast(Payload.Repeated).?.val;
@@ -327,6 +352,15 @@ pub const Value = extern union {
             .float_32 => return out_stream.print("{}", .{val.cast(Payload.Float_32).?.val}),
             .float_64 => return out_stream.print("{}", .{val.cast(Payload.Float_64).?.val}),
             .float_128 => return out_stream.print("{}", .{val.cast(Payload.Float_128).?.val}),
+            .error_set => {
+                const error_set = val.cast(Payload.ErrorSet).?;
+                try out_stream.writeAll("error{");
+                for (error_set.fields.items()) |entry| {
+                    try out_stream.print("{},", .{entry.value});
+                }
+                return out_stream.writeAll("}");
+            },
+            .@"error" => return out_stream.print("error.{}", .{val.cast(Payload.Error).?.name}),
         };
     }
 
@@ -347,11 +381,9 @@ pub const Value = extern union {
     }
 
     /// Asserts that the value is representable as a type.
-    pub fn toType(self: Value) Type {
+    pub fn toType(self: Value, allocator: *Allocator) !Type {
         return switch (self.tag()) {
             .ty => self.cast(Payload.Ty).?.ty,
-            .int_type => @panic("TODO int type to type"),
-
             .u8_type => Type.initTag(.u8),
             .i8_type => Type.initTag(.i8),
             .u16_type => Type.initTag(.u16),
@@ -391,6 +423,27 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type => Type.initTag(.fn_ccc_void_no_args),
             .single_const_pointer_to_comptime_int_type => Type.initTag(.single_const_pointer_to_comptime_int),
             .const_slice_u8_type => Type.initTag(.const_slice_u8),
+            .enum_literal_type => Type.initTag(.enum_literal),
+            .anyframe_type => Type.initTag(.@"anyframe"),
+
+            .int_type => {
+                const payload = self.cast(Payload.IntType).?;
+                if (payload.signed) {
+                    const new = try allocator.create(Type.Payload.IntSigned);
+                    new.* = .{ .bits = payload.bits };
+                    return Type.initPayload(&new.base);
+                } else {
+                    const new = try allocator.create(Type.Payload.IntUnsigned);
+                    new.* = .{ .bits = payload.bits };
+                    return Type.initPayload(&new.base);
+                }
+            },
+            .error_set => {
+                const payload = self.cast(Payload.ErrorSet).?;
+                const new = try allocator.create(Type.Payload.ErrorSet);
+                new.* = .{ .decl = payload.decl };
+                return Type.initPayload(&new.base);
+            },
 
             .undef,
             .zero,
@@ -405,6 +458,7 @@ pub const Value = extern union {
             .int_big_positive,
             .int_big_negative,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -414,6 +468,8 @@ pub const Value = extern union {
             .float_32,
             .float_64,
             .float_128,
+            .enum_literal,
+            .@"error",
             => unreachable,
         };
     }
@@ -462,8 +518,11 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -476,6 +535,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .undef => unreachable,
@@ -537,8 +599,11 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -551,6 +616,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .undef => unreachable,
@@ -562,7 +630,7 @@ pub const Value = extern union {
             .bool_true => return 1,
 
             .int_u64 => return self.cast(Payload.Int_u64).?.int,
-            .int_i64 => return @intCast(u64, self.cast(Payload.Int_u64).?.int),
+            .int_i64 => return @intCast(u64, self.cast(Payload.Int_i64).?.int),
             .int_big_positive => return self.cast(Payload.IntBigPositive).?.asBigInt().to(u64) catch unreachable,
             .int_big_negative => return self.cast(Payload.IntBigNegative).?.asBigInt().to(u64) catch unreachable,
         }
@@ -612,8 +680,11 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -626,6 +697,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .undef => unreachable,
@@ -636,7 +710,7 @@ pub const Value = extern union {
 
             .bool_true => return 1,
 
-            .int_u64 => return @intCast(i64, self.cast(Payload.Int_i64).?.int),
+            .int_u64 => return @intCast(i64, self.cast(Payload.Int_u64).?.int),
             .int_i64 => return self.cast(Payload.Int_i64).?.int,
             .int_big_positive => return self.cast(Payload.IntBigPositive).?.asBigInt().to(i64) catch unreachable,
             .int_big_negative => return self.cast(Payload.IntBigNegative).?.asBigInt().to(i64) catch unreachable,
@@ -713,8 +787,11 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -728,6 +805,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .zero,
@@ -793,8 +873,11 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -807,6 +890,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .zero,
@@ -953,10 +1039,13 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .bool_true,
             .bool_false,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -970,6 +1059,9 @@ pub const Value = extern union {
             .empty_array,
             .void_value,
             .unreachable_value,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .zero => false,
@@ -1025,8 +1117,11 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .null_value,
             .function,
+            .variable,
             .ref_val,
             .decl_ref,
             .elem_ptr,
@@ -1036,6 +1131,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .zero,
@@ -1102,6 +1200,11 @@ pub const Value = extern union {
     }
 
     pub fn eql(a: Value, b: Value) bool {
+        if (a.tag() == b.tag() and a.tag() == .enum_literal) {
+            const a_name = @fieldParentPtr(Payload.Bytes, "base", a.ptr_otherwise).data;
+            const b_name = @fieldParentPtr(Payload.Bytes, "base", b.ptr_otherwise).data;
+            return std.mem.eql(u8, a_name, b_name);
+        }
         // TODO non numerical comparisons
         return compare(a, .eq, b);
     }
@@ -1151,11 +1254,14 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .zero,
             .bool_true,
             .bool_false,
             .null_value,
             .function,
+            .variable,
             .int_u64,
             .int_i64,
             .int_big_positive,
@@ -1170,6 +1276,9 @@ pub const Value = extern union {
             .void_value,
             .unreachable_value,
             .empty_array,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .ref_val => self.cast(Payload.RefVal).?.val,
@@ -1227,11 +1336,14 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .zero,
             .bool_true,
             .bool_false,
             .null_value,
             .function,
+            .variable,
             .int_u64,
             .int_i64,
             .int_big_positive,
@@ -1246,6 +1358,9 @@ pub const Value = extern union {
             .float_128,
             .void_value,
             .unreachable_value,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => unreachable,
 
             .empty_array => unreachable, // out of bounds array index
@@ -1320,11 +1435,14 @@ pub const Value = extern union {
             .fn_ccc_void_no_args_type,
             .single_const_pointer_to_comptime_int_type,
             .const_slice_u8_type,
+            .enum_literal_type,
+            .anyframe_type,
             .zero,
             .empty_array,
             .bool_true,
             .bool_false,
             .function,
+            .variable,
             .int_u64,
             .int_i64,
             .int_big_positive,
@@ -1339,6 +1457,9 @@ pub const Value = extern union {
             .float_64,
             .float_128,
             .void_value,
+            .enum_literal,
+            .error_set,
+            .@"error",
             => false,
 
             .undef => unreachable,
@@ -1396,6 +1517,11 @@ pub const Value = extern union {
         pub const Function = struct {
             base: Payload = Payload{ .tag = .function },
             func: *Module.Fn,
+        };
+
+        pub const Variable = struct {
+            base: Payload = Payload{ .tag = .variable },
+            variable: *Module.Var,
         };
 
         pub const ArraySentinel0_u8_Type = struct {
@@ -1462,6 +1588,24 @@ pub const Value = extern union {
         pub const Float_128 = struct {
             base: Payload = .{ .tag = .float_128 },
             val: f128,
+        };
+
+        pub const ErrorSet = struct {
+            base: Payload = .{ .tag = .error_set },
+
+            // TODO revisit this when we have the concept of the error tag type
+            fields: std.StringHashMapUnmanaged(u16),
+            decl: *Module.Decl,
+        };
+
+        pub const Error = struct {
+            base: Payload = .{ .tag = .@"error" },
+
+            // TODO revisit this when we have the concept of the error tag type
+            /// `name` is owned by `Module` and will be valid for the entire
+            /// duration of the compilation.
+            name: []const u8,
+            value: u16,
         };
     };
 
