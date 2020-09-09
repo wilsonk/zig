@@ -19,23 +19,9 @@ pub const Error = error{OutOfMemory};
 const TypeError = Error || error{UnsupportedType};
 const TransError = TypeError || error{UnsupportedTranslation};
 
-const DeclTable = std.HashMap(usize, []const u8, addrHash, addrEql, false);
+const DeclTable = std.AutoArrayHashMap(usize, []const u8);
 
-fn addrHash(x: usize) u32 {
-    switch (@typeInfo(usize).Int.bits) {
-        32 => return x,
-        // pointers are usually aligned so we ignore the bits that are probably all 0 anyway
-        // usually the larger bits of addr space are unused so we just chop em off
-        64 => return @truncate(u32, x >> 4),
-        else => @compileError("unreachable"),
-    }
-}
-
-fn addrEql(a: usize, b: usize) bool {
-    return a == b;
-}
-
-const SymbolTable = std.StringHashMap(*ast.Node);
+const SymbolTable = std.StringArrayHashMap(*ast.Node);
 const AliasList = std.ArrayList(struct {
     alias: []const u8,
     name: []const u8,
@@ -168,7 +154,7 @@ const Scope = struct {
 
         fn localContains(scope: *Block, name: []const u8) bool {
             for (scope.variables.items) |p| {
-                if (mem.eql(u8, p.name, name))
+                if (mem.eql(u8, p.alias, name))
                     return true;
             }
             return false;
@@ -285,7 +271,7 @@ pub const Context = struct {
     /// a list of names that we found by visiting all the top level decls without
     /// translating them. The other maps are updated as we translate; this one is updated
     /// up front in a pre-processing step.
-    global_names: std.StringHashMap(void),
+    global_names: std.StringArrayHashMap(void),
 
     fn getMangle(c: *Context) u32 {
         c.mangle_count += 1;
@@ -380,7 +366,7 @@ pub fn translate(
         .alias_list = AliasList.init(gpa),
         .global_scope = try arena.allocator.create(Scope.Root),
         .clang_context = ZigClangASTUnit_getASTContext(ast_unit).?,
-        .global_names = std.StringHashMap(void).init(gpa),
+        .global_names = std.StringArrayHashMap(void).init(gpa),
         .token_ids = .{},
         .token_locs = .{},
         .errors = .{},
@@ -675,7 +661,7 @@ fn visitFnDecl(c: *Context, fn_decl: *const ZigClangFunctionDecl) Error!void {
     }
 
     const body_node = try block_scope.complete(rp.c);
-    proto_node.setTrailer("body_node", body_node);
+    proto_node.setBodyNode(body_node);
     return addTopLevelDecl(c, fn_name, &proto_node.base);
 }
 
@@ -4493,7 +4479,7 @@ fn transCreateNodeMacroFn(c: *Context, name: []const u8, ref: *ast.Node, proto_a
     const block_lbrace = try appendToken(c, .LBrace, "{");
 
     const return_kw = try appendToken(c, .Keyword_return, "return");
-    const unwrap_expr = try transCreateNodeUnwrapNull(c, ref.cast(ast.Node.VarDecl).?.getTrailer("init_node").?);
+    const unwrap_expr = try transCreateNodeUnwrapNull(c, ref.cast(ast.Node.VarDecl).?.getInitNode().?);
 
     const call_expr = try c.createCall(unwrap_expr, fn_params.items.len);
     const call_params = call_expr.params();
@@ -6361,7 +6347,7 @@ fn getContainer(c: *Context, node: *ast.Node) ?*ast.Node {
             const ident = node.castTag(.Identifier).?;
             if (c.global_scope.sym_table.get(tokenSlice(c, ident.token))) |value| {
                 if (value.cast(ast.Node.VarDecl)) |var_decl|
-                    return getContainer(c, var_decl.getTrailer("init_node").?);
+                    return getContainer(c, var_decl.getInitNode().?);
             }
         },
 
@@ -6390,7 +6376,7 @@ fn getContainerTypeOf(c: *Context, ref: *ast.Node) ?*ast.Node {
     if (ref.castTag(.Identifier)) |ident| {
         if (c.global_scope.sym_table.get(tokenSlice(c, ident.token))) |value| {
             if (value.cast(ast.Node.VarDecl)) |var_decl| {
-                if (var_decl.getTrailer("type_node")) |ty|
+                if (var_decl.getTypeNode()) |ty|
                     return getContainer(c, ty);
             }
         }
@@ -6412,7 +6398,7 @@ fn getContainerTypeOf(c: *Context, ref: *ast.Node) ?*ast.Node {
 }
 
 fn getFnProto(c: *Context, ref: *ast.Node) ?*ast.Node.FnProto {
-    const init = if (ref.cast(ast.Node.VarDecl)) |v| v.getTrailer("init_node").? else return null;
+    const init = if (ref.cast(ast.Node.VarDecl)) |v| v.getInitNode().? else return null;
     if (getContainerTypeOf(c, init)) |ty_node| {
         if (ty_node.castTag(.OptionalType)) |prefix| {
             if (prefix.rhs.cast(ast.Node.FnProto)) |fn_proto| {
@@ -6424,7 +6410,8 @@ fn getFnProto(c: *Context, ref: *ast.Node) ?*ast.Node.FnProto {
 }
 
 fn addMacros(c: *Context) !void {
-    for (c.global_scope.macro_table.items()) |kv| {
+    var it = c.global_scope.macro_table.iterator();
+    while (it.next()) |kv| {
         if (getFnProto(c, kv.value)) |proto_node| {
             // If a macro aliases a global variable which is a function pointer, we conclude that
             // the macro is intended to represent a function that assumes the function pointer

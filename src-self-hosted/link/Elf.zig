@@ -17,6 +17,7 @@ const Type = @import("../type.zig").Type;
 const link = @import("../link.zig");
 const File = link.File;
 const Elf = @This();
+const build_options = @import("build_options");
 
 const default_entry_addr = 0x8000000;
 
@@ -1348,6 +1349,7 @@ fn freeTextBlock(self: *Elf, text_block: *TextBlock) void {
     var already_have_free_list_node = false;
     {
         var i: usize = 0;
+        // TODO turn text_block_free_list into a hash map
         while (i < self.text_block_free_list.items.len) {
             if (self.text_block_free_list.items[i] == text_block) {
                 _ = self.text_block_free_list.swapRemove(i);
@@ -1359,10 +1361,18 @@ fn freeTextBlock(self: *Elf, text_block: *TextBlock) void {
             i += 1;
         }
     }
+    // TODO process free list for dbg info just like we do above for vaddrs
 
     if (self.last_text_block == text_block) {
         // TODO shrink the .text section size here
         self.last_text_block = text_block.prev;
+    }
+    if (self.dbg_info_decl_first == text_block) {
+        self.dbg_info_decl_first = text_block.dbg_info_next;
+    }
+    if (self.dbg_info_decl_last == text_block) {
+        // TODO shrink the .debug_info section size here
+        self.dbg_info_decl_last = text_block.dbg_info_prev;
     }
 
     if (text_block.prev) |prev| {
@@ -1381,6 +1391,20 @@ fn freeTextBlock(self: *Elf, text_block: *TextBlock) void {
         next.prev = text_block.prev;
     } else {
         text_block.next = null;
+    }
+
+    if (text_block.dbg_info_prev) |prev| {
+        prev.dbg_info_next = text_block.dbg_info_next;
+
+        // TODO the free list logic like we do for text blocks above
+    } else {
+        text_block.dbg_info_prev = null;
+    }
+
+    if (text_block.dbg_info_next) |next| {
+        next.dbg_info_prev = text_block.dbg_info_prev;
+    } else {
+        text_block.dbg_info_next = null;
     }
 }
 
@@ -1583,10 +1607,10 @@ pub fn freeDecl(self: *Elf, decl: *Module.Decl) void {
         next.prev = null;
     }
     if (self.dbg_line_fn_first == &decl.fn_link.elf) {
-        self.dbg_line_fn_first = null;
+        self.dbg_line_fn_first = decl.fn_link.elf.next;
     }
     if (self.dbg_line_fn_last == &decl.fn_link.elf) {
-        self.dbg_line_fn_last = null;
+        self.dbg_line_fn_last = decl.fn_link.elf.prev;
     }
 }
 
@@ -1605,7 +1629,8 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
 
     var dbg_info_type_relocs: File.DbgInfoTypeRelocsTable = .{};
     defer {
-        for (dbg_info_type_relocs.items()) |*entry| {
+        var it = dbg_info_type_relocs.iterator();
+        while (it.next()) |entry| {
             entry.value.relocs.deinit(self.base.allocator);
         }
         dbg_info_type_relocs.deinit(self.base.allocator);
@@ -1617,21 +1642,27 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
         else => false,
     };
     if (is_fn) {
-        //if (mem.eql(u8, mem.spanZ(decl.name), "add")) {
-        //    typed_value.val.cast(Value.Payload.Function).?.func.dump(module.*);
-        //}
+        const zir_dumps = if (std.builtin.is_test) &[0][]const u8{} else build_options.zir_dumps;
+        if (zir_dumps.len != 0) {
+            for (zir_dumps) |fn_name| {
+                if (mem.eql(u8, mem.spanZ(decl.name), fn_name)) {
+                    std.debug.print("\n{}\n", .{decl.name});
+                    typed_value.val.cast(Value.Payload.Function).?.func.dump(module.*);
+                }
+            }
+        }
 
         // For functions we need to add a prologue to the debug line program.
         try dbg_line_buffer.ensureCapacity(26);
 
         const line_off: u28 = blk: {
-            if (decl.scope.cast(Module.Scope.File)) |scope_file| {
-                const tree = scope_file.contents.tree;
+            if (decl.scope.cast(Module.Scope.Container)) |container_scope| {
+                const tree = container_scope.file_scope.contents.tree;
                 const file_ast_decls = tree.root_node.decls();
                 // TODO Look into improving the performance here by adding a token-index-to-line
                 // lookup table. Currently this involves scanning over the source code for newlines.
                 const fn_proto = file_ast_decls[decl.src_index].castTag(.FnProto).?;
-                const block = fn_proto.body().?.castTag(.Block).?;
+                const block = fn_proto.getBodyNode().?.castTag(.Block).?;
                 const line_delta = std.zig.lineDelta(tree.source, 0, tree.token_locs[block.lbrace].start);
                 break :blk @intCast(u28, line_delta);
             } else if (decl.scope.cast(Module.Scope.ZIRModule)) |zir_module| {
@@ -1704,7 +1735,13 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
     } else {
         // TODO implement .debug_info for global variables
     }
-    const res = try codegen.generateSymbol(&self.base, decl.src(), typed_value, &code_buffer, &dbg_line_buffer, &dbg_info_buffer, &dbg_info_type_relocs);
+    const res = try codegen.generateSymbol(&self.base, decl.src(), typed_value, &code_buffer, .{
+        .dwarf = .{
+            .dbg_line = &dbg_line_buffer,
+            .dbg_info = &dbg_info_buffer,
+            .dbg_info_type_relocs = &dbg_info_type_relocs,
+        },
+    });
     const code = switch (res) {
         .externally_managed => |x| x,
         .appended => code_buffer.items,
@@ -1887,7 +1924,8 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
     // Now we emit the .debug_info types of the Decl. These will count towards the size of
     // the buffer, so we have to do it before computing the offset, and we can't perform the actual
     // relocations yet.
-    for (dbg_info_type_relocs.items()) |*entry| {
+    var it = dbg_info_type_relocs.iterator();
+    while (it.next()) |entry| {
         entry.value.off = @intCast(u32, dbg_info_buffer.items.len);
         try self.addDbgInfoType(entry.key, &dbg_info_buffer);
     }
@@ -1895,7 +1933,8 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
     try self.updateDeclDebugInfoAllocation(text_block, @intCast(u32, dbg_info_buffer.items.len));
 
     // Now that we have the offset assigned we can finally perform type relocations.
-    for (dbg_info_type_relocs.items()) |entry| {
+    it = dbg_info_type_relocs.iterator();
+    while (it.next()) |entry| {
         for (entry.value.relocs.items) |off| {
             mem.writeInt(
                 u32,
@@ -2124,13 +2163,13 @@ pub fn updateDeclLineNumber(self: *Elf, module: *Module, decl: *const Module.Dec
     const tracy = trace(@src());
     defer tracy.end();
 
-    const scope_file = decl.scope.cast(Module.Scope.File).?;
-    const tree = scope_file.contents.tree;
+    const container_scope = decl.scope.cast(Module.Scope.Container).?;
+    const tree = container_scope.file_scope.contents.tree;
     const file_ast_decls = tree.root_node.decls();
     // TODO Look into improving the performance here by adding a token-index-to-line
     // lookup table. Currently this involves scanning over the source code for newlines.
     const fn_proto = file_ast_decls[decl.src_index].castTag(.FnProto).?;
-    const block = fn_proto.body().?.castTag(.Block).?;
+    const block = fn_proto.getBodyNode().?.castTag(.Block).?;
     const line_delta = std.zig.lineDelta(tree.source, 0, tree.token_locs[block.lbrace].start);
     const casted_line_off = @intCast(u28, line_delta);
 

@@ -78,6 +78,13 @@ pub const Inst = struct {
         bitor,
         /// A labeled block of code, which can return a value.
         block,
+        /// A block of code, which can return a value. There are no instructions that break out of
+        /// this block; it is implied that the final instruction is the result.
+        block_flat,
+        /// Same as `block` but additionally makes the inner instructions execute at comptime.
+        block_comptime,
+        /// Same as `block_flat` but additionally makes the inner instructions execute at comptime.
+        block_comptime_flat,
         /// Boolean NOT. See also `bitnot`.
         boolnot,
         /// Return a value from a `Block`.
@@ -137,6 +144,8 @@ pub const Inst = struct {
         ensure_result_used,
         /// Emits a compile error if an error is ignored.
         ensure_result_non_error,
+        /// Emits a compile error if operand cannot be indexed.
+        ensure_indexable,
         /// Create a `E!T` type.
         error_union_type,
         /// Create an error set.
@@ -222,6 +231,10 @@ pub const Inst = struct {
         const_slice_type,
         /// Create a pointer type with attributes
         ptr_type,
+        /// Slice operation `array_ptr[start..end:sentinel]`
+        slice,
+        /// Slice operation with just start `lhs[rhs..]`
+        slice_start,
         /// Write a value to a pointer. For loading, see `deref`.
         store,
         /// String Literal. Makes an anonymous Decl and then takes a pointer to it.
@@ -251,6 +264,8 @@ pub const Inst = struct {
         unwrap_err_safe,
         /// Same as previous, but without safety checks. Used for orelse, if and while
         unwrap_err_unsafe,
+        /// Gets the error code value of an error union
+        unwrap_err_code,
         /// Takes a *E!T and raises a compiler error if T != void
         ensure_err_payload_void,
         /// Enum literal
@@ -278,6 +293,7 @@ pub const Inst = struct {
                 .alloc,
                 .ensure_result_used,
                 .ensure_result_non_error,
+                .ensure_indexable,
                 .bitcast_result_ptr,
                 .ref,
                 .bitcast_ref,
@@ -295,6 +311,7 @@ pub const Inst = struct {
                 .unwrap_optional_unsafe,
                 .unwrap_err_safe,
                 .unwrap_err_unsafe,
+                .unwrap_err_code,
                 .ensure_err_payload_void,
                 .anyframe_type,
                 .bitnot,
@@ -330,11 +347,17 @@ pub const Inst = struct {
                 .xor,
                 .error_union_type,
                 .merge_error_sets,
+                .slice_start,
                 => BinOp,
+
+                .block,
+                .block_flat,
+                .block_comptime,
+                .block_comptime_flat,
+                => Block,
 
                 .arg => Arg,
                 .array_type_sentinel => ArrayTypeSentinel,
-                .block => Block,
                 .@"break" => Break,
                 .breakvoid => BreakVoid,
                 .call => Call,
@@ -362,6 +385,7 @@ pub const Inst = struct {
                 .ptr_type => PtrType,
                 .enum_literal => EnumLiteral,
                 .error_set => ErrorSet,
+                .slice => Slice,
             };
         }
 
@@ -386,6 +410,9 @@ pub const Inst = struct {
                 .bitcast_result_ptr,
                 .bitor,
                 .block,
+                .block_flat,
+                .block_comptime,
+                .block_comptime_flat,
                 .boolnot,
                 .breakpoint,
                 .call,
@@ -409,6 +436,7 @@ pub const Inst = struct {
                 .elemptr,
                 .ensure_result_used,
                 .ensure_result_non_error,
+                .ensure_indexable,
                 .@"export",
                 .floatcast,
                 .fieldptr,
@@ -450,6 +478,7 @@ pub const Inst = struct {
                 .unwrap_optional_unsafe,
                 .unwrap_err_safe,
                 .unwrap_err_unsafe,
+                .unwrap_err_code,
                 .ptr_type,
                 .ensure_err_payload_void,
                 .enum_literal,
@@ -458,6 +487,8 @@ pub const Inst = struct {
                 .error_union_type,
                 .bitnot,
                 .error_set,
+                .slice,
+                .slice_start,
                 => false,
 
                 .@"break",
@@ -938,6 +969,20 @@ pub const Inst = struct {
         },
         kw_args: struct {},
     };
+
+    pub const Slice = struct {
+        pub const base_tag = Tag.slice;
+        base: Inst,
+
+        positionals: struct {
+            array_ptr: *Inst,
+            start: *Inst,
+        },
+        kw_args: struct {
+            end: ?*Inst = null,
+            sentinel: ?*Inst = null,
+        },
+    };
 };
 
 pub const ErrorMsg = struct {
@@ -954,6 +999,7 @@ pub const Module = struct {
 
     pub const MetaData = struct {
         deaths: ir.Inst.DeathsInt,
+        addr: usize,
     };
 
     pub const BodyMetaData = struct {
@@ -1025,7 +1071,7 @@ pub const Module = struct {
         defer write.loop_table.deinit();
 
         // First, build a map of *Inst to @ or % indexes
-        try write.inst_table.ensureCapacity(self.decls.len);
+        try write.inst_table.ensureCapacity(@intCast(u32, self.decls.len));
 
         for (self.decls) |decl, decl_i| {
             try write.inst_table.putNoClobber(decl.inst, .{ .inst = decl.inst, .index = null, .name = decl.name });
@@ -1152,6 +1198,12 @@ const Writer = struct {
                     try self.writeInstToStream(stream, inst);
                     if (self.module.metadata.get(inst)) |metadata| {
                         try stream.print(" ; deaths=0b{b}", .{metadata.deaths});
+                        // This is conditionally compiled in because addresses mess up the tests due
+                        // to Address Space Layout Randomization. It's super useful when debugging
+                        // codegen.zig though.
+                        if (!std.builtin.is_test) {
+                            try stream.print(" 0x{x}", .{metadata.addr});
+                        }
                     }
                     self.indent -= 2;
                     try stream.writeByte('\n');
@@ -1655,7 +1707,7 @@ pub fn emit(allocator: *Allocator, old_module: IrModule) !Module {
         .arena = std.heap.ArenaAllocator.init(allocator),
         .old_module = &old_module,
         .next_auto_name = 0,
-        .names = std.StringHashMap(void).init(allocator),
+        .names = std.StringArrayHashMap(void).init(allocator),
         .primitive_table = std.AutoHashMap(Inst.Primitive.Builtin, *Decl).init(allocator),
         .indent = 0,
         .block_table = std.AutoHashMap(*ir.Inst.Block, *Inst.Block).init(allocator),
@@ -1728,7 +1780,7 @@ const EmitZIR = struct {
     arena: std.heap.ArenaAllocator,
     old_module: *const IrModule,
     decls: std.ArrayListUnmanaged(*Decl),
-    names: std.StringHashMap(void),
+    names: std.StringArrayHashMap(void),
     next_auto_name: usize,
     primitive_table: std.AutoHashMap(Inst.Primitive.Builtin, *Decl),
     indent: usize,
@@ -2417,7 +2469,10 @@ const EmitZIR = struct {
 
                 .varptr => @panic("TODO"),
             };
-            try self.metadata.put(new_inst, .{ .deaths = inst.deaths });
+            try self.metadata.put(new_inst, .{
+                .deaths = inst.deaths,
+                .addr = @ptrToInt(inst),
+            });
             try instructions.append(new_inst);
             try inst_table.put(inst, new_inst);
         }
@@ -2541,7 +2596,7 @@ const EmitZIR = struct {
                     var len_pl = Value.Payload.Int_u64{ .int = ty.arrayLen() };
                     const len = Value.initPayload(&len_pl.base);
 
-                    const inst = if (ty.arraySentinel()) |sentinel| blk: {
+                    const inst = if (ty.sentinel()) |sentinel| blk: {
                         const inst = try self.arena.allocator.create(Inst.ArrayTypeSentinel);
                         inst.* = .{
                             .base = .{

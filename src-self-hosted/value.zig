@@ -65,6 +65,7 @@ pub const Value = extern union {
 
         undef,
         zero,
+        one,
         void_value,
         unreachable_value,
         empty_array,
@@ -174,6 +175,7 @@ pub const Value = extern union {
             .anyframe_type,
             .undef,
             .zero,
+            .one,
             .void_value,
             .unreachable_value,
             .empty_array,
@@ -299,20 +301,21 @@ pub const Value = extern union {
             .comptime_int_type => return out_stream.writeAll("comptime_int"),
             .comptime_float_type => return out_stream.writeAll("comptime_float"),
             .noreturn_type => return out_stream.writeAll("noreturn"),
-            .null_type => return out_stream.writeAll("@TypeOf(null)"),
-            .undefined_type => return out_stream.writeAll("@TypeOf(undefined)"),
+            .null_type => return out_stream.writeAll("@Type(.Null)"),
+            .undefined_type => return out_stream.writeAll("@Type(.Undefined)"),
             .fn_noreturn_no_args_type => return out_stream.writeAll("fn() noreturn"),
             .fn_void_no_args_type => return out_stream.writeAll("fn() void"),
             .fn_naked_noreturn_no_args_type => return out_stream.writeAll("fn() callconv(.Naked) noreturn"),
             .fn_ccc_void_no_args_type => return out_stream.writeAll("fn() callconv(.C) void"),
             .single_const_pointer_to_comptime_int_type => return out_stream.writeAll("*const comptime_int"),
             .const_slice_u8_type => return out_stream.writeAll("[]const u8"),
-            .enum_literal_type => return out_stream.writeAll("@TypeOf(.EnumLiteral)"),
+            .enum_literal_type => return out_stream.writeAll("@Type(.EnumLiteral)"),
             .anyframe_type => return out_stream.writeAll("anyframe"),
 
             .null_value => return out_stream.writeAll("null"),
             .undef => return out_stream.writeAll("undefined"),
             .zero => return out_stream.writeAll("0"),
+            .one => return out_stream.writeAll("1"),
             .void_value => return out_stream.writeAll("{}"),
             .unreachable_value => return out_stream.writeAll("unreachable"),
             .bool_true => return out_stream.writeAll("true"),
@@ -355,7 +358,8 @@ pub const Value = extern union {
             .error_set => {
                 const error_set = val.cast(Payload.ErrorSet).?;
                 try out_stream.writeAll("error{");
-                for (error_set.fields.items()) |entry| {
+                var it = error_set.fields.iterator();
+                while (it.next()) |entry| {
                     try out_stream.print("{},", .{entry.value});
                 }
                 return out_stream.writeAll("}");
@@ -447,6 +451,7 @@ pub const Value = extern union {
 
             .undef,
             .zero,
+            .one,
             .void_value,
             .unreachable_value,
             .empty_array,
@@ -546,7 +551,9 @@ pub const Value = extern union {
             .bool_false,
             => return BigIntMutable.init(&space.limbs, 0).toConst(),
 
-            .bool_true => return BigIntMutable.init(&space.limbs, 1).toConst(),
+            .one,
+            .bool_true,
+            => return BigIntMutable.init(&space.limbs, 1).toConst(),
 
             .int_u64 => return BigIntMutable.init(&space.limbs, self.cast(Payload.Int_u64).?.int).toConst(),
             .int_i64 => return BigIntMutable.init(&space.limbs, self.cast(Payload.Int_i64).?.int).toConst(),
@@ -627,7 +634,9 @@ pub const Value = extern union {
             .bool_false,
             => return 0,
 
-            .bool_true => return 1,
+            .one,
+            .bool_true,
+            => return 1,
 
             .int_u64 => return self.cast(Payload.Int_u64).?.int,
             .int_i64 => return @intCast(u64, self.cast(Payload.Int_i64).?.int),
@@ -708,7 +717,9 @@ pub const Value = extern union {
             .bool_false,
             => return 0,
 
-            .bool_true => return 1,
+            .one,
+            .bool_true,
+            => return 1,
 
             .int_u64 => return @intCast(i64, self.cast(Payload.Int_u64).?.int),
             .int_i64 => return self.cast(Payload.Int_i64).?.int,
@@ -734,6 +745,7 @@ pub const Value = extern union {
             .float_128 => @floatCast(T, self.cast(Payload.Float_128).?.val),
 
             .zero => 0,
+            .one => 1,
             .int_u64 => @intToFloat(T, self.cast(Payload.Int_u64).?.int),
             .int_i64 => @intToFloat(T, self.cast(Payload.Int_i64).?.int),
 
@@ -814,7 +826,9 @@ pub const Value = extern union {
             .bool_false,
             => return 0,
 
-            .bool_true => return 1,
+            .one,
+            .bool_true,
+            => return 1,
 
             .int_u64 => {
                 const x = self.cast(Payload.Int_u64).?.int;
@@ -900,7 +914,9 @@ pub const Value = extern union {
             .bool_false,
             => return true,
 
-            .bool_true => {
+            .one,
+            .bool_true,
+            => {
                 const info = ty.intInfo(target);
                 if (info.signed) {
                     return info.bits >= 2;
@@ -1064,7 +1080,9 @@ pub const Value = extern union {
             .@"error",
             => unreachable,
 
-            .zero => false,
+            .zero,
+            .one,
+            => false,
 
             .float_16 => @rem(self.cast(Payload.Float_16).?.val, 1) != 0,
             .float_32 => @rem(self.cast(Payload.Float_32).?.val, 1) != 0,
@@ -1140,7 +1158,9 @@ pub const Value = extern union {
             .bool_false,
             => .eq,
 
-            .bool_true => .gt,
+            .one,
+            .bool_true,
+            => .gt,
 
             .int_u64 => std.math.order(lhs.cast(Payload.Int_u64).?.int, 0),
             .int_i64 => std.math.order(lhs.cast(Payload.Int_i64).?.int, 0),
@@ -1257,6 +1277,7 @@ pub const Value = extern union {
             .enum_literal_type,
             .anyframe_type,
             .zero,
+            .one,
             .bool_true,
             .bool_false,
             .null_value,
@@ -1339,6 +1360,7 @@ pub const Value = extern union {
             .enum_literal_type,
             .anyframe_type,
             .zero,
+            .one,
             .bool_true,
             .bool_false,
             .null_value,
@@ -1438,6 +1460,7 @@ pub const Value = extern union {
             .enum_literal_type,
             .anyframe_type,
             .zero,
+            .one,
             .empty_array,
             .bool_true,
             .bool_false,
