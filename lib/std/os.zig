@@ -314,12 +314,13 @@ pub const ReadError = error{
 
 /// Returns the number of bytes that were read, which can be less than
 /// buf.len. If 0 bytes were read, that means EOF.
-/// If the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in error.WouldBlock.
+/// If `fd` is opened in non blocking mode, the function will return error.WouldBlock
+/// when EAGAIN is received.
 ///
 /// Linux has a limit on how many bytes may be transferred in one `read` call, which is `0x7ffff000`
 /// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
 /// well as stuffing the errno codes into the last `4096` values. This is noted on the `read` man page.
+/// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
 /// For POSIX the limit is `math.maxInt(isize)`.
 pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
     if (builtin.os.tag == .windows) {
@@ -353,6 +354,7 @@ pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
     // Prevents EINVAL.
     const max_count = switch (std.Target.current.os.tag) {
         .linux => 0x7ffff000,
+        .macosx, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
     const adjusted_len = math.min(max_count, buf.len);
@@ -364,12 +366,7 @@ pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdReadable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForReading, // Can be a race condition.
             EIO => return error.InputOutput,
             EISDIR => return error.IsDir,
@@ -385,8 +382,8 @@ pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
 
 /// Number of bytes read is returned. Upon reading end-of-file, zero is returned.
 ///
-/// For POSIX systems, if the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// For POSIX systems, if `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
 ///
@@ -426,12 +423,7 @@ pub fn readv(fd: fd_t, iov: []const iovec) ReadError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdReadable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForReading, // can be a race condition
             EIO => return error.InputOutput,
             EISDIR => return error.IsDir,
@@ -448,8 +440,8 @@ pub const PReadError = ReadError || error{Unseekable};
 ///
 /// Retries when interrupted by a signal.
 ///
-/// For POSIX systems, if the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// For POSIX systems, if `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
 pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
@@ -490,12 +482,7 @@ pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdReadable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForReading, // Can be a race condition.
             EIO => return error.InputOutput,
             EISDIR => return error.IsDir,
@@ -584,8 +571,8 @@ pub fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
 ///
 /// Retries when interrupted by a signal.
 ///
-/// For POSIX systems, if the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// For POSIX systems, if `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
 ///
@@ -635,12 +622,7 @@ pub fn preadv(fd: fd_t, iov: []const iovec, offset: u64) PReadError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdReadable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForReading, // can be a race condition
             EIO => return error.InputOutput,
             EISDIR => return error.IsDir,
@@ -685,14 +667,15 @@ pub const WriteError = error{
 /// another  write() call to transfer the remaining bytes.  The subsequent call will either
 /// transfer further bytes or may result in an error (e.g., if the disk is now full).
 ///
-/// For POSIX systems, if the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// For POSIX systems, if `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
 ///
 /// Linux has a limit on how many bytes may be transferred in one `write` call, which is `0x7ffff000`
 /// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
 /// well as stuffing the errno codes into the last `4096` values. This is noted on the `write` man page.
+/// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
 /// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
     if (builtin.os.tag == .windows) {
@@ -726,6 +709,7 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
 
     const max_count = switch (std.Target.current.os.tag) {
         .linux => 0x7ffff000,
+        .macosx, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
     const adjusted_len = math.min(max_count, bytes.len);
@@ -737,12 +721,7 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdWritable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForWriting, // can be a race condition.
             EDESTADDRREQ => unreachable, // `connect` was never called.
             EDQUOT => return error.DiskQuota,
@@ -768,8 +747,8 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
 /// another  write() call to transfer the remaining bytes.  The subsequent call will either
 /// transfer further bytes or may result in an error (e.g., if the disk is now full).
 ///
-/// For POSIX systems, if the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// For POSIX systems, if `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.k`.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
 ///
@@ -810,12 +789,7 @@ pub fn writev(fd: fd_t, iov: []const iovec_const) WriteError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdWritable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForWriting, // Can be a race condition.
             EDESTADDRREQ => unreachable, // `connect` was never called.
             EDQUOT => return error.DiskQuota,
@@ -843,14 +817,15 @@ pub const PWriteError = WriteError || error{Unseekable};
 /// another  write() call to transfer the remaining bytes.  The subsequent call will either
 /// transfer further bytes or may result in an error (e.g., if the disk is now full).
 ///
-/// For POSIX systems, if the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// For POSIX systems, if `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
 ///
 /// Linux has a limit on how many bytes may be transferred in one `pwrite` call, which is `0x7ffff000`
 /// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
 /// well as stuffing the errno codes into the last `4096` values. This is noted on the `write` man page.
+/// The limit on Darwin is `0x7fffffff`, trying to write more than that returns EINVAL.
 /// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
     if (std.Target.current.os.tag == .windows) {
@@ -888,6 +863,7 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
     // Prevent EINVAL.
     const max_count = switch (std.Target.current.os.tag) {
         .linux => 0x7ffff000,
+        .macosx, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(isize),
     };
     const adjusted_len = math.min(max_count, bytes.len);
@@ -899,12 +875,7 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdWritable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForWriting, // Can be a race condition.
             EDESTADDRREQ => unreachable, // `connect` was never called.
             EDQUOT => return error.DiskQuota,
@@ -933,8 +904,8 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
 /// another  write() call to transfer the remaining bytes.  The subsequent call will either
 /// transfer further bytes or may result in an error (e.g., if the disk is now full).
 ///
-/// If the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in `error.WouldBlock`.
+/// If `fd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 ///
 /// The following systems do not have this syscall, and will return partial writes if more than one
 /// vector is provided:
@@ -987,12 +958,7 @@ pub fn pwritev(fd: fd_t, iov: []const iovec_const, offset: u64) PWriteError!usiz
             EINTR => continue,
             EINVAL => unreachable,
             EFAULT => unreachable,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdWritable(fd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => return error.NotOpenForWriting, // Can be a race condition.
             EDESTADDRREQ => unreachable, // `connect` was never called.
             EDQUOT => return error.DiskQuota,
@@ -1884,7 +1850,7 @@ pub fn unlinkatW(dirfd: fd_t, sub_path_w: []const u16, flags: u32) UnlinkatError
     return windows.DeleteFile(sub_path_w, .{ .dir = dirfd, .remove_dir = remove_dir });
 }
 
-const RenameError = error{
+pub const RenameError = error{
     /// In WASI, this error may occur when the file descriptor does
     /// not hold the required rights to rename a resource by path relative to it.
     AccessDenied,
@@ -2101,6 +2067,7 @@ pub fn renameatW(
         .ACCESS_DENIED => return error.AccessDenied,
         .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
         .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
+        .NOT_SAME_DEVICE => return error.RenameAcrossMountPoints,
         else => return windows.unexpectedStatus(rc),
     }
 }
@@ -2512,13 +2479,14 @@ pub fn readlinkatZ(dirfd: fd_t, file_path: [*:0]const u8, out_buffer: []u8) Read
     }
 }
 
-pub const SetIdError = error{
-    ResourceLimitReached,
+pub const SetEidError = error{
     InvalidUserId,
     PermissionDenied,
 } || UnexpectedError;
 
-pub fn setuid(uid: u32) SetIdError!void {
+pub const SetIdError = error{ResourceLimitReached} || SetEidError;
+
+pub fn setuid(uid: uid_t) SetIdError!void {
     switch (errno(system.setuid(uid))) {
         0 => return,
         EAGAIN => return error.ResourceLimitReached,
@@ -2528,7 +2496,16 @@ pub fn setuid(uid: u32) SetIdError!void {
     }
 }
 
-pub fn setreuid(ruid: u32, euid: u32) SetIdError!void {
+pub fn seteuid(uid: uid_t) SetEidError!void {
+    switch (errno(system.seteuid(uid))) {
+        0 => return,
+        EINVAL => return error.InvalidUserId,
+        EPERM => return error.PermissionDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn setreuid(ruid: uid_t, euid: uid_t) SetIdError!void {
     switch (errno(system.setreuid(ruid, euid))) {
         0 => return,
         EAGAIN => return error.ResourceLimitReached,
@@ -2538,7 +2515,7 @@ pub fn setreuid(ruid: u32, euid: u32) SetIdError!void {
     }
 }
 
-pub fn setgid(gid: u32) SetIdError!void {
+pub fn setgid(gid: gid_t) SetIdError!void {
     switch (errno(system.setgid(gid))) {
         0 => return,
         EAGAIN => return error.ResourceLimitReached,
@@ -2548,7 +2525,16 @@ pub fn setgid(gid: u32) SetIdError!void {
     }
 }
 
-pub fn setregid(rgid: u32, egid: u32) SetIdError!void {
+pub fn setegid(uid: uid_t) SetEidError!void {
+    switch (errno(system.setegid(uid))) {
+        0 => return,
+        EINVAL => return error.InvalidUserId,
+        EPERM => return error.PermissionDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn setregid(rgid: gid_t, egid: gid_t) SetIdError!void {
     switch (errno(system.setregid(rgid, egid))) {
         0 => return,
         EAGAIN => return error.ResourceLimitReached,
@@ -2802,6 +2788,9 @@ pub const AcceptError = error{
     /// by the socket buffer limits, not by the system memory.
     SystemResources,
 
+    /// Socket is not listening for new connections.
+    SocketNotListening,
+
     ProtocolFailure,
 
     /// Firewall rules forbid connection.
@@ -2817,8 +2806,8 @@ pub const AcceptError = error{
 } || UnexpectedError;
 
 /// Accept a connection on a socket.
-/// If the application has a global event loop enabled, EAGAIN is handled
-/// via the event loop. Otherwise EAGAIN results in error.WouldBlock.
+/// If `sockfd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 pub fn accept(
     /// This argument is a socket that has been created with `socket`, bound to a local address
     /// with `bind`, and is listening for connections after a `listen`.
@@ -2861,16 +2850,11 @@ pub fn accept(
                 return fd;
             },
             EINTR => continue,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdReadable(sockfd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EBADF => unreachable, // always a race condition
             ECONNABORTED => return error.ConnectionAborted,
             EFAULT => unreachable,
-            EINVAL => unreachable,
+            EINVAL => return error.SocketNotListening,
             ENOTSOCK => unreachable,
             EMFILE => return error.ProcessFdQuotaExceeded,
             ENFILE => return error.SystemFdQuotaExceeded,
@@ -3052,6 +3036,8 @@ pub const ConnectError = error{
 } || UnexpectedError;
 
 /// Initiate a connection on a socket.
+/// If `sockfd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN or EINPROGRESS is received.
 pub fn connect(sockfd: socket_t, sock_addr: *const sockaddr, len: socklen_t) ConnectError!void {
     if (builtin.os.tag == .windows) {
         const rc = windows.ws2_32.connect(sockfd, sock_addr, len);
@@ -3062,7 +3048,7 @@ pub fn connect(sockfd: socket_t, sock_addr: *const sockaddr, len: socklen_t) Con
             .WSAECONNREFUSED => return error.ConnectionRefused,
             .WSAETIMEDOUT => return error.ConnectionTimedOut,
             .WSAEHOSTUNREACH // TODO: should we return NetworkUnreachable in this case as well?
-                , .WSAENETUNREACH => return error.NetworkUnreachable,
+            , .WSAENETUNREACH => return error.NetworkUnreachable,
             .WSAEFAULT => unreachable,
             .WSAEINVAL => unreachable,
             .WSAEISCONN => unreachable,
@@ -3084,11 +3070,7 @@ pub fn connect(sockfd: socket_t, sock_addr: *const sockaddr, len: socklen_t) Con
             EADDRINUSE => return error.AddressInUse,
             EADDRNOTAVAIL => return error.AddressNotAvailable,
             EAFNOSUPPORT => return error.AddressFamilyNotSupported,
-            EAGAIN, EINPROGRESS => {
-                const loop = std.event.Loop.instance orelse return error.WouldBlock;
-                loop.waitUntilFdWritable(sockfd);
-                return getsockoptError(sockfd);
-            },
+            EAGAIN, EINPROGRESS => return error.WouldBlock,
             EALREADY => unreachable, // The socket is nonblocking and a previous connection attempt has not yet been completed.
             EBADF => unreachable, // sockfd is not a valid open file descriptor.
             ECONNREFUSED => return error.ConnectionRefused,
@@ -4504,7 +4486,7 @@ pub fn res_mkquery(
     // Make a reasonably unpredictable id
     var ts: timespec = undefined;
     clock_gettime(CLOCK_REALTIME, &ts) catch {};
-    const UInt = std.meta.Int(false, @TypeOf(ts.tv_nsec).bit_count);
+    const UInt = std.meta.Int(false, std.meta.bitCount(@TypeOf(ts.tv_nsec)));
     const unsec = @bitCast(UInt, ts.tv_nsec);
     const id = @truncate(u32, unsec + unsec / 65536);
     q[0] = @truncate(u8, id / 256);
@@ -4591,14 +4573,8 @@ pub fn sendto(
         const rc = system.sendto(sockfd, buf.ptr, buf.len, flags, dest_addr, addrlen);
         switch (errno(rc)) {
             0 => return @intCast(usize, rc),
-
             EACCES => return error.AccessDenied,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdWritable(sockfd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             EALREADY => return error.FastOpenAlreadyInProgress,
             EBADF => unreachable, // always a race condition
             ECONNRESET => return error.ConnectionResetByPeer,
@@ -4689,6 +4665,7 @@ fn count_iovec_bytes(iovs: []const iovec_const) usize {
 /// Linux has a limit on how many bytes may be transferred in one `sendfile` call, which is `0x7ffff000`
 /// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
 /// well as stuffing the errno codes into the last `4096` values. This is cited on the `sendfile` man page.
+/// The limit on Darwin is `0x7fffffff`, trying to write more than that returns EINVAL.
 /// The corresponding POSIX limit on this is `math.maxInt(isize)`.
 pub fn sendfile(
     out_fd: fd_t,
@@ -4711,6 +4688,7 @@ pub fn sendfile(
     });
     const max_count = switch (std.Target.current.os.tag) {
         .linux => 0x7ffff000,
+        .macosx, .ios, .watchos, .tvos => math.maxInt(i32),
         else => math.maxInt(size_t),
     };
 
@@ -5075,6 +5053,8 @@ pub const RecvFromError = error{
     SystemResources,
 } || UnexpectedError;
 
+/// If `sockfd` is opened in non blocking mode, the function will
+/// return error.WouldBlock when EAGAIN is received.
 pub fn recvfrom(
     sockfd: fd_t,
     buf: []u8,
@@ -5092,12 +5072,7 @@ pub fn recvfrom(
             ENOTCONN => unreachable,
             ENOTSOCK => unreachable,
             EINTR => continue,
-            EAGAIN => if (std.event.Loop.instance) |loop| {
-                loop.waitUntilFdReadable(sockfd);
-                continue;
-            } else {
-                return error.WouldBlock;
-            },
+            EAGAIN => return error.WouldBlock,
             ENOMEM => return error.SystemResources,
             ECONNREFUSED => return error.ConnectionRefused,
             else => |err| return unexpectedErrno(err),
@@ -5325,6 +5300,113 @@ pub fn signalfd(fd: fd_t, mask: *const sigset_t, flags: u32) !fd_t {
         EMFILE => return error.ProcessResources,
         ENODEV => return error.InodeMountFail,
         ENOSYS => return error.SystemOutdated,
+        else => |err| return std.os.unexpectedErrno(err),
+    }
+}
+
+pub const SyncError = error{
+    InputOutput,
+    NoSpaceLeft,
+    DiskQuota,
+    AccessDenied,
+} || UnexpectedError;
+
+/// Write all pending file contents and metadata modifications to all filesystems.
+pub fn sync() void {
+    system.sync();
+}
+
+/// Write all pending file contents and metadata modifications to the filesystem which contains the specified file.
+pub fn syncfs(fd: fd_t) SyncError!void {
+    const rc = system.syncfs(fd);
+    switch (errno(rc)) {
+        0 => return,
+        EBADF, EINVAL, EROFS => unreachable,
+        EIO => return error.InputOutput,
+        ENOSPC => return error.NoSpaceLeft,
+        EDQUOT => return error.DiskQuota,
+        else => |err| return std.os.unexpectedErrno(err),
+    }
+}
+
+/// Write all pending file contents and metadata modifications for the specified file descriptor to the underlying filesystem.
+pub fn fsync(fd: fd_t) SyncError!void {
+    if (std.Target.current.os.tag == .windows) {
+        if (windows.kernel32.FlushFileBuffers(fd) != 0)
+            return;
+        switch (windows.kernel32.GetLastError()) {
+            .SUCCESS => return,
+            .INVALID_HANDLE => unreachable,
+            .ACCESS_DENIED => return error.AccessDenied, // a sync was performed but the system couldn't update the access time
+            .UNEXP_NET_ERR => return error.InputOutput,
+            else => return error.InputOutput,
+        }
+    }
+    const rc = system.fsync(fd);
+    switch (errno(rc)) {
+        0 => return,
+        EBADF, EINVAL, EROFS => unreachable,
+        EIO => return error.InputOutput,
+        ENOSPC => return error.NoSpaceLeft,
+        EDQUOT => return error.DiskQuota,
+        else => |err| return std.os.unexpectedErrno(err),
+    }
+}
+
+/// Write all pending file contents for the specified file descriptor to the underlying filesystem, but not necessarily the metadata.
+pub fn fdatasync(fd: fd_t) SyncError!void {
+    if (std.Target.current.os.tag == .windows) {
+        return fsync(fd) catch |err| switch (err) {
+            SyncError.AccessDenied => return, // fdatasync doesn't promise that the access time was synced
+            else => return err,
+        };
+    }
+    const rc = system.fdatasync(fd);
+    switch (errno(rc)) {
+        0 => return,
+        EBADF, EINVAL, EROFS => unreachable,
+        EIO => return error.InputOutput,
+        ENOSPC => return error.NoSpaceLeft,
+        EDQUOT => return error.DiskQuota,
+        else => |err| return std.os.unexpectedErrno(err),
+    }
+}
+
+pub const PrctlError = error{
+    /// Can only occur with PR_SET_SECCOMP/SECCOMP_MODE_FILTER or
+    /// PR_SET_MM/PR_SET_MM_EXE_FILE
+    AccessDenied,
+    /// Can only occur with PR_SET_MM/PR_SET_MM_EXE_FILE
+    InvalidFileDescriptor,
+    InvalidAddress,
+    /// Can only occur with PR_SET_SPECULATION_CTRL, PR_MPX_ENABLE_MANAGEMENT,
+    /// or PR_MPX_DISABLE_MANAGEMENT
+    UnsupportedFeature,
+    /// Can only occur wih PR_SET_FP_MODE
+    OperationNotSupported,
+    PermissionDenied,
+} || UnexpectedError;
+
+pub fn prctl(option: i32, args: anytype) PrctlError!u31 {
+    if (@typeInfo(@TypeOf(args)) != .Struct)
+        @compileError("Expected tuple or struct argument, found " ++ @typeName(@TypeOf(args)));
+    if (args.len > 4)
+        @compileError("prctl takes a maximum of 4 optional arguments");
+
+    var buf: [4]usize = undefined;
+    inline for (args) |arg, i| buf[i] = arg;
+
+    const rc = system.prctl(option, buf[0], buf[1], buf[2], buf[3]);
+    switch (errno(rc)) {
+        0 => return @intCast(u31, rc),
+        EACCES => return error.AccessDenied,
+        EBADF => return error.InvalidFileDescriptor,
+        EFAULT => return error.InvalidAddress,
+        EINVAL => unreachable,
+        ENODEV, ENXIO => return error.UnsupportedFeature,
+        EOPNOTSUPP => return error.OperationNotSupported,
+        EPERM, EBUSY => return error.PermissionDenied,
+        ERANGE => unreachable,
         else => |err| return std.os.unexpectedErrno(err),
     }
 }

@@ -363,31 +363,49 @@ pub const File = struct {
         try os.futimens(self.handle, &times);
     }
 
+    /// Reads all the bytes from the current position to the end of the file.
     /// On success, caller owns returned buffer.
     /// If the file is larger than `max_bytes`, returns `error.FileTooBig`.
-    pub fn readAllAlloc(self: File, allocator: *mem.Allocator, stat_size: u64, max_bytes: usize) ![]u8 {
-        return self.readAllAllocOptions(allocator, stat_size, max_bytes, @alignOf(u8), null);
+    pub fn readToEndAlloc(self: File, allocator: *mem.Allocator, max_bytes: usize) ![]u8 {
+        return self.readToEndAllocOptions(allocator, max_bytes, null, @alignOf(u8), null);
     }
 
+    /// Reads all the bytes from the current position to the end of the file.
     /// On success, caller owns returned buffer.
     /// If the file is larger than `max_bytes`, returns `error.FileTooBig`.
+    /// If `size_hint` is specified the initial buffer size is calculated using
+    /// that value, otherwise an arbitrary value is used instead.
     /// Allows specifying alignment and a sentinel value.
-    pub fn readAllAllocOptions(
+    pub fn readToEndAllocOptions(
         self: File,
         allocator: *mem.Allocator,
-        stat_size: u64,
         max_bytes: usize,
+        size_hint: ?usize,
         comptime alignment: u29,
         comptime optional_sentinel: ?u8,
     ) !(if (optional_sentinel) |s| [:s]align(alignment) u8 else []align(alignment) u8) {
-        const size = math.cast(usize, stat_size) catch math.maxInt(usize);
-        if (size > max_bytes) return error.FileTooBig;
+        // If no size hint is provided fall back to the size=0 code path
+        const size = size_hint orelse 0;
 
-        const buf = try allocator.allocWithOptions(u8, size, alignment, optional_sentinel);
-        errdefer allocator.free(buf);
+        // The file size returned by stat is used as hint to set the buffer
+        // size. If the reported size is zero, as it happens on Linux for files
+        // in /proc, a small buffer is allocated instead.
+        const initial_cap = (if (size > 0) size else 1024) + @boolToInt(optional_sentinel != null);
+        var array_list = try std.ArrayListAligned(u8, alignment).initCapacity(allocator, initial_cap);
+        defer array_list.deinit();
 
-        try self.reader().readNoEof(buf);
-        return buf;
+        self.reader().readAllArrayList(&array_list, max_bytes) catch |err| switch (err) {
+            error.StreamTooLong => return error.FileTooBig,
+            else => |e| return e,
+        };
+
+        if (optional_sentinel) |sentinel| {
+            try array_list.append(sentinel);
+            const buf = array_list.toOwnedSlice();
+            return buf[0 .. buf.len - 1 :sentinel];
+        } else {
+            return array_list.toOwnedSlice();
+        }
     }
 
     pub const ReadError = os.ReadError;
@@ -396,10 +414,12 @@ pub const File = struct {
     pub fn read(self: File, buffer: []u8) ReadError!usize {
         if (is_windows) {
             return windows.ReadFile(self.handle, buffer, null, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.read(self.handle, buffer);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.read(self.handle, buffer);
+        } else {
+            return std.event.Loop.instance.?.read(self.handle, buffer, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -418,10 +438,12 @@ pub const File = struct {
     pub fn pread(self: File, buffer: []u8, offset: u64) PReadError!usize {
         if (is_windows) {
             return windows.ReadFile(self.handle, buffer, offset, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.pread(self.handle, buffer, offset);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.pread(self.handle, buffer, offset);
+        } else {
+            return std.event.Loop.instance.?.pread(self.handle, buffer, offset, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -443,10 +465,12 @@ pub const File = struct {
             if (iovecs.len == 0) return @as(usize, 0);
             const first = iovecs[0];
             return windows.ReadFile(self.handle, first.iov_base[0..first.iov_len], null, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.readv(self.handle, iovecs);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.readv(self.handle, iovecs);
+        } else {
+            return std.event.Loop.instance.?.readv(self.handle, iovecs, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -482,10 +506,12 @@ pub const File = struct {
             if (iovecs.len == 0) return @as(usize, 0);
             const first = iovecs[0];
             return windows.ReadFile(self.handle, first.iov_base[0..first.iov_len], offset, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.preadv(self.handle, iovecs, offset);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.preadv(self.handle, iovecs, offset);
+        } else {
+            return std.event.Loop.instance.?.preadv(self.handle, iovecs, offset, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -521,10 +547,12 @@ pub const File = struct {
     pub fn write(self: File, bytes: []const u8) WriteError!usize {
         if (is_windows) {
             return windows.WriteFile(self.handle, bytes, null, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.write(self.handle, bytes);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.write(self.handle, bytes);
+        } else {
+            return std.event.Loop.instance.?.write(self.handle, bytes, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -538,10 +566,12 @@ pub const File = struct {
     pub fn pwrite(self: File, bytes: []const u8, offset: u64) PWriteError!usize {
         if (is_windows) {
             return windows.WriteFile(self.handle, bytes, offset, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.pwrite(self.handle, bytes, offset);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.pwrite(self.handle, bytes, offset);
+        } else {
+            return std.event.Loop.instance.?.pwrite(self.handle, bytes, offset, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -558,10 +588,12 @@ pub const File = struct {
             if (iovecs.len == 0) return @as(usize, 0);
             const first = iovecs[0];
             return windows.WriteFile(self.handle, first.iov_base[0..first.iov_len], null, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.writev(self.handle, iovecs);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.writev(self.handle, iovecs);
+        } else {
+            return std.event.Loop.instance.?.writev(self.handle, iovecs, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -589,10 +621,12 @@ pub const File = struct {
             if (iovecs.len == 0) return @as(usize, 0);
             const first = iovecs[0];
             return windows.WriteFile(self.handle, first.iov_base[0..first.iov_len], offset, self.intended_io_mode);
-        } else if (self.capable_io_mode != self.intended_io_mode) {
-            return std.event.Loop.instance.?.pwritev(self.handle, iovecs, offset);
-        } else {
+        }
+
+        if (self.intended_io_mode == .blocking) {
             return os.pwritev(self.handle, iovecs, offset);
+        } else {
+            return std.event.Loop.instance.?.pwritev(self.handle, iovecs, offset, self.capable_io_mode != self.intended_io_mode);
         }
     }
 
@@ -710,7 +744,7 @@ pub const File = struct {
         }
         var i: usize = 0;
         while (i < trailers.len) {
-            while (amt >= headers[i].iov_len) {
+            while (amt >= trailers[i].iov_len) {
                 amt -= trailers[i].iov_len;
                 i += 1;
                 if (i >= trailers.len) return;
@@ -722,14 +756,16 @@ pub const File = struct {
     }
 
     pub const Reader = io.Reader(File, ReadError, read);
+
     /// Deprecated: use `Reader`
     pub const InStream = Reader;
 
-    pub fn reader(file: File) io.Reader(File, ReadError, read) {
+    pub fn reader(file: File) Reader {
         return .{ .context = file };
     }
+
     /// Deprecated: use `reader`
-    pub fn inStream(file: File) io.InStream(File, ReadError, read) {
+    pub fn inStream(file: File) Reader {
         return .{ .context = file };
     }
 

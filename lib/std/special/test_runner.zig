@@ -40,7 +40,7 @@ pub fn main() anyerror!void {
         test_node.activate();
         progress.refresh();
         if (progress.terminal == null) {
-            std.debug.print("{}/{} {}...", .{ i + 1, test_fn_list.len, test_fn.name });
+            std.debug.print("{}/{} {}... ", .{ i + 1, test_fn_list.len, test_fn.name });
         }
         const result = if (test_fn.async_frame_size) |size| switch (io_mode) {
             .evented => blk: {
@@ -103,6 +103,6 @@ pub fn log(
         log_err_count += 1;
     }
     if (@enumToInt(message_level) <= @enumToInt(std.testing.log_level)) {
-        std.debug.print("[{}] ({}): " ++ format, .{ @tagName(scope), @tagName(message_level) } ++ args);
+        std.debug.print("[{}] ({}): " ++ format ++ "\n", .{ @tagName(scope), @tagName(message_level) } ++ args);
     }
 }

@@ -394,6 +394,61 @@ fn clone() callconv(.Naked) void {
                 \\  syscall
             );
         },
+
+        .powerpc64, .powerpc64le => {
+            asm volatile (
+                \\  # store non-volatile regs r30, r31 on stack in order to put our
+                \\  # start func and its arg there
+                \\  stwu 30, -16(1)
+                \\  stw 31, 4(1)
+                \\  # save r3 (func) into r30, and r6(arg) into r31
+                \\  mr 30, 3
+                \\  mr 31, 6
+                \\  # create initial stack frame for new thread
+                \\  clrrwi 4, 4, 4
+                \\  li 0, 0
+                \\  stwu 0, -16(4)
+                \\  #move c into first arg
+                \\  mr 3, 5
+                \\  mr 5, 7
+                \\  mr 6, 8
+                \\  mr 7, 9
+                \\  # move syscall number into r0
+                \\  li 0, 120
+                \\  sc
+
+                \\  # check for syscall error
+                \\  bns+ 1f # jump to label 1 if no summary overflow.
+                \\  #else
+                \\  neg 3, 3 #negate the result (errno)
+                \\1:
+                \\  # compare sc result with 0
+                \\  cmpwi cr7, 3, 0
+
+                \\  # if not 0, jump to end
+                \\  bne cr7, 2f
+
+                \\  #else: we're the child
+                \\  #call funcptr: move arg (d) into r3
+                \\  mr 3, 31
+                \\  #move r30 (funcptr) into CTR reg
+                \\  mtctr 30
+                \\  # call CTR reg
+                \\  bctrl
+                \\  # mov SYS_exit into r0 (the exit param is already in r3)
+                \\  li 0, 1
+                \\  sc
+
+                \\2:
+                \\  # restore stack
+                \\  lwz 30, 0(1)
+                \\  lwz 31, 4(1)
+                \\  addi 1, 1, 16
+
+                \\  blr
+            );
+        },
+
         else => @compileError("Implement clone() for this arch."),
     }
 }
@@ -516,11 +571,12 @@ export fn roundf(a: f32) f32 {
 fn generic_fmod(comptime T: type, x: T, y: T) T {
     @setRuntimeSafety(false);
 
-    const uint = std.meta.Int(false, T.bit_count);
+    const bits = @typeInfo(T).Float.bits;
+    const uint = std.meta.Int(false, bits);
     const log2uint = math.Log2Int(uint);
     const digits = if (T == f32) 23 else 52;
     const exp_bits = if (T == f32) 9 else 12;
-    const bits_minus_1 = T.bit_count - 1;
+    const bits_minus_1 = bits - 1;
     const mask = if (T == f32) 0xff else 0x7ff;
     var ux = @bitCast(uint, x);
     var uy = @bitCast(uint, y);

@@ -25,12 +25,20 @@ test "Dir.readLink" {
 
     {
         // Create symbolic link by path
-        try tmp.dir.symLink("file.txt", "symlink1", .{});
+        tmp.dir.symLink("file.txt", "symlink1", .{}) catch |err| switch (err) {
+            // Symlink requires admin privileges on windows, so this test can legitimately fail.
+            error.AccessDenied => return error.SkipZigTest,
+            else => return err,
+        };
         try testReadLink(tmp.dir, "file.txt", "symlink1");
     }
     {
         // Create symbolic link by path
-        try tmp.dir.symLink("subdir", "symlink2", .{ .is_directory = true });
+        tmp.dir.symLink("subdir", "symlink2", .{ .is_directory = true }) catch |err| switch (err) {
+            // Symlink requires admin privileges on windows, so this test can legitimately fail.
+            error.AccessDenied => return error.SkipZigTest,
+            else => return err,
+        };
         try testReadLink(tmp.dir, "subdir", "symlink2");
     }
 }
@@ -66,7 +74,11 @@ test "readLinkAbsolute" {
         const symlink_path = try fs.path.join(allocator, &[_][]const u8{ base_path, "symlink1" });
 
         // Create symbolic link by path
-        try fs.symLinkAbsolute(target_path, symlink_path, .{});
+        fs.symLinkAbsolute(target_path, symlink_path, .{}) catch |err| switch (err) {
+            // Symlink requires admin privileges on windows, so this test can legitimately fail.
+            error.AccessDenied => return error.SkipZigTest,
+            else => return err,
+        };
         try testReadLinkAbsolute(target_path, symlink_path);
     }
     {
@@ -74,7 +86,11 @@ test "readLinkAbsolute" {
         const symlink_path = try fs.path.join(allocator, &[_][]const u8{ base_path, "symlink2" });
 
         // Create symbolic link by path
-        try fs.symLinkAbsolute(target_path, symlink_path, .{ .is_directory = true });
+        fs.symLinkAbsolute(target_path, symlink_path, .{ .is_directory = true }) catch |err| switch (err) {
+            // Symlink requires admin privileges on windows, so this test can legitimately fail.
+            error.AccessDenied => return error.SkipZigTest,
+            else => return err,
+        };
         try testReadLinkAbsolute(target_path, symlink_path);
     }
 }
@@ -172,30 +188,30 @@ test "readAllAlloc" {
     var file = try tmp_dir.dir.createFile("test_file", .{ .read = true });
     defer file.close();
 
-    const buf1 = try file.readAllAlloc(testing.allocator, 0, 1024);
+    const buf1 = try file.readToEndAlloc(testing.allocator, 1024);
     defer testing.allocator.free(buf1);
     testing.expect(buf1.len == 0);
 
     const write_buf: []const u8 = "this is a test.\nthis is a test.\nthis is a test.\nthis is a test.\n";
     try file.writeAll(write_buf);
     try file.seekTo(0);
-    const file_size = try file.getEndPos();
 
     // max_bytes > file_size
-    const buf2 = try file.readAllAlloc(testing.allocator, file_size, 1024);
+    const buf2 = try file.readToEndAlloc(testing.allocator, 1024);
     defer testing.allocator.free(buf2);
     testing.expectEqual(write_buf.len, buf2.len);
     testing.expect(std.mem.eql(u8, write_buf, buf2));
     try file.seekTo(0);
 
     // max_bytes == file_size
-    const buf3 = try file.readAllAlloc(testing.allocator, file_size, write_buf.len);
+    const buf3 = try file.readToEndAlloc(testing.allocator, write_buf.len);
     defer testing.allocator.free(buf3);
     testing.expectEqual(write_buf.len, buf3.len);
     testing.expect(std.mem.eql(u8, write_buf, buf3));
+    try file.seekTo(0);
 
     // max_bytes < file_size
-    testing.expectError(error.FileTooBig, file.readAllAlloc(testing.allocator, file_size, write_buf.len - 1));
+    testing.expectError(error.FileTooBig, file.readToEndAlloc(testing.allocator, write_buf.len - 1));
 }
 
 test "directory operations on files" {
@@ -255,6 +271,193 @@ test "file operations on directories" {
 
     // ensure the directory still exists as a sanity check
     var dir = try tmp_dir.dir.openDir(test_dir_name, .{});
+    dir.close();
+}
+
+test "deleteDir" {
+    var tmp_dir = tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // deleting a non-existent directory
+    testing.expectError(error.FileNotFound, tmp_dir.dir.deleteDir("test_dir"));
+
+    var dir = try tmp_dir.dir.makeOpenPath("test_dir", .{});
+    var file = try dir.createFile("test_file", .{});
+    file.close();
+    dir.close();
+
+    // deleting a non-empty directory
+    // TODO: Re-enable this check on Windows, see https://github.com/ziglang/zig/issues/5537
+    if (builtin.os.tag != .windows) {
+        testing.expectError(error.DirNotEmpty, tmp_dir.dir.deleteDir("test_dir"));
+    }
+
+    dir = try tmp_dir.dir.openDir("test_dir", .{});
+    try dir.deleteFile("test_file");
+    dir.close();
+
+    // deleting an empty directory
+    try tmp_dir.dir.deleteDir("test_dir");
+}
+
+test "Dir.rename files" {
+    var tmp_dir = tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    testing.expectError(error.FileNotFound, tmp_dir.dir.rename("missing_file_name", "something_else"));
+
+    // Renaming files
+    const test_file_name = "test_file";
+    const renamed_test_file_name = "test_file_renamed";
+    var file = try tmp_dir.dir.createFile(test_file_name, .{ .read = true });
+    file.close();
+    try tmp_dir.dir.rename(test_file_name, renamed_test_file_name);
+
+    // Ensure the file was renamed
+    testing.expectError(error.FileNotFound, tmp_dir.dir.openFile(test_file_name, .{}));
+    file = try tmp_dir.dir.openFile(renamed_test_file_name, .{});
+    file.close();
+
+    // Rename to self succeeds
+    try tmp_dir.dir.rename(renamed_test_file_name, renamed_test_file_name);
+
+    // Rename to existing file succeeds
+    var existing_file = try tmp_dir.dir.createFile("existing_file", .{ .read = true });
+    existing_file.close();
+    try tmp_dir.dir.rename(renamed_test_file_name, "existing_file");
+
+    testing.expectError(error.FileNotFound, tmp_dir.dir.openFile(renamed_test_file_name, .{}));
+    file = try tmp_dir.dir.openFile("existing_file", .{});
+    file.close();
+}
+
+test "Dir.rename directories" {
+    // TODO: Fix on Windows, see https://github.com/ziglang/zig/issues/6364
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp_dir = tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Renaming directories
+    try tmp_dir.dir.makeDir("test_dir");
+    try tmp_dir.dir.rename("test_dir", "test_dir_renamed");
+
+    // Ensure the directory was renamed
+    testing.expectError(error.FileNotFound, tmp_dir.dir.openDir("test_dir", .{}));
+    var dir = try tmp_dir.dir.openDir("test_dir_renamed", .{});
+
+    // Put a file in the directory
+    var file = try dir.createFile("test_file", .{ .read = true });
+    file.close();
+    dir.close();
+
+    try tmp_dir.dir.rename("test_dir_renamed", "test_dir_renamed_again");
+
+    // Ensure the directory was renamed and the file still exists in it
+    testing.expectError(error.FileNotFound, tmp_dir.dir.openDir("test_dir_renamed", .{}));
+    dir = try tmp_dir.dir.openDir("test_dir_renamed_again", .{});
+    file = try dir.openFile("test_file", .{});
+    file.close();
+    dir.close();
+
+    // Try to rename to a non-empty directory now
+    var target_dir = try tmp_dir.dir.makeOpenPath("non_empty_target_dir", .{});
+    file = try target_dir.createFile("filler", .{ .read = true });
+    file.close();
+
+    testing.expectError(error.PathAlreadyExists, tmp_dir.dir.rename("test_dir_renamed_again", "non_empty_target_dir"));
+
+    // Ensure the directory was not renamed
+    dir = try tmp_dir.dir.openDir("test_dir_renamed_again", .{});
+    file = try dir.openFile("test_file", .{});
+    file.close();
+    dir.close();
+}
+
+test "Dir.rename file <-> dir" {
+    // TODO: Fix on Windows, see https://github.com/ziglang/zig/issues/6364
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    var tmp_dir = tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var file = try tmp_dir.dir.createFile("test_file", .{ .read = true });
+    file.close();
+    try tmp_dir.dir.makeDir("test_dir");
+    testing.expectError(error.IsDir, tmp_dir.dir.rename("test_file", "test_dir"));
+    testing.expectError(error.NotDir, tmp_dir.dir.rename("test_dir", "test_file"));
+}
+
+test "rename" {
+    var tmp_dir1 = tmpDir(.{});
+    defer tmp_dir1.cleanup();
+
+    var tmp_dir2 = tmpDir(.{});
+    defer tmp_dir2.cleanup();
+
+    // Renaming files
+    const test_file_name = "test_file";
+    const renamed_test_file_name = "test_file_renamed";
+    var file = try tmp_dir1.dir.createFile(test_file_name, .{ .read = true });
+    file.close();
+    try fs.rename(tmp_dir1.dir, test_file_name, tmp_dir2.dir, renamed_test_file_name);
+
+    // ensure the file was renamed
+    testing.expectError(error.FileNotFound, tmp_dir1.dir.openFile(test_file_name, .{}));
+    file = try tmp_dir2.dir.openFile(renamed_test_file_name, .{});
+    file.close();
+}
+
+test "renameAbsolute" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var tmp_dir = tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    // Get base abs path
+    var arena = ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = &arena.allocator;
+
+    const base_path = blk: {
+        const relative_path = try fs.path.join(&arena.allocator, &[_][]const u8{ "zig-cache", "tmp", tmp_dir.sub_path[0..] });
+        break :blk try fs.realpathAlloc(&arena.allocator, relative_path);
+    };
+
+    testing.expectError(error.FileNotFound, fs.renameAbsolute(
+        try fs.path.join(allocator, &[_][]const u8{ base_path, "missing_file_name" }),
+        try fs.path.join(allocator, &[_][]const u8{ base_path, "something_else" }),
+    ));
+
+    // Renaming files
+    const test_file_name = "test_file";
+    const renamed_test_file_name = "test_file_renamed";
+    var file = try tmp_dir.dir.createFile(test_file_name, .{ .read = true });
+    file.close();
+    try fs.renameAbsolute(
+        try fs.path.join(allocator, &[_][]const u8{ base_path, test_file_name }),
+        try fs.path.join(allocator, &[_][]const u8{ base_path, renamed_test_file_name }),
+    );
+
+    // ensure the file was renamed
+    testing.expectError(error.FileNotFound, tmp_dir.dir.openFile(test_file_name, .{}));
+    file = try tmp_dir.dir.openFile(renamed_test_file_name, .{});
+    const stat = try file.stat();
+    testing.expect(stat.kind == .File);
+    file.close();
+
+    // Renaming directories
+    const test_dir_name = "test_dir";
+    const renamed_test_dir_name = "test_dir_renamed";
+    try tmp_dir.dir.makeDir(test_dir_name);
+    try fs.renameAbsolute(
+        try fs.path.join(allocator, &[_][]const u8{ base_path, test_dir_name }),
+        try fs.path.join(allocator, &[_][]const u8{ base_path, renamed_test_dir_name }),
+    );
+
+    // ensure the directory was renamed
+    testing.expectError(error.FileNotFound, tmp_dir.dir.openDir(test_dir_name, .{}));
+    var dir = try tmp_dir.dir.openDir(renamed_test_dir_name, .{});
     dir.close();
 }
 

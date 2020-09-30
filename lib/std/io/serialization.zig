@@ -60,7 +60,7 @@ pub fn Deserializer(comptime endian: builtin.Endian, comptime packing: Packing, 
 
             const U = std.meta.Int(false, t_bit_count);
             const Log2U = math.Log2Int(U);
-            const int_size = (U.bit_count + 7) / 8;
+            const int_size = (t_bit_count + 7) / 8;
 
             if (packing == .Bit) {
                 const result = try self.in_stream.readBitsNoEof(U, t_bit_count);
@@ -73,7 +73,7 @@ pub fn Deserializer(comptime endian: builtin.Endian, comptime packing: Packing, 
 
             if (int_size == 1) {
                 if (t_bit_count == 8) return @bitCast(T, buffer[0]);
-                const PossiblySignedByte = std.meta.Int(T.is_signed, 8);
+                const PossiblySignedByte = std.meta.Int(@typeInfo(T).Int.is_signed, 8);
                 return @truncate(T, @bitCast(PossiblySignedByte, buffer[0]));
             }
 
@@ -156,7 +156,7 @@ pub fn Deserializer(comptime endian: builtin.Endian, comptime packing: Packing, 
                         const tag = try self.deserializeInt(TagInt);
 
                         inline for (info.fields) |field_info| {
-                            if (field_info.enum_field.?.value == tag) {
+                            if (@enumToInt(@field(TagType, field_info.name)) == tag) {
                                 const name = field_info.name;
                                 const FieldType = field_info.field_type;
                                 ptr.* = @unionInit(C, name, undefined);
@@ -247,7 +247,7 @@ pub fn Serializer(comptime endian: builtin.Endian, comptime packing: Packing, co
 
             const U = std.meta.Int(false, t_bit_count);
             const Log2U = math.Log2Int(U);
-            const int_size = (U.bit_count + 7) / 8;
+            const int_size = (t_bit_count + 7) / 8;
 
             const u_value = @bitCast(U, value);
 
@@ -320,7 +320,7 @@ pub fn Serializer(comptime endian: builtin.Endian, comptime packing: Packing, co
                         // value, but @field requires a comptime value. Our alternative
                         // is to check each field for a match
                         inline for (info.fields) |field_info| {
-                            if (field_info.enum_field.?.value == @enumToInt(active_tag)) {
+                            if (@field(TagType, field_info.name) == active_tag) {
                                 const name = field_info.name;
                                 const FieldType = field_info.field_type;
                                 try self.serialize(@field(value, name));

@@ -198,8 +198,6 @@ fn testUnion() void {
     expect(typeinfo_info.Union.layout == .Auto);
     expect(typeinfo_info.Union.tag_type.? == TypeId);
     expect(typeinfo_info.Union.fields.len == 25);
-    expect(typeinfo_info.Union.fields[4].enum_field != null);
-    expect(typeinfo_info.Union.fields[4].enum_field.?.value == 4);
     expect(typeinfo_info.Union.fields[4].field_type == @TypeOf(@typeInfo(u8).Int));
     expect(typeinfo_info.Union.decls.len == 21);
 
@@ -213,7 +211,6 @@ fn testUnion() void {
     expect(notag_union_info.Union.tag_type == null);
     expect(notag_union_info.Union.layout == .Auto);
     expect(notag_union_info.Union.fields.len == 2);
-    expect(notag_union_info.Union.fields[0].enum_field == null);
     expect(notag_union_info.Union.fields[1].field_type == u32);
 
     const TestExternUnion = extern union {
@@ -223,7 +220,6 @@ fn testUnion() void {
     const extern_union_info = @typeInfo(TestExternUnion);
     expect(extern_union_info.Union.layout == .Extern);
     expect(extern_union_info.Union.tag_type == null);
-    expect(extern_union_info.Union.fields[0].enum_field == null);
     expect(extern_union_info.Union.fields[0].field_type == *c_void);
 }
 
@@ -417,4 +413,10 @@ test "Declarations are returned in declaration order" {
 test "Struct.is_tuple" {
     expect(@typeInfo(@TypeOf(.{0})).Struct.is_tuple);
     expect(!@typeInfo(@TypeOf(.{ .a = 0 })).Struct.is_tuple);
+}
+
+test "StructField.is_comptime" {
+    const info = @typeInfo(struct { x: u8 = 3, comptime y: u32 = 5 }).Struct;
+    expect(!info.fields[0].is_comptime);
+    expect(info.fields[1].is_comptime);
 }

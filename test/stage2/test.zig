@@ -1,8 +1,11 @@
 const std = @import("std");
-const TestContext = @import("../../src-self-hosted/test.zig").TestContext;
+const TestContext = @import("../../src/test.zig").TestContext;
 
-// self-hosted does not yet support PE executable files / COFF object files
-// or mach-o files. So we do these test cases cross compiling for x86_64-linux.
+// Self-hosted has differing levels of support for various architectures. For now we pass explicit
+// target parameters to each test case. At some point we will take this to the next level and have
+// a set of targets that all test cases run on unless specifically overridden. For now, each test
+// case applies to only the specified target.
+
 const linux_x64 = std.zig.CrossTarget{
     .cpu_arch = .x86_64,
     .os_tag = .linux,
@@ -73,7 +76,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "Hello, World!\n",
         );
         // Now change the message only
@@ -105,7 +108,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "What is up? This is a longer message that will force the data to be relocated in virtual address space.\n",
         );
         // Now we print it twice.
@@ -181,7 +184,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "Hello, World!\n",
         );
     }
@@ -216,7 +219,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "Hello, World!\n",
         );
     }
@@ -241,7 +244,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "Hello, World!\n",
         );
     }
@@ -268,13 +271,13 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
     }
 
     {
-        var case = ctx.exe("substracting numbers at runtime", linux_x64);
+        var case = ctx.exe("subtracting numbers at runtime", linux_x64);
         case.addCompareOutput(
             \\export fn _start() noreturn {
             \\    sub(7, 4);
@@ -295,7 +298,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
     }
@@ -326,7 +329,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -359,7 +362,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -395,7 +398,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -432,7 +435,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -462,7 +465,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -496,7 +499,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -520,7 +523,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -559,7 +562,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "hello\nhello\nhello\nhello\n",
         );
 
@@ -596,7 +599,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -638,7 +641,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -690,7 +693,69 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
+            "",
+        );
+
+        // Reusing the registers of dead operands playing nicely with conditional branching.
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    assert(add(3, 4) == 791);
+            \\    assert(add(4, 3) == 79);
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn add(a: u32, b: u32) u32 {
+            \\    const x: u32 = if (a < b) blk: {
+            \\        const c = a + b; // 7
+            \\        const d = a + c; // 10
+            \\        const e = d + b; // 14
+            \\        const f = d + e; // 24
+            \\        const g = e + f; // 38
+            \\        const h = f + g; // 62
+            \\        const i = g + h; // 100
+            \\        const j = i + d; // 110
+            \\        const k = i + j; // 210
+            \\        const l = k + c; // 217
+            \\        const m = l + d; // 227
+            \\        const n = m + e; // 241
+            \\        const o = n + f; // 265
+            \\        const p = o + g; // 303
+            \\        const q = p + h; // 365
+            \\        const r = q + i; // 465
+            \\        const s = r + j; // 575
+            \\        const t = s + k; // 785
+            \\        break :blk t;
+            \\    } else blk: {
+            \\        const t = b + b + a; // 10
+            \\        const c = a + t; // 14
+            \\        const d = c + t; // 24
+            \\        const e = d + t; // 34
+            \\        const f = e + t; // 44
+            \\        const g = f + t; // 54
+            \\        const h = c + g; // 68
+            \\        break :blk h + b; // 71
+            \\    };
+            \\    const y = x + a; // 788, 75
+            \\    const z = y + a; // 791, 79
+            \\    return z;
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+            ,
             "",
         );
 
@@ -723,7 +788,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
         );
 
@@ -755,8 +820,92 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        ,
+            ,
             "",
+        );
+
+        // Array access.
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    assert("hello"[0] == 'h');
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+            ,
+            "",
+        );
+
+        // 64bit set stack
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    var i: u64 = 0xFFEEDDCCBBAA9988;
+            \\    assert(i == 0xFFEEDDCCBBAA9988);
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+            ,
+            "",
+        );
+
+        // Basic for loop
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    for ("hello") |_| print();
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn print() void {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (1),
+            \\          [arg1] "{rdi}" (1),
+            \\          [arg2] "{rsi}" (@ptrToInt("hello\n")),
+            \\          [arg3] "{rdx}" (6)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    return;
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+            ,
+            "hello\nhello\nhello\nhello\nhello\n",
         );
     }
 
@@ -774,7 +923,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    bar();
             \\}
             \\fn bar() void {}
-        ,
+            ,
             "42\n",
         );
 
@@ -792,7 +941,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    bar();
             \\}
             \\fn bar() void {}
-        ,
+            ,
             "42\n",
         );
 
@@ -808,7 +957,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    bar();
             \\}
             \\fn bar() void {}
-        ,
+            ,
             // This is what you get when you take the bits of the IEE-754
             // representation of 42.0 and reinterpret them as an unsigned
             // integer. Guess that's a bug in wasmtime.
@@ -821,10 +970,19 @@ pub fn addCases(ctx: *TestContext) !void {
         \\fn entry() void {}
     , &[_][]const u8{":2:4: error: redefinition of 'entry'"});
 
-    ctx.compileError("extern variable has no type", linux_x64,
-        \\comptime {
-        \\    _ = foo;
-        \\}
-        \\extern var foo;
-    , &[_][]const u8{":4:1: error: unable to infer variable type"});
+    {
+        var case = ctx.obj("extern variable has no type", linux_x64);
+        case.addError(
+            \\comptime {
+            \\    _ = foo;
+            \\}
+            \\extern var foo: i32;
+        , &[_][]const u8{":2:9: error: unable to resolve comptime value"});
+        case.addError(
+            \\export fn entry() void {
+            \\    _ = foo;
+            \\}
+            \\extern var foo;
+        , &[_][]const u8{":4:1: error: unable to infer variable type"});
+    }
 }

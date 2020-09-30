@@ -578,8 +578,8 @@ fn testWindowsCmdLine(input_cmd_line: [*]const u8, expected_args: []const []cons
 }
 
 pub const UserInfo = struct {
-    uid: u32,
-    gid: u32,
+    uid: os.uid_t,
+    gid: os.gid_t,
 };
 
 /// POSIX function which gets a uid from username.
@@ -593,8 +593,10 @@ pub fn getUserInfo(name: []const u8) !UserInfo {
 /// TODO this reads /etc/passwd. But sometimes the user/id mapping is in something else
 /// like NIS, AD, etc. See `man nss` or look at an strace for `id myuser`.
 pub fn posixGetUserInfo(name: []const u8) !UserInfo {
-    var reader = try io.Reader.open("/etc/passwd", null);
-    defer reader.close();
+    const file = try std.fs.openFileAbsolute("/etc/passwd", .{});
+    defer file.close();
+
+    const reader = file.reader();
 
     const State = enum {
         Start,
@@ -607,8 +609,8 @@ pub fn posixGetUserInfo(name: []const u8) !UserInfo {
     var buf: [std.mem.page_size]u8 = undefined;
     var name_index: usize = 0;
     var state = State.Start;
-    var uid: u32 = 0;
-    var gid: u32 = 0;
+    var uid: os.uid_t = 0;
+    var gid: os.gid_t = 0;
 
     while (true) {
         const amt_read = try reader.read(buf[0..]);
@@ -650,8 +652,8 @@ pub fn posixGetUserInfo(name: []const u8) !UserInfo {
                             '0'...'9' => byte - '0',
                             else => return error.CorruptPasswordFile,
                         };
-                        if (@mulWithOverflow(u32, uid, 10, *uid)) return error.CorruptPasswordFile;
-                        if (@addWithOverflow(u32, uid, digit, *uid)) return error.CorruptPasswordFile;
+                        if (@mulWithOverflow(u32, uid, 10, &uid)) return error.CorruptPasswordFile;
+                        if (@addWithOverflow(u32, uid, digit, &uid)) return error.CorruptPasswordFile;
                     },
                 },
                 .ReadGroupId => switch (byte) {
@@ -666,8 +668,8 @@ pub fn posixGetUserInfo(name: []const u8) !UserInfo {
                             '0'...'9' => byte - '0',
                             else => return error.CorruptPasswordFile,
                         };
-                        if (@mulWithOverflow(u32, gid, 10, *gid)) return error.CorruptPasswordFile;
-                        if (@addWithOverflow(u32, gid, digit, *gid)) return error.CorruptPasswordFile;
+                        if (@mulWithOverflow(u32, gid, 10, &gid)) return error.CorruptPasswordFile;
+                        if (@addWithOverflow(u32, gid, digit, &gid)) return error.CorruptPasswordFile;
                     },
                 },
             }

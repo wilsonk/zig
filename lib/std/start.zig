@@ -67,7 +67,7 @@ fn EfiMain(handle: uefi.Handle, system_table: *uefi.tables.SystemTable) callconv
     uefi.handle = handle;
     uefi.system_table = system_table;
 
-    switch (@TypeOf(root.main).ReturnType) {
+    switch (@typeInfo(@TypeOf(root.main)).Fn.return_type.?) {
         noreturn => {
             root.main();
         },
@@ -119,6 +119,21 @@ fn _start() callconv(.Naked) noreturn {
                 \\ .set noat
                 \\ move %[argc], $sp
                 : [argc] "=r" (-> [*]usize)
+            );
+        },
+        .powerpc64le => {
+            // Before returning the stack pointer, we have to set up a backchain
+            // and a few other registers required by the ELFv2 ABI.
+            // TODO: Support powerpc64 (big endian) on ELFv2.
+            starting_stack_ptr = asm (
+                \\ mr 4, 1
+                \\ subi 1, 1, 32
+                \\ li 5, 0
+                \\ std 5, 0(1)
+                \\ mr %[argc], 4
+                : [argc] "=r" (-> [*]usize)
+                :
+                : "r4", "r5"
             );
         },
         else => @compileError("unsupported arch"),
@@ -209,7 +224,7 @@ inline fn initEventLoopAndCallMain() u8 {
     if (std.event.Loop.instance) |loop| {
         if (!@hasDecl(root, "event_loop")) {
             loop.init() catch |err| {
-                std.debug.warn("error: {}\n", .{@errorName(err)});
+                std.log.err("{}", .{@errorName(err)});
                 if (@errorReturnTrace()) |trace| {
                     std.debug.dumpStackTrace(trace.*);
                 }
@@ -239,7 +254,7 @@ fn callMainAsync(loop: *std.event.Loop) callconv(.Async) u8 {
 // This is not marked inline because it is called with @asyncCall when
 // there is an event loop.
 pub fn callMain() u8 {
-    switch (@typeInfo(@TypeOf(root.main).ReturnType)) {
+    switch (@typeInfo(@typeInfo(@TypeOf(root.main)).Fn.return_type.?)) {
         .NoReturn => {
             root.main();
         },
@@ -248,14 +263,14 @@ pub fn callMain() u8 {
             return 0;
         },
         .Int => |info| {
-            if (info.bits != 8) {
+            if (info.bits != 8 or info.is_signed) {
                 @compileError(bad_main_ret);
             }
             return root.main();
         },
         .ErrorUnion => {
             const result = root.main() catch |err| {
-                std.debug.warn("error: {}\n", .{@errorName(err)});
+                std.log.err("{}", .{@errorName(err)});
                 if (@errorReturnTrace()) |trace| {
                     std.debug.dumpStackTrace(trace.*);
                 }
@@ -264,7 +279,7 @@ pub fn callMain() u8 {
             switch (@typeInfo(@TypeOf(result))) {
                 .Void => return 0,
                 .Int => |info| {
-                    if (info.bits != 8) {
+                    if (info.bits != 8 or info.is_signed) {
                         @compileError(bad_main_ret);
                     }
                     return result;

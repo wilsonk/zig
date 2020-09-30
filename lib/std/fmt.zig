@@ -22,7 +22,7 @@ pub const Alignment = enum {
 pub const FormatOptions = struct {
     precision: ?usize = null,
     width: ?usize = null,
-    alignment: Alignment = .Left,
+    alignment: Alignment = .Right,
     fill: u8 = ' ',
 };
 
@@ -66,6 +66,7 @@ fn peekIsAlign(comptime fmt: []const u8) bool {
 ///   - output numeric value in hexadecimal notation
 /// - `s`: print a pointer-to-many as a c-string, use zero-termination
 /// - `B` and `Bi`: output a memory size in either metric (1000) or power-of-two (1024) based notation. works for both float and integer values.
+/// - `e` and `E`: if printing a string, escape non-printable characters
 /// - `e`: output floating point value in scientific notation
 /// - `d`: output numeric value in decimal notation
 /// - `b`: output integer value in binary notation
@@ -81,6 +82,8 @@ fn peekIsAlign(comptime fmt: []const u8) bool {
 /// This allows user types to be formatted in a logical manner instead of dumping all fields of the type.
 ///
 /// A user type may be a `struct`, `vector`, `union` or `enum` type.
+///
+/// To print literal curly braces, escape them by writing them twice, e.g. `{{` or `}}`.
 pub fn format(
     writer: anytype,
     comptime fmt: []const u8,
@@ -90,7 +93,7 @@ pub fn format(
     if (@typeInfo(@TypeOf(args)) != .Struct) {
         @compileError("Expected tuple or struct argument, found " ++ @typeName(@TypeOf(args)));
     }
-    if (args.len > ArgSetType.bit_count) {
+    if (args.len > @typeInfo(ArgSetType).Int.bits) {
         @compileError("32 arguments max are supported per format call");
     }
 
@@ -324,7 +327,7 @@ pub fn formatType(
     max_depth: usize,
 ) @TypeOf(writer).Error!void {
     if (comptime std.mem.eql(u8, fmt, "*")) {
-        try writer.writeAll(@typeName(@TypeOf(value).Child));
+        try writer.writeAll(@typeName(std.meta.Child(@TypeOf(value))));
         try writer.writeAll("@");
         try formatInt(@ptrToInt(value), 16, false, FormatOptions{}, writer);
         return;
@@ -396,7 +399,7 @@ pub fn formatType(
                 try writer.writeAll(@tagName(@as(UnionTagType, value)));
                 try writer.writeAll(" = ");
                 inline for (info.fields) |u_field| {
-                    if (@enumToInt(@as(UnionTagType, value)) == u_field.enum_field.?.value) {
+                    if (value == @field(UnionTagType, u_field.name)) {
                         try formatType(@field(value, u_field.name), fmt, options, writer, max_depth - 1);
                     }
                 }
@@ -429,12 +432,12 @@ pub fn formatType(
                     if (info.child == u8) {
                         return formatText(value, fmt, options, writer);
                     }
-                    return format(writer, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) });
+                    return format(writer, "{}@{x}", .{ @typeName(@typeInfo(T).Pointer.child), @ptrToInt(value) });
                 },
                 .Enum, .Union, .Struct => {
                     return formatType(value.*, fmt, options, writer, max_depth);
                 },
-                else => return format(writer, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) }),
+                else => return format(writer, "{}@{x}", .{ @typeName(@typeInfo(T).Pointer.child), @ptrToInt(value) }),
             },
             .Many, .C => {
                 if (ptr_info.sentinel) |sentinel| {
@@ -445,7 +448,7 @@ pub fn formatType(
                         return formatText(mem.span(value), fmt, options, writer);
                     }
                 }
-                return format(writer, "{}@{x}", .{ @typeName(T.Child), @ptrToInt(value) });
+                return format(writer, "{}@{x}", .{ @typeName(@typeInfo(T).Pointer.child), @ptrToInt(value) });
             },
             .Slice => {
                 if (fmt.len > 0 and ((fmt[0] == 'x') or (fmt[0] == 'X'))) {
@@ -535,7 +538,7 @@ pub fn formatIntValue(
         radix = 10;
         uppercase = false;
     } else if (comptime std.mem.eql(u8, fmt, "c")) {
-        if (@TypeOf(int_value).bit_count <= 8) {
+        if (@typeInfo(@TypeOf(int_value)).Int.bits <= 8) {
             return formatAsciiChar(@as(u8, int_value), options, writer);
         } else {
             @compileError("Cannot print integer that is larger than 8 bits as a ascii");
@@ -599,6 +602,16 @@ pub fn formatText(
             try formatInt(c, 16, fmt[0] == 'X', FormatOptions{ .width = 2, .fill = '0' }, writer);
         }
         return;
+    } else if (comptime (std.mem.eql(u8, fmt, "e") or std.mem.eql(u8, fmt, "E"))) {
+        for (bytes) |c| {
+            if (std.ascii.isPrint(c)) {
+                try writer.writeByte(c);
+            } else {
+                try writer.writeAll("\\x");
+                try formatInt(c, 16, fmt[0] == 'E', FormatOptions{ .width = 2, .fill = '0' }, writer);
+            }
+        }
+        return;
     } else {
         @compileError("Unknown format string: '" ++ fmt ++ "'");
     }
@@ -618,26 +631,22 @@ pub fn formatBuf(
     writer: anytype,
 ) !void {
     const width = options.width orelse buf.len;
-    var padding = if (width > buf.len) (width - buf.len) else 0;
-    const pad_byte = [1]u8{options.fill};
+    const padding = if (width > buf.len) (width - buf.len) else 0;
+
     switch (options.alignment) {
         .Left => {
             try writer.writeAll(buf);
-            while (padding > 0) : (padding -= 1) {
-                try writer.writeAll(&pad_byte);
-            }
+            try writer.writeByteNTimes(options.fill, padding);
         },
         .Center => {
-            const padl = padding / 2;
-            var i: usize = 0;
-            while (i < padl) : (i += 1) try writer.writeAll(&pad_byte);
+            const left_padding = padding / 2;
+            const right_padding = (padding + 1) / 2;
+            try writer.writeByteNTimes(options.fill, left_padding);
             try writer.writeAll(buf);
-            while (i < padding) : (i += 1) try writer.writeAll(&pad_byte);
+            try writer.writeByteNTimes(options.fill, right_padding);
         },
         .Right => {
-            while (padding > 0) : (padding -= 1) {
-                try writer.writeAll(&pad_byte);
-            }
+            try writer.writeByteNTimes(options.fill, padding);
             try writer.writeAll(buf);
         },
     }
@@ -928,60 +937,27 @@ pub fn formatInt(
     options: FormatOptions,
     writer: anytype,
 ) !void {
+    assert(base >= 2);
+
     const int_value = if (@TypeOf(value) == comptime_int) blk: {
         const Int = math.IntFittingRange(value, value);
         break :blk @as(Int, value);
     } else
         value;
 
-    if (@TypeOf(int_value).is_signed) {
-        return formatIntSigned(int_value, base, uppercase, options, writer);
-    } else {
-        return formatIntUnsigned(int_value, base, uppercase, options, writer);
-    }
-}
+    const value_info = @typeInfo(@TypeOf(int_value)).Int;
 
-fn formatIntSigned(
-    value: anytype,
-    base: u8,
-    uppercase: bool,
-    options: FormatOptions,
-    writer: anytype,
-) !void {
-    const new_options = FormatOptions{
-        .width = if (options.width) |w| (if (w == 0) 0 else w - 1) else null,
-        .precision = options.precision,
-        .fill = options.fill,
-    };
-    const bit_count = @typeInfo(@TypeOf(value)).Int.bits;
-    const Uint = std.meta.Int(false, bit_count);
-    if (value < 0) {
-        try writer.writeAll("-");
-        const new_value = math.absCast(value);
-        return formatIntUnsigned(new_value, base, uppercase, new_options, writer);
-    } else if (options.width == null or options.width.? == 0) {
-        return formatIntUnsigned(@intCast(Uint, value), base, uppercase, options, writer);
-    } else {
-        try writer.writeAll("+");
-        const new_value = @intCast(Uint, value);
-        return formatIntUnsigned(new_value, base, uppercase, new_options, writer);
-    }
-}
+    // The type must have the same size as `base` or be wider in order for the
+    // division to work
+    const min_int_bits = comptime math.max(value_info.bits, 8);
+    const MinInt = std.meta.Int(false, min_int_bits);
 
-fn formatIntUnsigned(
-    value: anytype,
-    base: u8,
-    uppercase: bool,
-    options: FormatOptions,
-    writer: anytype,
-) !void {
-    assert(base >= 2);
-    var buf: [math.max(@TypeOf(value).bit_count, 1)]u8 = undefined;
-    const min_int_bits = comptime math.max(@TypeOf(value).bit_count, @TypeOf(base).bit_count);
-    const MinInt = std.meta.Int(@TypeOf(value).is_signed, min_int_bits);
-    var a: MinInt = value;
+    const abs_value = math.absCast(int_value);
+    // The worst case in terms of space needed is base 2, plus 1 for the sign
+    var buf: [1 + math.max(value_info.bits, 1)]u8 = undefined;
+
+    var a: MinInt = abs_value;
     var index: usize = buf.len;
-
     while (true) {
         const digit = a % base;
         index -= 1;
@@ -990,25 +966,21 @@ fn formatIntUnsigned(
         if (a == 0) break;
     }
 
-    const digits_buf = buf[index..];
-    const width = options.width orelse 0;
-    const padding = if (width > digits_buf.len) (width - digits_buf.len) else 0;
-
-    if (padding > index) {
-        const zero_byte: u8 = options.fill;
-        var leftover_padding = padding - index;
-        while (true) {
-            try writer.writeAll(@as(*const [1]u8, &zero_byte)[0..]);
-            leftover_padding -= 1;
-            if (leftover_padding == 0) break;
+    if (value_info.is_signed) {
+        if (value < 0) {
+            // Negative integer
+            index -= 1;
+            buf[index] = '-';
+        } else if (options.width == null or options.width.? == 0) {
+            // Positive integer, omit the plus sign
+        } else {
+            // Positive integer
+            index -= 1;
+            buf[index] = '+';
         }
-        mem.set(u8, buf[0..index], options.fill);
-        return writer.writeAll(&buf);
-    } else {
-        const padded_buf = buf[index - padding ..];
-        mem.set(u8, padded_buf[0..padding], options.fill);
-        return writer.writeAll(padded_buf);
     }
+
+    return formatBuf(buf[index..], options, writer);
 }
 
 pub fn formatIntBuf(out_buf: []u8, value: anytype, base: u8, uppercase: bool, options: FormatOptions) usize {
@@ -1232,6 +1204,10 @@ test "optional" {
         const value: ?i32 = null;
         try testFmt("optional: null\n", "optional: {}\n", .{value});
     }
+    {
+        const value = @intToPtr(?*i32, 0xf000d000);
+        try testFmt("optional: *i32@f000d000\n", "optional: {*}\n", .{value});
+    }
 }
 
 test "error" {
@@ -1269,7 +1245,17 @@ test "int.specifier" {
 
 test "int.padded" {
     try testFmt("u8: '   1'", "u8: '{:4}'", .{@as(u8, 1)});
-    try testFmt("u8: 'xxx1'", "u8: '{:x<4}'", .{@as(u8, 1)});
+    try testFmt("u8: '1000'", "u8: '{:0<4}'", .{@as(u8, 1)});
+    try testFmt("u8: '0001'", "u8: '{:0>4}'", .{@as(u8, 1)});
+    try testFmt("u8: '0100'", "u8: '{:0^4}'", .{@as(u8, 1)});
+    try testFmt("i8: '-1  '", "i8: '{:<4}'", .{@as(i8, -1)});
+    try testFmt("i8: '  -1'", "i8: '{:>4}'", .{@as(i8, -1)});
+    try testFmt("i8: ' -1 '", "i8: '{:^4}'", .{@as(i8, -1)});
+    try testFmt("i16: '-1234'", "i16: '{:4}'", .{@as(i16, -1234)});
+    try testFmt("i16: '+1234'", "i16: '{:4}'", .{@as(i16, 1234)});
+    try testFmt("i16: '-12345'", "i16: '{:4}'", .{@as(i16, -12345)});
+    try testFmt("i16: '+12345'", "i16: '{:4}'", .{@as(i16, 12345)});
+    try testFmt("u16: '12345'", "u16: '{:4}'", .{@as(u16, 12345)});
 }
 
 test "buffer" {
@@ -1315,8 +1301,14 @@ test "slice" {
         try testFmt("slice: []const u8@deadbeef\n", "slice: {}\n", .{value});
     }
 
-    try testFmt("buf: Test \n", "buf: {s:5}\n", .{"Test"});
+    try testFmt("buf:  Test\n", "buf: {s:5}\n", .{"Test"});
     try testFmt("buf: Test\n Other text", "buf: {s}\n Other text", .{"Test"});
+}
+
+test "escape non-printable" {
+    try testFmt("abc", "{e}", .{"abc"});
+    try testFmt("ab\\xffc", "{e}", .{"ab\xffc"});
+    try testFmt("ab\\xFFc", "{E}", .{"ab\xffc"});
 }
 
 test "pointer" {
@@ -1342,7 +1334,7 @@ test "cstr" {
         .{@ptrCast([*c]const u8, "Test C")},
     );
     try testFmt(
-        "cstr: Test C    \n",
+        "cstr:     Test C\n",
         "cstr: {s:10}\n",
         .{@ptrCast([*c]const u8, "Test C")},
     );
@@ -1785,7 +1777,7 @@ test "vector" {
 
     try testFmt("{ true, false, true, false }", "{}", .{vbool});
     try testFmt("{ -2, -1, 0, 1 }", "{}", .{vi64});
-    try testFmt("{ -   2, -   1, +   0, +   1 }", "{d:5}", .{vi64});
+    try testFmt("{    -2,    -1,    +0,    +1 }", "{d:5}", .{vi64});
     try testFmt("{ 1000, 2000, 3000, 4000 }", "{}", .{vu64});
     try testFmt("{ 3e8, 7d0, bb8, fa0 }", "{x}", .{vu64});
     try testFmt("{ 1kB, 2kB, 3kB, 4kB }", "{B}", .{vu64});
@@ -1798,15 +1790,16 @@ test "enum-literal" {
 
 test "padding" {
     try testFmt("Simple", "{}", .{"Simple"});
-    try testFmt("true      ", "{:10}", .{true});
+    try testFmt("      true", "{:10}", .{true});
     try testFmt("      true", "{:>10}", .{true});
     try testFmt("======true", "{:=>10}", .{true});
     try testFmt("true======", "{:=<10}", .{true});
     try testFmt("   true   ", "{:^10}", .{true});
     try testFmt("===true===", "{:=^10}", .{true});
-    try testFmt("Minimum            width", "{:18} width", .{"Minimum"});
+    try testFmt("           Minimum width", "{:18} width", .{"Minimum"});
     try testFmt("==================Filled", "{:=>24}", .{"Filled"});
     try testFmt("        Centered        ", "{:^24}", .{"Centered"});
+    try testFmt("-", "{:-^1}", .{""});
 }
 
 test "decimal float padding" {

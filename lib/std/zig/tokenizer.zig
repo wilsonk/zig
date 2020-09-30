@@ -1175,6 +1175,7 @@ pub const Tokenizer = struct {
                 },
                 .num_dot_dec => switch (c) {
                     '.' => {
+                        result.id = .IntegerLiteral;
                         self.index -= 1;
                         state = .start;
                         break;
@@ -1183,7 +1184,6 @@ pub const Tokenizer = struct {
                         state = .float_exponent_unsigned;
                     },
                     '0'...'9' => {
-                        result.id = .FloatLiteral;
                         state = .float_fraction_dec;
                     },
                     else => {
@@ -1195,6 +1195,7 @@ pub const Tokenizer = struct {
                 },
                 .num_dot_hex => switch (c) {
                     '.' => {
+                        result.id = .IntegerLiteral;
                         self.index -= 1;
                         state = .start;
                         break;
@@ -1758,6 +1759,14 @@ test "correctly parse pointer assignment" {
     });
 }
 
+test "tokenizer - range literals" {
+    testTokenize("0...9", &[_]Token.Id{ .IntegerLiteral, .Ellipsis3, .IntegerLiteral });
+    testTokenize("'0'...'9'", &[_]Token.Id{ .CharLiteral, .Ellipsis3, .CharLiteral });
+    testTokenize("0x00...0x09", &[_]Token.Id{ .IntegerLiteral, .Ellipsis3, .IntegerLiteral });
+    testTokenize("0b00...0b11", &[_]Token.Id{ .IntegerLiteral, .Ellipsis3, .IntegerLiteral });
+    testTokenize("0o00...0o11", &[_]Token.Id{ .IntegerLiteral, .Ellipsis3, .IntegerLiteral });
+}
+
 test "tokenizer - number literals decimal" {
     testTokenize("0", &[_]Token.Id{.IntegerLiteral});
     testTokenize("1", &[_]Token.Id{.IntegerLiteral});
@@ -1769,6 +1778,7 @@ test "tokenizer - number literals decimal" {
     testTokenize("7", &[_]Token.Id{.IntegerLiteral});
     testTokenize("8", &[_]Token.Id{.IntegerLiteral});
     testTokenize("9", &[_]Token.Id{.IntegerLiteral});
+    testTokenize("1..", &[_]Token.Id{ .IntegerLiteral, .Ellipsis2 });
     testTokenize("0a", &[_]Token.Id{ .Invalid, .Identifier });
     testTokenize("9b", &[_]Token.Id{ .Invalid, .Identifier });
     testTokenize("1z", &[_]Token.Id{ .Invalid, .Identifier });

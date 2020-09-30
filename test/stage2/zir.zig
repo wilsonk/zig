@@ -1,5 +1,5 @@
 const std = @import("std");
-const TestContext = @import("../../src-self-hosted/test.zig").TestContext;
+const TestContext = @import("../../src/test.zig").TestContext;
 // self-hosted does not yet support PE executable files / COFF object files
 // or mach-o files. So we do the ZIR transform test cases cross compiling for
 // x86_64-linux.
@@ -43,10 +43,11 @@ pub fn addCases(ctx: *TestContext) !void {
         \\
         \\@entry = fn(@fnty, {
         \\  %a = str("\x32\x08\x01\x0a")
-        \\  %eptr0 = elemptr(%a, @0)
-        \\  %eptr1 = elemptr(%a, @1)
-        \\  %eptr2 = elemptr(%a, @2)
-        \\  %eptr3 = elemptr(%a, @3)
+        \\  %a_ref = ref(%a)
+        \\  %eptr0 = elemptr(%a_ref, @0)
+        \\  %eptr1 = elemptr(%a_ref, @1)
+        \\  %eptr2 = elemptr(%a_ref, @2)
+        \\  %eptr3 = elemptr(%a_ref, @3)
         \\  %v0 = deref(%eptr0)
         \\  %v1 = deref(%eptr1)
         \\  %v2 = deref(%eptr2)
@@ -155,7 +156,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\  %0 = call(@a, [])
             \\  %1 = returnvoid()
             \\})
-        ,
+            ,
             &[_][]const u8{
                 ":18:21: error: message",
             },

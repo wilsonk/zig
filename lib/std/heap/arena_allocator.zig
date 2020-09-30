@@ -26,7 +26,7 @@ pub const ArenaAllocator = struct {
             return .{
                 .allocator = Allocator{
                     .allocFn = alloc,
-                    .resizeFn = Allocator.noResize,
+                    .resizeFn = resize,
                 },
                 .child_allocator = child_allocator,
                 .state = self,
@@ -75,13 +75,44 @@ pub const ArenaAllocator = struct {
             const adjusted_addr = mem.alignForward(addr, ptr_align);
             const adjusted_index = self.state.end_index + (adjusted_addr - addr);
             const new_end_index = adjusted_index + n;
-            if (new_end_index > cur_buf.len) {
-                cur_node = try self.createNode(cur_buf.len, n + ptr_align);
-                continue;
+
+            if (new_end_index <= cur_buf.len) {
+                const result = cur_buf[adjusted_index..new_end_index];
+                self.state.end_index = new_end_index;
+                return result;
             }
-            const result = cur_buf[adjusted_index..new_end_index];
-            self.state.end_index = new_end_index;
-            return result;
+
+            const bigger_buf_size = @sizeOf(BufNode) + new_end_index;
+            // Try to grow the buffer in-place
+            cur_node.data = self.child_allocator.resize(cur_node.data, bigger_buf_size) catch |err| switch (err) {
+                error.OutOfMemory => {
+                    // Allocate a new node if that's not possible
+                    cur_node = try self.createNode(cur_buf.len, n + ptr_align);
+                    continue;
+                },
+            };
+        }
+    }
+
+    fn resize(allocator: *Allocator, buf: []u8, buf_align: u29, new_len: usize, len_align: u29, ret_addr: usize) Allocator.Error!usize {
+        const self = @fieldParentPtr(ArenaAllocator, "allocator", allocator);
+
+        const cur_node = self.state.buffer_list.first orelse return error.OutOfMemory;
+        const cur_buf = cur_node.data[@sizeOf(BufNode)..];
+        if (@ptrToInt(cur_buf.ptr) + self.state.end_index != @ptrToInt(buf.ptr) + buf.len) {
+            if (new_len > buf.len)
+                return error.OutOfMemory;
+            return new_len;
+        }
+
+        if (buf.len >= new_len) {
+            self.state.end_index -= buf.len - new_len;
+            return new_len;
+        } else if (cur_buf.len - self.state.end_index >= new_len - buf.len) {
+            self.state.end_index += new_len - buf.len;
+            return new_len;
+        } else {
+            return error.OutOfMemory;
         }
     }
 };
