@@ -1284,8 +1284,10 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
         // We can skip hashing libc and libc++ components that we are in charge of building from Zig
         // installation sources because they are always a product of the compiler version + target information.
         man.hash.add(stack_size);
+        man.hash.addOptional(self.base.options.image_base_override);
         man.hash.add(gc_sections);
         man.hash.add(self.base.options.eh_frame_hdr);
+        man.hash.add(self.base.options.emit_relocs);
         man.hash.add(self.base.options.rdynamic);
         man.hash.addListOfBytes(self.base.options.extra_lld_args);
         man.hash.addListOfBytes(self.base.options.lib_dirs);
@@ -1352,6 +1354,10 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
         try argv.append(try std.fmt.allocPrint(arena, "stack-size={}", .{stack_size}));
     }
 
+    if (self.base.options.image_base_override) |image_base| {
+        try argv.append(try std.fmt.allocPrint(arena, "--image-base={d}", .{image_base}));
+    }
+
     if (self.base.options.linker_script) |linker_script| {
         try argv.append("-T");
         try argv.append(linker_script);
@@ -1363,6 +1369,10 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
 
     if (self.base.options.eh_frame_hdr) {
         try argv.append("--eh-frame-hdr");
+    }
+    
+    if (self.base.options.emit_relocs) {
+        try argv.append("--emit-relocs");
     }
 
     if (self.base.options.rdynamic) {
@@ -1443,10 +1453,11 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
         var test_path = std.ArrayList(u8).init(self.base.allocator);
         defer test_path.deinit();
         for (self.base.options.lib_dirs) |lib_dir_path| {
-            for (self.base.options.system_libs.items()) |link_lib| {
+            for (self.base.options.system_libs.items()) |entry| {
+                const link_lib = entry.key;
                 test_path.shrinkRetainingCapacity(0);
                 const sep = fs.path.sep_str;
-                try test_path.writer().print("{}" ++ sep ++ "lib{}.so", .{ lib_dir_path, link_lib });
+                try test_path.writer().print("{s}" ++ sep ++ "lib{s}.so", .{ lib_dir_path, link_lib });
                 fs.cwd().access(test_path.items, .{}) catch |err| switch (err) {
                     error.FileNotFound => continue,
                     else => |e| return e,
