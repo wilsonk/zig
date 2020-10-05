@@ -22,6 +22,8 @@ Note that you can
 
 ### Stage 1: Build Zig from C++ Source Code
 
+This step must be repeated when you make changes to any of the C++ source code.
+
 #### Dependencies
 
 ##### POSIX
@@ -35,7 +37,6 @@ Note that you can
 
  * cmake >= 3.15.3
  * Microsoft Visual Studio. Supported versions:
-   - 2015 (version 14)
    - 2017 (version 15.8)
    - 2019 (version 16)
  * LLVM, Clang, LLD development libraries == 10.x
@@ -71,11 +72,51 @@ or
 [error: unable to create target: 'Unable to find target for this triple (no targets are registered)'](https://github.com/ziglang/zig/issues/5055),
 in which case try `-DZIG_WORKAROUND_4799=ON`
 
-Hopefully this will be fixed upstream with LLVM 10.0.1.
+This has been fixed upstream with LLVM 10.0.1.
+
+Building with LLVM 10.0.1 you might run into this problem:
+`ld: library not found for -llibxml2.tbd`
+[Building with LLVM 10.0.1 installed via Homebrew fails](https://github.com/ziglang/zig/issues/6087),
+in which case you can try `-DZIG_WORKAROUND_6087=ON`.
 
 ##### Windows
 
 See https://github.com/ziglang/zig/wiki/Building-Zig-on-Windows
+
+### Stage 2: Build Self-Hosted Zig from Zig Source Code
+
+Now we use the stage1 binary:
+
+```
+zig build --prefix $(pwd)/stage2 -Denable-llvm
+```
+
+This produces `stage2/bin/zig` which can be used for testing and development.
+Once it is feature complete, it will be used to build stage 3 - the final compiler
+binary.
+
+### Stage 3: Rebuild Self-Hosted Zig Using the Self-Hosted Compiler
+
+*Note: Stage 2 compiler is not yet able to build Stage 3. Building Stage 3 is
+not yet supported.*
+
+Once the self-hosted compiler can build itself, this will be the actual
+compiler binary that we will install to the system. Until then, users should
+use stage 1.
+
+#### Debug / Development Build
+
+```
+stage2/bin/zig build
+```
+
+This produces `zig-cache/bin/zig`.
+
+#### Release / Install Build
+
+```
+stage2/bin/zig build install -Drelease
+```
 
 ## License
 

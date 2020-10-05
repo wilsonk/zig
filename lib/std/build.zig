@@ -1165,6 +1165,11 @@ pub const FileSource = union(enum) {
     }
 };
 
+const BuildOptionArtifactArg = struct {
+    name: []const u8,
+    artifact: *LibExeObjStep,
+};
+
 pub const LibExeObjStep = struct {
     step: Step,
     builder: *Builder,
@@ -1188,6 +1193,7 @@ pub const LibExeObjStep = struct {
     emit_llvm_ir: bool = false,
     emit_asm: bool = false,
     emit_bin: bool = true,
+    emit_docs: bool = false,
     emit_h: bool = false,
     bundle_compiler_rt: bool,
     disable_stack_probing: bool,
@@ -1209,6 +1215,7 @@ pub const LibExeObjStep = struct {
     out_pdb_filename: []const u8,
     packages: ArrayList(Pkg),
     build_options_contents: std.ArrayList(u8),
+    build_options_artifact_args: std.ArrayList(BuildOptionArtifactArg),
     system_linker_hack: bool = false,
 
     object_src: []const u8,
@@ -1225,6 +1232,9 @@ pub const LibExeObjStep = struct {
     installed_path: ?[]const u8,
     install_step: ?*InstallArtifactStep,
 
+    /// Base address for an executable image.
+    image_base: ?u64 = null,
+
     libc_file: ?[]const u8 = null,
 
     valgrind_support: ?bool = null,
@@ -1232,6 +1242,7 @@ pub const LibExeObjStep = struct {
     /// Create a .eh_frame_hdr section and a PT_GNU_EH_FRAME segment in the ELF
     /// file.
     link_eh_frame_hdr: bool = false,
+    link_emit_relocs: bool = false,
 
     /// Place every function in its own section so that unused ones may be
     /// safely garbage-collected during the linking phase.
@@ -1354,6 +1365,7 @@ pub const LibExeObjStep = struct {
             .framework_dirs = ArrayList([]const u8).init(builder.allocator),
             .object_src = undefined,
             .build_options_contents = std.ArrayList(u8).init(builder.allocator),
+            .build_options_artifact_args = std.ArrayList(BuildOptionArtifactArg).init(builder.allocator),
             .c_std = Builder.CStd.C99,
             .override_lib_dir = null,
             .main_pkg_path = null,
@@ -1376,65 +1388,50 @@ pub const LibExeObjStep = struct {
     }
 
     fn computeOutFileNames(self: *LibExeObjStep) void {
-        switch (self.kind) {
-            .Obj => {
-                self.out_filename = self.builder.fmt("{}{}", .{ self.name, self.target.oFileExt() });
+        const target_info = std.zig.system.NativeTargetInfo.detect(
+            self.builder.allocator,
+            self.target,
+        ) catch unreachable;
+        const target = target_info.target;
+        self.out_filename = std.zig.binNameAlloc(self.builder.allocator, .{
+            .root_name = self.name,
+            .target = target,
+            .output_mode = switch (self.kind) {
+                .Lib => .Lib,
+                .Obj => .Obj,
+                .Exe, .Test => .Exe,
             },
-            .Exe => {
-                self.out_filename = self.builder.fmt("{}{}", .{ self.name, self.target.exeFileExt() });
-            },
-            .Test => {
-                self.out_filename = self.builder.fmt("test{}", .{self.target.exeFileExt()});
-            },
-            .Lib => {
-                if (!self.is_dynamic) {
-                    self.out_filename = self.builder.fmt("{}{}{}", .{
-                        self.target.libPrefix(),
+            .link_mode = if (self.is_dynamic) .Dynamic else .Static,
+            .version = self.version,
+        }) catch unreachable;
+
+        if (self.kind == .Lib) {
+            if (!self.is_dynamic) {
+                self.out_lib_filename = self.out_filename;
+            } else if (self.version) |version| {
+                if (target.isDarwin()) {
+                    self.major_only_filename = self.builder.fmt("lib{}.{d}.dylib", .{
                         self.name,
-                        self.target.staticLibSuffix(),
+                        version.major,
                     });
+                    self.name_only_filename = self.builder.fmt("lib{}.dylib", .{self.name});
                     self.out_lib_filename = self.out_filename;
-                } else if (self.version) |version| {
-                    if (self.target.isDarwin()) {
-                        self.out_filename = self.builder.fmt("lib{}.{d}.{d}.{d}.dylib", .{
-                            self.name,
-                            version.major,
-                            version.minor,
-                            version.patch,
-                        });
-                        self.major_only_filename = self.builder.fmt("lib{}.{d}.dylib", .{
-                            self.name,
-                            version.major,
-                        });
-                        self.name_only_filename = self.builder.fmt("lib{}.dylib", .{self.name});
-                        self.out_lib_filename = self.out_filename;
-                    } else if (self.target.isWindows()) {
-                        self.out_filename = self.builder.fmt("{}.dll", .{self.name});
-                        self.out_lib_filename = self.builder.fmt("{}.lib", .{self.name});
-                    } else {
-                        self.out_filename = self.builder.fmt("lib{}.so.{d}.{d}.{d}", .{
-                            self.name,
-                            version.major,
-                            version.minor,
-                            version.patch,
-                        });
-                        self.major_only_filename = self.builder.fmt("lib{}.so.{d}", .{ self.name, version.major });
-                        self.name_only_filename = self.builder.fmt("lib{}.so", .{self.name});
-                        self.out_lib_filename = self.out_filename;
-                    }
+                } else if (target.os.tag == .windows) {
+                    self.out_lib_filename = self.builder.fmt("{}.lib", .{self.name});
                 } else {
-                    if (self.target.isDarwin()) {
-                        self.out_filename = self.builder.fmt("lib{}.dylib", .{self.name});
-                        self.out_lib_filename = self.out_filename;
-                    } else if (self.target.isWindows()) {
-                        self.out_filename = self.builder.fmt("{}.dll", .{self.name});
-                        self.out_lib_filename = self.builder.fmt("{}.lib", .{self.name});
-                    } else {
-                        self.out_filename = self.builder.fmt("lib{}.so", .{self.name});
-                        self.out_lib_filename = self.out_filename;
-                    }
+                    self.major_only_filename = self.builder.fmt("lib{}.so.{d}", .{ self.name, version.major });
+                    self.name_only_filename = self.builder.fmt("lib{}.so", .{self.name});
+                    self.out_lib_filename = self.out_filename;
                 }
-            },
+            } else {
+                if (target.isDarwin()) {
+                    self.out_lib_filename = self.out_filename;
+                } else if (target.os.tag == .windows) {
+                    self.out_lib_filename = self.builder.fmt("{}.lib", .{self.name});
+                } else {
+                    self.out_lib_filename = self.out_filename;
+                }
+            }
         }
     }
 
@@ -1691,8 +1688,6 @@ pub const LibExeObjStep = struct {
         self.main_pkg_path = dir_path;
     }
 
-    pub const setDisableGenH = @compileError("deprecated; set the emit_h field directly");
-
     pub fn setLibCFile(self: *LibExeObjStep, libc_file: ?[]const u8) void {
         self.libc_file = libc_file;
     }
@@ -1809,6 +1804,13 @@ pub const LibExeObjStep = struct {
             else => {},
         }
         out.print("pub const {} = {};\n", .{ name, value }) catch unreachable;
+    }
+
+    /// The value is the path in the cache dir.
+    /// Adds a dependency automatically.
+    pub fn addBuildOptionArtifact(self: *LibExeObjStep, name: []const u8, artifact: *LibExeObjStep) void {
+        self.build_options_artifact_args.append(.{ .name = name, .artifact = artifact }) catch unreachable;
+        self.step.dependOn(&artifact.step);
     }
 
     pub fn addSystemIncludeDir(self: *LibExeObjStep, path: []const u8) void {
@@ -1946,10 +1948,10 @@ pub const LibExeObjStep = struct {
 
         if (self.root_src) |root_src| try zig_args.append(root_src.getPath(builder));
 
+        var prev_has_extra_flags = false;
         for (self.link_objects.span()) |link_object| {
             switch (link_object) {
                 .StaticPath => |static_path| {
-                    try zig_args.append("--object");
                     try zig_args.append(builder.pathFromRoot(static_path));
                 },
 
@@ -1957,12 +1959,10 @@ pub const LibExeObjStep = struct {
                     .Exe => unreachable,
                     .Test => unreachable,
                     .Obj => {
-                        try zig_args.append("--object");
                         try zig_args.append(other.getOutputPath());
                     },
                     .Lib => {
                         if (!other.is_dynamic or self.target.isWindows()) {
-                            try zig_args.append("--object");
                             try zig_args.append(other.getOutputLibPath());
                         } else {
                             const full_path_lib = other.getOutputPath();
@@ -1981,20 +1981,41 @@ pub const LibExeObjStep = struct {
                     try zig_args.append(name);
                 },
                 .AssemblyFile => |asm_file| {
-                    try zig_args.append("--c-source");
+                    if (prev_has_extra_flags) {
+                        try zig_args.append("-extra-cflags");
+                        try zig_args.append("--");
+                        prev_has_extra_flags = false;
+                    }
                     try zig_args.append(asm_file.getPath(builder));
                 },
                 .CSourceFile => |c_source_file| {
-                    try zig_args.append("--c-source");
-                    for (c_source_file.args) |arg| {
-                        try zig_args.append(arg);
+                    if (c_source_file.args.len == 0) {
+                        if (prev_has_extra_flags) {
+                            try zig_args.append("-cflags");
+                            try zig_args.append("--");
+                            prev_has_extra_flags = false;
+                        }
+                    } else {
+                        try zig_args.append("-cflags");
+                        for (c_source_file.args) |arg| {
+                            try zig_args.append(arg);
+                        }
+                        try zig_args.append("--");
                     }
                     try zig_args.append(c_source_file.source.getPath(builder));
                 },
             }
         }
 
-        if (self.build_options_contents.items.len > 0) {
+        if (self.build_options_contents.items.len > 0 or self.build_options_artifact_args.items.len > 0) {
+            // Render build artifact options at the last minute, now that the path is known.
+            for (self.build_options_artifact_args.items) |item| {
+                const out = self.build_options_contents.writer();
+                out.print("pub const {}: []const u8 = ", .{item.name}) catch unreachable;
+                std.zig.renderStringLiteral(item.artifact.getOutputPath(), out) catch unreachable;
+                out.writeAll(";\n") catch unreachable;
+            }
+
             const build_options_file = try fs.path.join(
                 builder.allocator,
                 &[_][]const u8{ builder.cache_root, builder.fmt("{}_build_options.zig", .{self.name}) },
@@ -2005,6 +2026,11 @@ pub const LibExeObjStep = struct {
             try zig_args.append("build_options");
             try zig_args.append(path_from_root);
             try zig_args.append("--pkg-end");
+        }
+
+        if (self.image_base) |image_base| {
+            try zig_args.append("--image-base");
+            try zig_args.append(builder.fmt("0x{x}", .{image_base}));
         }
 
         if (self.filter) |filter| {
@@ -2033,6 +2059,7 @@ pub const LibExeObjStep = struct {
         if (self.emit_llvm_ir) try zig_args.append("-femit-llvm-ir");
         if (self.emit_asm) try zig_args.append("-femit-asm");
         if (!self.emit_bin) try zig_args.append("-fno-emit-bin");
+        if (self.emit_docs) try zig_args.append("-femit-docs");
         if (self.emit_h) try zig_args.append("-femit-h");
 
         if (self.strip) {
@@ -2040,6 +2067,9 @@ pub const LibExeObjStep = struct {
         }
         if (self.link_eh_frame_hdr) {
             try zig_args.append("--eh-frame-hdr");
+        }
+        if (self.link_emit_relocs) {
+            try zig_args.append("--emit-relocs");
         }
         if (self.link_function_sections) {
             try zig_args.append("-ffunction-sections");
@@ -2054,10 +2084,8 @@ pub const LibExeObjStep = struct {
         }
 
         switch (self.build_mode) {
-            .Debug => {},
-            .ReleaseSafe => zig_args.append("--release-safe") catch unreachable,
-            .ReleaseFast => zig_args.append("--release-fast") catch unreachable,
-            .ReleaseSmall => zig_args.append("--release-small") catch unreachable,
+            .Debug => {}, // Skip since it's the default.
+            else => zig_args.append(builder.fmt("-O{s}", .{@tagName(self.build_mode)})) catch unreachable,
         }
 
         try zig_args.append("--cache-dir");
@@ -2068,14 +2096,8 @@ pub const LibExeObjStep = struct {
 
         if (self.kind == Kind.Lib and self.is_dynamic) {
             if (self.version) |version| {
-                zig_args.append("--ver-major") catch unreachable;
-                zig_args.append(builder.fmt("{}", .{version.major})) catch unreachable;
-
-                zig_args.append("--ver-minor") catch unreachable;
-                zig_args.append(builder.fmt("{}", .{version.minor})) catch unreachable;
-
-                zig_args.append("--ver-patch") catch unreachable;
-                zig_args.append(builder.fmt("{}", .{version.patch})) catch unreachable;
+                zig_args.append("--version") catch unreachable;
+                zig_args.append(builder.fmt("{}", .{version})) catch unreachable;
             }
         }
         if (self.is_dynamic) {
@@ -2142,8 +2164,8 @@ pub const LibExeObjStep = struct {
         }
 
         if (self.linker_script) |linker_script| {
-            zig_args.append("--linker-script") catch unreachable;
-            zig_args.append(builder.pathFromRoot(linker_script)) catch unreachable;
+            try zig_args.append("--script");
+            try zig_args.append(builder.pathFromRoot(linker_script));
         }
 
         if (self.version_script) |version_script| {
@@ -2292,8 +2314,7 @@ pub const LibExeObjStep = struct {
         if (self.kind == Kind.Test) {
             try builder.spawnChild(zig_args.span());
         } else {
-            try zig_args.append("--cache");
-            try zig_args.append("on");
+            try zig_args.append("--enable-cache");
 
             const output_dir_nl = try builder.execFromStep(zig_args.span(), &self.step);
             const build_output_dir = mem.trimRight(u8, output_dir_nl, "\r\n");
@@ -2310,6 +2331,14 @@ pub const LibExeObjStep = struct {
 
                 var it = src_dir.iterate();
                 while (try it.next()) |entry| {
+                    // The compiler can put these files into the same directory, but we don't
+                    // want to copy them over.
+                    if (mem.eql(u8, entry.name, "stage1.id") or
+                        mem.eql(u8, entry.name, "llvm-ar.id") or
+                        mem.eql(u8, entry.name, "libs.txt") or
+                        mem.eql(u8, entry.name, "builtin.zig") or
+                        mem.eql(u8, entry.name, "lld.id")) continue;
+
                     _ = try src_dir.updateFile(entry.name, dest_dir, entry.name, .{});
                 }
             } else {
