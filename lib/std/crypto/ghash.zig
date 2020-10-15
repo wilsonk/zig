@@ -105,6 +105,17 @@ pub const Ghash = struct {
         return product[0];
     }
 
+    inline fn clmul_pmull(x: u64, y: u64) u64 {
+        const Vector = std.meta.Vector;
+        const product = asm (
+            \\ pmull %[out].1q, %[x].1d, %[y].1d
+            : [out] "=w" (-> Vector(2, u64))
+            : [x] "w" (@bitCast(Vector(2, u64), @as(u128, x))),
+              [y] "w" (@bitCast(Vector(2, u64), @as(u128, y)))
+        );
+        return product[0];
+    }
+
     fn clmul_soft(x: u64, y: u64) u64 {
         const x0 = x & 0x1111111111111111;
         const x1 = x & 0x2222222222222222;
@@ -127,7 +138,14 @@ pub const Ghash = struct {
 
     const has_pclmul = comptime std.Target.x86.featureSetHas(std.Target.current.cpu.features, .pclmul);
     const has_avx = comptime std.Target.x86.featureSetHas(std.Target.current.cpu.features, .avx);
-    const clmul = if (std.Target.current.cpu.arch == .x86_64 and has_pclmul and has_avx) clmul_pclmul else clmul_soft;
+    const has_armaes = comptime std.Target.aarch64.featureSetHas(std.Target.current.cpu.features, .aes);
+    const clmul = if (std.Target.current.cpu.arch == .x86_64 and has_pclmul and has_avx) impl: {
+        break :impl clmul_pclmul;
+    } else if (std.Target.current.cpu.arch == .aarch64 and has_armaes) impl: {
+        break :impl clmul_pmull;
+    } else impl: {
+        break :impl clmul_soft;
+    };
 
     fn blocks(st: *Ghash, msg: []const u8) void {
         assert(msg.len % 16 == 0); // GHASH blocks() expects full blocks
@@ -250,7 +268,7 @@ pub const Ghash = struct {
             }
             mb = mb[want..];
             st.leftover += want;
-            if (st.leftover > block_size) {
+            if (st.leftover < block_size) {
                 return;
             }
             st.blocks(&st.buf);
@@ -269,14 +287,21 @@ pub const Ghash = struct {
         }
     }
 
-    pub fn final(st: *Ghash, out: *[mac_length]u8) void {
-        if (st.leftover > 0) {
-            var i = st.leftover;
-            while (i < block_size) : (i += 1) {
-                st.buf[i] = 0;
-            }
-            st.blocks(&st.buf);
+    /// Zero-pad to align the next input to the first byte of a block
+    pub fn pad(st: *Ghash) void {
+        if (st.leftover == 0) {
+            return;
         }
+        var i = st.leftover;
+        while (i < block_size) : (i += 1) {
+            st.buf[i] = 0;
+        }
+        st.blocks(&st.buf);
+        st.leftover = 0;
+    }
+
+    pub fn final(st: *Ghash, out: *[mac_length]u8) void {
+        st.pad();
         mem.writeIntBig(u64, out[0..8], st.y1);
         mem.writeIntBig(u64, out[8..16], st.y0);
 

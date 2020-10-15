@@ -23,6 +23,7 @@
 
 #include <stdio.h>
 #include <errno.h>
+#include <math.h>
 
 enum ResumeId {
     ResumeIdManual,
@@ -159,12 +160,6 @@ static ZigLLVM_CallingConv get_llvm_cc(CodeGen *g, CallingConvention cc) {
         case CallingConventionUnspecified:
             return ZigLLVM_Fast;
         case CallingConventionC:
-            return ZigLLVM_C;
-        case CallingConventionCold:
-            if ((g->zig_target->arch == ZigLLVM_x86 ||
-                 g->zig_target->arch == ZigLLVM_x86_64) &&
-                g->zig_target->os != OsWindows)
-                return ZigLLVM_Cold;
             return ZigLLVM_C;
         case CallingConventionNaked:
             zig_unreachable();
@@ -339,7 +334,6 @@ static bool cc_want_sret_attr(CallingConvention cc) {
         case CallingConventionNaked:
             zig_unreachable();
         case CallingConventionC:
-        case CallingConventionCold:
         case CallingConventionInterrupt:
         case CallingConventionSignal:
         case CallingConventionStdcall:
@@ -448,7 +442,7 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
         ZigLLVMFunctionSetCallingConv(llvm_fn, get_llvm_cc(g, cc));
     }
 
-    bool want_cold = fn->is_cold || cc == CallingConventionCold;
+    bool want_cold = fn->is_cold;
     if (want_cold) {
         ZigLLVMAddFunctionAttrCold(llvm_fn);
     }
@@ -3385,7 +3379,7 @@ static LLVMValueRef ir_render_int_to_ptr(CodeGen *g, IrExecutableGen *executable
     LLVMValueRef target_val = ir_llvm_value(g, instruction->target);
     const uint32_t align_bytes = get_ptr_align(g, wanted_type);
 
-    if (ir_want_runtime_safety(g, &instruction->base) && align_bytes > 1) {
+    if (ir_want_runtime_safety(g, &instruction->base)) {
         ZigType *usize = g->builtin_types.entry_usize;
         LLVMValueRef zero = LLVMConstNull(usize->llvm_type);
 
@@ -3401,7 +3395,7 @@ static LLVMValueRef ir_render_int_to_ptr(CodeGen *g, IrExecutableGen *executable
             LLVMPositionBuilderAtEnd(g->builder, ok_block);
         }
 
-        {
+        if (align_bytes > 1) {
             LLVMValueRef alignment_minus_1 = LLVMConstInt(usize->llvm_type, align_bytes - 1, false);
             LLVMValueRef anded_val = LLVMBuildAnd(g->builder, target_val, alignment_minus_1, "");
             LLVMValueRef is_ok_bit = LLVMBuildICmp(g->builder, LLVMIntEQ, anded_val, zero, "");
@@ -8818,18 +8812,17 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
 
     static_assert(CallingConventionUnspecified == 0, "");
     static_assert(CallingConventionC == 1, "");
-    static_assert(CallingConventionCold == 2, "");
-    static_assert(CallingConventionNaked == 3, "");
-    static_assert(CallingConventionAsync == 4, "");
-    static_assert(CallingConventionInterrupt == 5, "");
-    static_assert(CallingConventionSignal == 6, "");
-    static_assert(CallingConventionStdcall == 7, "");
-    static_assert(CallingConventionFastcall == 8, "");
-    static_assert(CallingConventionVectorcall == 9, "");
-    static_assert(CallingConventionThiscall == 10, "");
-    static_assert(CallingConventionAPCS == 11, "");
-    static_assert(CallingConventionAAPCS == 12, "");
-    static_assert(CallingConventionAAPCSVFP == 13, "");
+    static_assert(CallingConventionNaked == 2, "");
+    static_assert(CallingConventionAsync == 3, "");
+    static_assert(CallingConventionInterrupt == 4, "");
+    static_assert(CallingConventionSignal == 5, "");
+    static_assert(CallingConventionStdcall == 6, "");
+    static_assert(CallingConventionFastcall == 7, "");
+    static_assert(CallingConventionVectorcall == 8, "");
+    static_assert(CallingConventionThiscall == 9, "");
+    static_assert(CallingConventionAPCS == 10, "");
+    static_assert(CallingConventionAAPCS == 11, "");
+    static_assert(CallingConventionAAPCSVFP == 12, "");
 
     static_assert(FnInlineAuto == 0, "");
     static_assert(FnInlineAlways == 1, "");

@@ -120,6 +120,39 @@ pub fn mainArgs(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
         fatal("expected command argument", .{});
     }
 
+    if (std.Target.current.os.tag != .windows and
+        std.os.getenvZ("ZIG_IS_DETECTING_LIBC_PATHS") != null)
+    {
+        // In this case we have accidentally invoked ourselves as "the system C compiler"
+        // to figure out where libc is installed. This is essentially infinite recursion
+        // via child process execution due to the CC environment variable pointing to Zig.
+        // Here we ignore the CC environment variable and exec `cc` as a child process.
+        // However it's possible Zig is installed as *that* C compiler as well, which is
+        // why we have this additional environment variable here to check.
+        var env_map = try std.process.getEnvMap(arena);
+
+        const inf_loop_env_key = "ZIG_IS_TRYING_TO_NOT_CALL_ITSELF";
+        if (env_map.get(inf_loop_env_key) != null) {
+            fatal("The compilation links against libc, but Zig is unable to provide a libc " ++
+                "for this operating system, and no --libc " ++
+                "parameter was provided, so Zig attempted to invoke the system C compiler " ++
+                "in order to determine where libc is installed. However the system C " ++
+                "compiler is `zig cc`, so no libc installation was found.", .{});
+        }
+        try env_map.set(inf_loop_env_key, "1");
+
+        // Some programs such as CMake will strip the `cc` and subsequent args from the
+        // CC environment variable. We detect and support this scenario here because of
+        // the ZIG_IS_DETECTING_LIBC_PATHS environment variable.
+        if (mem.eql(u8, args[1], "cc")) {
+            return std.os.execvpe(arena, args[1..], &env_map);
+        } else {
+            const modified_args = try arena.dupe([]const u8, args);
+            modified_args[0] = "cc";
+            return std.os.execvpe(arena, modified_args, &env_map);
+        }
+    }
+
     const cmd = args[1];
     const cmd_args = args[2..];
     if (mem.eql(u8, cmd, "build-exe")) {
@@ -444,7 +477,10 @@ fn buildOutputType(
     var link_eh_frame_hdr = false;
     var link_emit_relocs = false;
     var each_lib_rpath: ?bool = null;
-    var libc_paths_file: ?[]const u8 = null;
+    var libc_paths_file: ?[]const u8 = std.process.getEnvVarOwned(arena, "ZIG_LIBC") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => null,
+        else => |e| return e,
+    };
     var machine_code_model: std.builtin.CodeModel = .default;
     var runtime_args_start: ?usize = null;
     var test_filter: ?[]const u8 = null;
@@ -525,7 +561,7 @@ fn buildOutputType(
             //}
             const args = all_args[2..];
             var i: usize = 0;
-            while (i < args.len) : (i += 1) {
+            args_loop: while (i < args.len) : (i += 1) {
                 const arg = args[i];
                 if (mem.startsWith(u8, arg, "-")) {
                     if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "--help")) {
@@ -533,7 +569,10 @@ fn buildOutputType(
                         return cleanExit();
                     } else if (mem.eql(u8, arg, "--")) {
                         if (arg_mode == .run) {
-                            runtime_args_start = i + 1;
+                            // The index refers to all_args so skip `zig` `run`
+                            // and `--`
+                            runtime_args_start = i + 3;
+                            break :args_loop;
                         } else {
                             fatal("unexpected end-of-parameter mark: --", .{});
                         }
@@ -989,15 +1028,20 @@ fn buildOutputType(
                     },
                     .optimize => {
                         // Alright, what release mode do they want?
-                        if (mem.eql(u8, it.only_arg, "Os")) {
+                        const level = if (it.only_arg.len >= 1 and it.only_arg[0] == 'O') it.only_arg[1..] else it.only_arg;
+                        if (mem.eql(u8, level, "s") or
+                            mem.eql(u8, level, "z"))
+                        {
                             optimize_mode = .ReleaseSmall;
-                        } else if (mem.eql(u8, it.only_arg, "O2") or
-                            mem.eql(u8, it.only_arg, "O3") or
-                            mem.eql(u8, it.only_arg, "O4"))
+                        } else if (mem.eql(u8, level, "1") or
+                            mem.eql(u8, level, "2") or
+                            mem.eql(u8, level, "3") or
+                            mem.eql(u8, level, "4") or
+                            mem.eql(u8, level, "fast"))
                         {
                             optimize_mode = .ReleaseFast;
-                        } else if (mem.eql(u8, it.only_arg, "Og") or
-                            mem.eql(u8, it.only_arg, "O0"))
+                        } else if (mem.eql(u8, level, "g") or
+                            mem.eql(u8, level, "0"))
                         {
                             optimize_mode = .Debug;
                         } else {
@@ -1006,8 +1050,13 @@ fn buildOutputType(
                     },
                     .debug => {
                         strip = false;
-                        if (mem.eql(u8, it.only_arg, "-g")) {
+                        if (mem.eql(u8, it.only_arg, "g")) {
                             // We handled with strip = false above.
+                        } else if (mem.eql(u8, it.only_arg, "g1") or
+                            mem.eql(u8, it.only_arg, "gline-tables-only"))
+                        {
+                            // We handled with strip = false above. but we also want reduced debug info.
+                            try clang_argv.append("-gline-tables-only");
                         } else {
                             try clang_argv.appendSlice(it.other_args);
                         }
@@ -2551,7 +2600,7 @@ fn fmtPathFile(
     const source_code = source_file.readToEndAllocOptions(
         fmt.gpa,
         max_src_size,
-        stat.size,
+        std.math.cast(usize, stat.size) catch return error.FileTooBig,
         @alignOf(u8),
         null,
     ) catch |err| switch (err) {
