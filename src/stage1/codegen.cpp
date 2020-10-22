@@ -1645,11 +1645,13 @@ static void gen_assign_raw(CodeGen *g, LLVMValueRef ptr, ZigType *ptr_type,
 
         ZigType *usize = g->builtin_types.entry_usize;
         uint64_t size_bytes = LLVMStoreSizeOfType(g->target_data_ref, get_llvm_type(g, child_type));
-        uint64_t align_bytes = get_ptr_align(g, ptr_type);
+        uint64_t src_align_bytes = get_abi_alignment(g, child_type);
+        uint64_t dest_align_bytes = get_ptr_align(g, ptr_type);
         assert(size_bytes > 0);
-        assert(align_bytes > 0);
+        assert(src_align_bytes > 0);
+        assert(dest_align_bytes > 0);
 
-        ZigLLVMBuildMemCpy(g->builder, dest_ptr, align_bytes, src_ptr, align_bytes,
+        ZigLLVMBuildMemCpy(g->builder, dest_ptr, dest_align_bytes, src_ptr, src_align_bytes,
                 LLVMConstInt(usize->llvm_type, size_bytes, false),
                 ptr_type->data.pointer.is_volatile);
         return;
@@ -3562,13 +3564,7 @@ static LLVMValueRef ir_gen_negation(CodeGen *g, IrInstGen *inst, IrInstGen *oper
 static LLVMValueRef ir_render_negation(CodeGen *g, IrExecutableGen *executable,
         IrInstGenNegation *inst)
 {
-    return ir_gen_negation(g, &inst->base, inst->operand, false);
-}
-
-static LLVMValueRef ir_render_negation_wrapping(CodeGen *g, IrExecutableGen *executable,
-        IrInstGenNegationWrapping *inst)
-{
-    return ir_gen_negation(g, &inst->base, inst->operand, true);
+    return ir_gen_negation(g, &inst->base, inst->operand, inst->wrapping);
 }
 
 static LLVMValueRef ir_render_bool_not(CodeGen *g, IrExecutableGen *executable, IrInstGenBoolNot *instruction) {
@@ -6643,8 +6639,6 @@ static LLVMValueRef ir_render_instruction(CodeGen *g, IrExecutableGen *executabl
             return ir_render_binary_not(g, executable, (IrInstGenBinaryNot *)instruction);
         case IrInstGenIdNegation:
             return ir_render_negation(g, executable, (IrInstGenNegation *)instruction);
-        case IrInstGenIdNegationWrapping:
-            return ir_render_negation_wrapping(g, executable, (IrInstGenNegationWrapping *)instruction);
         case IrInstGenIdLoadPtr:
             return ir_render_load_ptr(g, executable, (IrInstGenLoadPtr *)instruction);
         case IrInstGenIdStorePtr:

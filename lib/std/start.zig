@@ -29,7 +29,15 @@ comptime {
             if (!@hasDecl(root, "WinMain") and !@hasDecl(root, "WinMainCRTStartup") and
                 !@hasDecl(root, "wWinMain") and !@hasDecl(root, "wWinMainCRTStartup"))
             {
-                @export(WinMainCRTStartup, .{ .name = "WinMainCRTStartup" });
+                @export(WinStartup, .{ .name = "wWinMainCRTStartup" });
+            } else if (@hasDecl(root, "WinMain") and !@hasDecl(root, "WinMainCRTStartup") and
+                !@hasDecl(root, "wWinMain") and !@hasDecl(root, "wWinMainCRTStartup"))
+            {
+                @compileError("WinMain not supported; declare wWinMain or main instead");
+            } else if (@hasDecl(root, "wWinMain") and !@hasDecl(root, "wWinMainCRTStartup") and
+                !@hasDecl(root, "WinMain") and !@hasDecl(root, "WinMainCRTStartup"))
+            {
+                @export(wWinMainCRTStartup, .{ .name = "wWinMainCRTStartup" });
             }
         } else if (builtin.os.tag == .uefi) {
             if (!@hasDecl(root, "EfiMain")) @export(EfiMain, .{ .name = "EfiMain" });
@@ -143,7 +151,7 @@ fn _start() callconv(.Naked) noreturn {
     @call(.{ .modifier = .never_inline }, posixCallMainAndExit, .{});
 }
 
-fn WinMainCRTStartup() callconv(.Stdcall) noreturn {
+fn WinStartup() callconv(.Stdcall) noreturn {
     @setAlignStack(16);
     if (!builtin.single_threaded) {
         _ = @import("start_windows_tls.zig");
@@ -152,6 +160,17 @@ fn WinMainCRTStartup() callconv(.Stdcall) noreturn {
     std.debug.maybeEnableSegfaultHandler();
 
     std.os.windows.kernel32.ExitProcess(initEventLoopAndCallMain());
+}
+
+fn wWinMainCRTStartup() callconv(.Stdcall) noreturn {
+    @setAlignStack(16);
+    if (!builtin.single_threaded) {
+        _ = @import("start_windows_tls.zig");
+    }
+
+    std.debug.maybeEnableSegfaultHandler();
+
+    std.os.windows.kernel32.ExitProcess(initEventLoopAndCallWinMain());
 }
 
 // TODO https://github.com/ziglang/zig/issues/265
@@ -244,8 +263,39 @@ inline fn initEventLoopAndCallMain() u8 {
     // and we want fewer call frames in stack traces.
     return @call(.{ .modifier = .always_inline }, callMain, .{});
 }
+
+// This is marked inline because for some reason LLVM in release mode fails to inline it,
+// and we want fewer call frames in stack traces.
+// TODO This function is duplicated from initEventLoopAndCallMain instead of using generics
+// because it is working around stage1 compiler bugs.
+inline fn initEventLoopAndCallWinMain() std.os.windows.INT {
+    if (std.event.Loop.instance) |loop| {
+        if (!@hasDecl(root, "event_loop")) {
+            loop.init() catch |err| {
+                std.log.err("{}", .{@errorName(err)});
+                if (@errorReturnTrace()) |trace| {
+                    std.debug.dumpStackTrace(trace.*);
+                }
+                return 1;
+            };
+            defer loop.deinit();
+
+            var result: u8 = undefined;
+            var frame: @Frame(callMainAsync) = undefined;
+            _ = @asyncCall(&frame, &result, callMainAsync, .{loop});
+            loop.run();
+            return result;
+        }
+    }
+
+    // This is marked inline because for some reason LLVM in release mode fails to inline it,
+    // and we want fewer call frames in stack traces.
+    return @call(.{ .modifier = .always_inline }, call_wWinMain, .{});
+}
+
 fn callMainAsync(loop: *std.event.Loop) callconv(.Async) u8 {
     // This prevents the event loop from terminating at least until main() has returned.
+    // TODO This shouldn't be needed here; it should be in the event loop code.
     loop.beginOneEvent();
     defer loop.finishOneEvent();
     return callMain();
@@ -289,4 +339,16 @@ pub fn callMain() u8 {
         },
         else => @compileError(bad_main_ret),
     }
+}
+
+pub fn call_wWinMain() std.os.windows.INT {
+    const hInstance = @ptrCast(std.os.windows.HINSTANCE, std.os.windows.kernel32.GetModuleHandleW(null).?);
+    const hPrevInstance: ?std.os.windows.HINSTANCE = null; // MSDN: "This parameter is always NULL"
+    const lpCmdLine = std.os.windows.kernel32.GetCommandLineW();
+
+    // There's no (documented) way to get the nCmdShow parameter, so we're
+    // using this fairly standard default.
+    const nCmdShow = std.os.windows.user32.SW_SHOW;
+
+    return root.wWinMain(hInstance, hPrevInstance, lpCmdLine, nCmdShow);
 }

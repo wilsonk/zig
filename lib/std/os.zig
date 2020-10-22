@@ -33,6 +33,7 @@ pub const darwin = @import("os/darwin.zig");
 pub const dragonfly = @import("os/dragonfly.zig");
 pub const freebsd = @import("os/freebsd.zig");
 pub const netbsd = @import("os/netbsd.zig");
+pub const openbsd = @import("os/openbsd.zig");
 pub const linux = @import("os/linux.zig");
 pub const uefi = @import("os/uefi.zig");
 pub const wasi = @import("os/wasi.zig");
@@ -47,6 +48,7 @@ test "" {
     _ = freebsd;
     _ = linux;
     _ = netbsd;
+    _ = openbsd;
     _ = uefi;
     _ = wasi;
     _ = windows;
@@ -66,6 +68,7 @@ else switch (builtin.os.tag) {
     .freebsd => freebsd,
     .linux => linux,
     .netbsd => netbsd,
+    .openbsd => openbsd,
     .dragonfly => dragonfly,
     .wasi => wasi,
     .windows => windows,
@@ -161,17 +164,17 @@ pub fn getrandom(buffer: []u8) GetRandomError!void {
         }
         return;
     }
-    if (builtin.os.tag == .netbsd) {
-        netbsd.arc4random_buf(buffer.ptr, buffer.len);
-        return;
-    }
-    if (builtin.os.tag == .wasi) {
-        switch (wasi.random_get(buffer.ptr, buffer.len)) {
+    switch (builtin.os.tag) {
+        .netbsd, .openbsd, .macos, .ios, .tvos, .watchos => {
+            system.arc4random_buf(buffer.ptr, buffer.len);
+            return;
+        },
+        .wasi => switch (wasi.random_get(buffer.ptr, buffer.len)) {
             0 => return,
             else => |err| return unexpectedErrno(err),
-        }
+        },
+        else => return getRandomBytesDevURandom(buffer),
     }
-    return getRandomBytesDevURandom(buffer);
 }
 
 fn getRandomBytesDevURandom(buf: []u8) !void {
@@ -2585,7 +2588,7 @@ pub fn isatty(handle: fd_t) bool {
             }
         }
     }
-    unreachable;
+    return system.isatty(handle) != 0;
 }
 
 pub fn isCygwinPty(handle: fd_t) bool {
@@ -3121,16 +3124,24 @@ pub fn getsockoptError(sockfd: fd_t) ConnectError!void {
     }
 }
 
-pub fn waitpid(pid: i32, flags: u32) u32 {
-    // TODO allow implicit pointer cast from *u32 to *c_uint ?
+pub const WaitPidResult = struct {
+    pid: pid_t,
+    status: u32,
+};
+
+pub fn waitpid(pid: pid_t, flags: u32) WaitPidResult {
     const Status = if (builtin.link_libc) c_uint else u32;
     var status: Status = undefined;
     while (true) {
-        switch (errno(system.waitpid(pid, &status, flags))) {
-            0 => return @bitCast(u32, status),
+        const rc = system.waitpid(pid, &status, flags);
+        switch (errno(rc)) {
+            0 => return .{
+                .pid = @intCast(pid_t, rc),
+                .status = @bitCast(u32, status),
+            },
             EINTR => continue,
             ECHILD => unreachable, // The process specified does not exist. It would be a race condition to handle this error.
-            EINVAL => unreachable, // The options argument was invalid
+            EINVAL => unreachable, // Invalid flags.
             else => unreachable,
         }
     }
@@ -4486,7 +4497,7 @@ pub fn res_mkquery(
     // Make a reasonably unpredictable id
     var ts: timespec = undefined;
     clock_gettime(CLOCK_REALTIME, &ts) catch {};
-    const UInt = std.meta.Int(false, std.meta.bitCount(@TypeOf(ts.tv_nsec)));
+    const UInt = std.meta.Int(.unsigned, std.meta.bitCount(@TypeOf(ts.tv_nsec)));
     const unsec = @bitCast(UInt, ts.tv_nsec);
     const id = @truncate(u32, unsec + unsec / 65536);
     q[0] = @truncate(u8, id / 256);
@@ -5434,9 +5445,7 @@ pub fn getrlimit(resource: rlimit_resource) GetrlimitError!rlimit {
     }
 }
 
-pub const SetrlimitError = error{
-    PermissionDenied,
-} || UnexpectedError;
+pub const SetrlimitError = error{PermissionDenied} || UnexpectedError;
 
 pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void {
     // TODO implement for systems other than linux and enable test

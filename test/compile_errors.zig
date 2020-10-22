@@ -2,6 +2,15 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.add("indexing a undefined slice at comptime",
+        \\comptime {
+        \\    var slice: []u8 = undefined;
+        \\    slice[0] = 2;
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:3:10: error: index 0 outside slice of size 0",
+    });
+
     cases.add("array in c exported function",
         \\export fn zig_array(x: [10]u8) void {
         \\    expect(std.mem.eql(u8, &x, "1234567890"));
@@ -7714,7 +7723,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     });
 
     cases.add( // fixed bug #2032
-    "compile diagnostic string for top level decl type",
+        "compile diagnostic string for top level decl type",
         \\export fn entry() void {
         \\    var foo: u32 = @This(){};
         \\}
@@ -8163,14 +8172,19 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     , &[_][]const u8{
         "tmp.zig:2:9: error: @wasmMemoryGrow is a wasm32 feature only",
     });
-
     cases.add("Issue #5586: Make unary minus for unsigned types a compile error",
-        \\export fn f(x: u32) u32 {
+        \\export fn f1(x: u32) u32 {
+        \\    const y = -%x;
+        \\    return -y;
+        \\}
+        \\const V = @import("std").meta.Vector;
+        \\export fn f2(x: V(4, u32)) V(4, u32) {
         \\    const y = -%x;
         \\    return -y;
         \\}
     , &[_][]const u8{
         "tmp.zig:3:12: error: negation of type 'u32'",
+        "tmp.zig:8:12: error: negation of type 'u32'",
     });
 
     cases.add("Issue #5618: coercion of ?*c_void to *c_void must fail.",
