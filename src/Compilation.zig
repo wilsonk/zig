@@ -1640,16 +1640,16 @@ fn updateCObject(comp: *Compilation, c_object: *CObject, c_comp_progress_node: *
             }
         } else {
             child.stdin_behavior = .Ignore;
-            child.stdout_behavior = .Pipe;
+            child.stdout_behavior = .Ignore;
             child.stderr_behavior = .Pipe;
 
             try child.spawn();
 
-            const stdout_reader = child.stdout.?.reader();
             const stderr_reader = child.stderr.?.reader();
 
             // TODO https://github.com/ziglang/zig/issues/6343
-            const stdout = try stdout_reader.readAllAlloc(arena, std.math.maxInt(u32));
+            // Please uncomment and use stdout once this issue is fixed
+            // const stdout = try stdout_reader.readAllAlloc(arena, std.math.maxInt(u32));
             const stderr = try stderr_reader.readAllAlloc(arena, 10 * 1024 * 1024);
 
             const term = child.wait() catch |err| {
@@ -2127,7 +2127,9 @@ fn detectLibCIncludeDirs(
         return detectLibCFromLibCInstallation(arena, target, lci);
     }
 
-    if (target_util.canBuildLibC(target)) {
+    if (target_util.canBuildLibC(target)) outer: {
+        if (is_native_os and target.isDarwin()) break :outer; // If we're on Darwin, we want to use native since we only have headers.
+
         const generic_name = target_util.libCGenericName(target);
         // Some architectures are handled by the same set of headers.
         const arch_name = if (target.abi.isMusl()) target_util.archMuslName(target.cpu.arch) else @tagName(target.cpu.arch);

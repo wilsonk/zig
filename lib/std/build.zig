@@ -907,6 +907,9 @@ pub const Builder = struct {
         install_dir: InstallDir,
         dest_rel_path: []const u8,
     ) *InstallFileStep {
+        if (dest_rel_path.len == 0) {
+            panic("dest_rel_path must be non-empty", .{});
+        }
         const install_step = self.allocator.create(InstallFileStep) catch unreachable;
         install_step.* = InstallFileStep.init(self, src_path, install_dir, dest_rel_path);
         return install_step;
@@ -1816,7 +1819,7 @@ pub const LibExeObjStep = struct {
             },
             else => {},
         }
-        out.print("pub const {z} = {};\n", .{ name, value }) catch unreachable;
+        out.print("pub const {z}: {} = {};\n", .{ name, @typeName(T), value }) catch unreachable;
     }
 
     /// The value is the path in the cache dir.
@@ -2751,6 +2754,34 @@ test "Builder.dupePkg()" {
     std.testing.expect(dupe_deps[0].path.ptr != pkg_dep.path.ptr);
 }
 
+test "LibExeObjStep.addBuildOption" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = try Builder.create(
+        &arena.allocator,
+        "test",
+        "test",
+        "test",
+    );
+    defer builder.destroy();
+
+    var exe = builder.addExecutable("not_an_executable", "/not/an/executable.zig");
+    exe.addBuildOption(usize, "option1", 1);
+    exe.addBuildOption(?usize, "option2", null);
+    exe.addBuildOption([]const u8, "string", "zigisthebest");
+    exe.addBuildOption(?[]const u8, "optional_string", null);
+
+    std.testing.expectEqualStrings(
+        \\pub const option1: usize = 1;
+        \\pub const option2: ?usize = null;
+        \\pub const string: []const u8 = "zigisthebest";
+        \\pub const optional_string: ?[]const u8 = null;
+        \\
+    , exe.build_options_contents.items);
+}
+
 test "LibExeObjStep.addPackage" {
     if (builtin.os.tag == .wasi) return error.SkipZigTest;
 
@@ -2787,6 +2818,12 @@ test "LibExeObjStep.addPackage" {
 test "" {
     // The only purpose of this test is to get all these untested functions
     // to be referenced to avoid regression so it is okay to skip some targets.
-    if (comptime std.Target.current.cpu.arch.ptrBitWidth() == 64)
+    if (comptime std.Target.current.cpu.arch.ptrBitWidth() == 64) {
         std.testing.refAllDecls(@This());
+        std.testing.refAllDecls(Builder);
+
+        inline for (std.meta.declarations(@This())) |decl|
+            if (comptime mem.endsWith(u8, decl.name, "Step"))
+                std.testing.refAllDecls(decl.data.Type);
+    }
 }

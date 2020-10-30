@@ -2,6 +2,21 @@ const tests = @import("tests.zig");
 const std = @import("std");
 
 pub fn addCases(cases: *tests.CompileErrorContext) void {
+    cases.add("unreachable executed at comptime",
+        \\fn foo(comptime x: i32) i32 {
+        \\    comptime {
+        \\        if (x >= 0) return -x;
+        \\        unreachable;
+        \\    }
+        \\}
+        \\export fn entry() void {
+        \\    _ = foo(-42);
+        \\}
+    , &[_][]const u8{
+        "tmp.zig:4:9: error: reached unreachable code",
+        "tmp.zig:8:12: note: called from here",
+    });
+
     cases.add("indexing a undefined slice at comptime",
         \\comptime {
         \\    var slice: []u8 = undefined;
@@ -2944,7 +2959,6 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         "tmp.zig:4:18: error: expected type 'fn(i32) void', found 'fn(bool) void",
         "tmp.zig:4:18: note: parameter 0: 'bool' cannot cast into 'i32'",
     });
-
     cases.add("cast negative value to unsigned integer",
         \\comptime {
         \\    const value: i32 = -1;
@@ -2955,7 +2969,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    const unsigned: u32 = value;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:36: error: cannot cast negative value -1 to unsigned integer type 'u32'",
+        "tmp.zig:3:22: error: attempt to cast negative value to unsigned integer",
         "tmp.zig:7:27: error: cannot cast negative value -1 to unsigned integer type 'u32'",
     });
 
@@ -2977,7 +2991,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    var unsigned: u64 = signed;
         \\}
     , &[_][]const u8{
-        "tmp.zig:3:31: error: integer value 300 cannot be coerced to type 'u8'",
+        "tmp.zig:3:18: error: cast from 'u16' to 'u8' truncates bits",
         "tmp.zig:7:22: error: integer value 300 cannot be coerced to type 'u8'",
         "tmp.zig:11:20: error: expected type 'u8', found 'u16'",
         "tmp.zig:11:20: note: unsigned 8-bit int cannot represent all possible unsigned 16-bit values",
@@ -6209,7 +6223,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    if (!ok) unreachable;
         \\}
     , &[_][]const u8{
-        "tmp.zig:10:14: error: unable to evaluate constant expression",
+        "tmp.zig:10:14: error: reached unreachable code",
         "tmp.zig:6:20: note: referenced here",
     });
 
