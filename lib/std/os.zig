@@ -3267,6 +3267,11 @@ pub fn waitpid(pid: pid_t, flags: u32) WaitPidResult {
     }
 }
 
+pub const Stat = if (builtin.link_libc)
+    system.libc_stat
+else
+    system.kernel_stat;
+
 pub const FStatError = error{
     SystemResources,
 
@@ -5636,16 +5641,19 @@ pub const PrctlError = error{
     PermissionDenied,
 } || UnexpectedError;
 
-pub fn prctl(option: i32, args: anytype) PrctlError!u31 {
+pub fn prctl(option: PR, args: anytype) PrctlError!u31 {
     if (@typeInfo(@TypeOf(args)) != .Struct)
         @compileError("Expected tuple or struct argument, found " ++ @typeName(@TypeOf(args)));
     if (args.len > 4)
         @compileError("prctl takes a maximum of 4 optional arguments");
 
     var buf: [4]usize = undefined;
-    inline for (args) |arg, i| buf[i] = arg;
+    {
+        comptime var i = 0;
+        inline while (i < args.len) : (i += 1) buf[i] = args[i];
+    }
 
-    const rc = system.prctl(option, buf[0], buf[1], buf[2], buf[3]);
+    const rc = system.prctl(@enumToInt(option), buf[0], buf[1], buf[2], buf[3]);
     switch (errno(rc)) {
         0 => return @intCast(u31, rc),
         EACCES => return error.AccessDenied,
@@ -5663,7 +5671,6 @@ pub fn prctl(option: i32, args: anytype) PrctlError!u31 {
 pub const GetrlimitError = UnexpectedError;
 
 pub fn getrlimit(resource: rlimit_resource) GetrlimitError!rlimit {
-    // TODO implement for systems other than linux and enable test
     var limits: rlimit = undefined;
     const rc = system.getrlimit(resource, &limits);
     switch (errno(rc)) {
@@ -5677,7 +5684,6 @@ pub fn getrlimit(resource: rlimit_resource) GetrlimitError!rlimit {
 pub const SetrlimitError = error{PermissionDenied} || UnexpectedError;
 
 pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void {
-    // TODO implement for systems other than linux and enable test
     const rc = system.setrlimit(resource, &limits);
     switch (errno(rc)) {
         0 => return,

@@ -11,7 +11,7 @@ const fs = std.fs;
 const InstallDirectoryOptions = std.build.InstallDirectoryOptions;
 const assert = std.debug.assert;
 
-const zig_version = std.builtin.Version{ .major = 0, .minor = 6, .patch = 0 };
+const zig_version = std.builtin.Version{ .major = 0, .minor = 7, .patch = 0 };
 
 pub fn build(b: *Builder) !void {
     b.setPreferredReleaseMode(.ReleaseFast);
@@ -128,11 +128,11 @@ pub fn build(b: *Builder) !void {
             break :s b.fmt("dirty{x}", .{@truncate(u32, dirty_hash)});
         };
 
-        // This will look like e.g. "0.6.0^0" for a tag commit.
+        // This will look like e.g. "0.7.0^0" for a tag commit.
         if (mem.endsWith(u8, git_sha_trimmed, "^0")) {
             const git_ver_string = git_sha_trimmed[0 .. git_sha_trimmed.len - 2];
             if (!mem.eql(u8, git_ver_string, version_string)) {
-                std.debug.print("Expected git tag '{}', found '{}'", .{ version_string, git_ver_string });
+                std.debug.print("Expected git tag '{}', found '{}'\n", .{ version_string, git_ver_string });
                 std.process.exit(1);
             }
             break :v b.fmt("{}{}", .{ version_string, dirty_suffix });
@@ -396,8 +396,8 @@ fn configureStage2(b: *Builder, exe: anytype, ctx: Context, need_cpp_includes: b
                 try addCxxKnownPath(b, ctx, exe, "libstdc++.a", null, need_cpp_includes);
                 exe.linkSystemLibrary("pthread");
                 // TODO LLD cannot perform this link.
+                // Set ZIG_SYSTEM_LINKER_HACK env var to use system linker ld instead.
                 // See https://github.com/ziglang/zig/issues/1535
-                exe.enableSystemLinkerHack();
             } else |err| switch (err) {
                 error.RequiredLibraryNotFound => {
                     // System compiler, not gcc.

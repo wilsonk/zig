@@ -64,7 +64,9 @@ fn peekIsAlign(comptime fmt: []const u8) bool {
 /// - `x` and `X`:
 ///   - format the non-numeric value as a string of bytes in hexadecimal notation ("binary dump") in either lower case or upper case
 ///   - output numeric value in hexadecimal notation
-/// - `s`: print a pointer-to-many as a c-string, use zero-termination
+/// - `s`:
+///   - for pointer-to-many and C pointers of u8, print as a C-string using zero-termination
+///   - for slices of u8, print the entire slice as a string without zero-termination
 /// - `z`: escape the string with @"" syntax if it is not a valid Zig identifier.
 /// - `Z`: print the string escaping non-printable characters using Zig escape sequences.
 /// - `B` and `Bi`: output a memory size in either metric (1000) or power-of-two (1024) based notation. works for both float and integer values.
@@ -1057,6 +1059,16 @@ pub const ParseIntError = error{
     InvalidCharacter,
 };
 
+/// Parses the string `buf` as signed or unsigned representation in the
+/// specified radix of an integral value of type `T`.
+///
+/// When `radix` is zero the string prefix is examined to detect the true radix:
+///  * A prefix of "0b" implies radix=2,
+///  * A prefix of "0o" implies radix=8,
+///  * A prefix of "0x" implies radix=16,
+///  * Otherwise radix=10 is assumed.
+///
+/// See also `parseUnsigned`.
 pub fn parseInt(comptime T: type, buf: []const u8, radix: u8) ParseIntError!T {
     if (buf.len == 0) return error.InvalidCharacter;
     if (buf[0] == '+') return parseWithSign(T, buf[1..], radix, .Pos);
@@ -1089,6 +1101,20 @@ test "parseInt" {
     std.testing.expectError(error.InvalidCharacter, parseInt(i32, "+", 10));
     std.testing.expectError(error.InvalidCharacter, parseInt(u32, "-", 10));
     std.testing.expectError(error.InvalidCharacter, parseInt(i32, "-", 10));
+
+    // autodectect the radix
+    std.testing.expect((try parseInt(i32, "111", 0)) == 111);
+    std.testing.expect((try parseInt(i32, "+0b111", 0)) == 7);
+    std.testing.expect((try parseInt(i32, "+0o111", 0)) == 73);
+    std.testing.expect((try parseInt(i32, "+0x111", 0)) == 273);
+    std.testing.expect((try parseInt(i32, "-0b111", 0)) == -7);
+    std.testing.expect((try parseInt(i32, "-0o111", 0)) == -73);
+    std.testing.expect((try parseInt(i32, "-0x111", 0)) == -273);
+
+    // bare binary/octal/decimal prefix is invalid
+    std.testing.expectError(error.InvalidCharacter, parseInt(u32, "0b", 0));
+    std.testing.expectError(error.InvalidCharacter, parseInt(u32, "0o", 0));
+    std.testing.expectError(error.InvalidCharacter, parseInt(u32, "0x", 0));
 }
 
 fn parseWithSign(
@@ -1099,6 +1125,31 @@ fn parseWithSign(
 ) ParseIntError!T {
     if (buf.len == 0) return error.InvalidCharacter;
 
+    var buf_radix = radix;
+    var buf_start = buf;
+    if (radix == 0) {
+        // Treat is as a decimal number by default.
+        buf_radix = 10;
+        // Detect the radix by looking at buf prefix.
+        if (buf.len > 2 and buf[0] == '0') {
+            switch (buf[1]) {
+                'b' => {
+                    buf_radix = 2;
+                    buf_start = buf[2..];
+                },
+                'o' => {
+                    buf_radix = 8;
+                    buf_start = buf[2..];
+                },
+                'x' => {
+                    buf_radix = 16;
+                    buf_start = buf[2..];
+                },
+                else => {},
+            }
+        }
+    }
+
     const add = switch (sign) {
         .Pos => math.add,
         .Neg => math.sub,
@@ -1106,16 +1157,26 @@ fn parseWithSign(
 
     var x: T = 0;
 
-    for (buf) |c| {
-        const digit = try charToDigit(c, radix);
+    for (buf_start) |c| {
+        const digit = try charToDigit(c, buf_radix);
 
-        if (x != 0) x = try math.mul(T, x, try math.cast(T, radix));
+        if (x != 0) x = try math.mul(T, x, try math.cast(T, buf_radix));
         x = try add(T, x, try math.cast(T, digit));
     }
 
     return x;
 }
 
+/// Parses the string `buf` as  unsigned representation in the specified radix
+/// of an integral value of type `T`.
+///
+/// When `radix` is zero the string prefix is examined to detect the true radix:
+///  * A prefix of "0b" implies radix=2,
+///  * A prefix of "0o" implies radix=8,
+///  * A prefix of "0x" implies radix=16,
+///  * Otherwise radix=10 is assumed.
+///
+/// See also `parseInt`.
 pub fn parseUnsigned(comptime T: type, buf: []const u8, radix: u8) ParseIntError!T {
     return parseWithSign(T, buf, radix, .Pos);
 }
@@ -1245,7 +1306,7 @@ test "bufPrintInt" {
     std.testing.expectEqualSlices(u8, "-42", bufPrintIntToSlice(buf, @as(i32, -42), 10, false, FormatOptions{ .width = 3 }));
 }
 
-fn bufPrintIntToSlice(buf: []u8, value: anytype, base: u8, uppercase: bool, options: FormatOptions) []u8 {
+pub fn bufPrintIntToSlice(buf: []u8, value: anytype, base: u8, uppercase: bool, options: FormatOptions) []u8 {
     return buf[0..formatIntBuf(buf, value, base, uppercase, options)];
 }
 
@@ -1382,6 +1443,10 @@ test "slice" {
         var runtime_zero: usize = 0;
         const value = @intToPtr([*]align(1) const []const u8, 0xdeadbeef)[runtime_zero..runtime_zero];
         try testFmt("slice: []const u8@deadbeef\n", "slice: {}\n", .{value});
+    }
+    {
+        const null_term_slice: [:0]const u8 = "\x00hello\x00";
+        try testFmt("buf: \x00hello\x00\n", "buf: {s}\n", .{null_term_slice});
     }
 
     try testFmt("buf:  Test\n", "buf: {s:5}\n", .{"Test"});
@@ -1697,38 +1762,8 @@ fn testFmt(expected: []const u8, comptime template: []const u8, args: anytype) !
     return error.TestFailed;
 }
 
-pub fn trim(buf: []const u8) []const u8 {
-    var start: usize = 0;
-    while (start < buf.len and isWhiteSpace(buf[start])) : (start += 1) {}
-
-    var end: usize = buf.len;
-    while (true) {
-        if (end > start) {
-            const new_end = end - 1;
-            if (isWhiteSpace(buf[new_end])) {
-                end = new_end;
-                continue;
-            }
-        }
-        break;
-    }
-    return buf[start..end];
-}
-
-test "trim" {
-    std.testing.expect(mem.eql(u8, "abc", trim("\n  abc  \t")));
-    std.testing.expect(mem.eql(u8, "", trim("   ")));
-    std.testing.expect(mem.eql(u8, "", trim("")));
-    std.testing.expect(mem.eql(u8, "abc", trim(" abc")));
-    std.testing.expect(mem.eql(u8, "abc", trim("abc ")));
-}
-
-pub fn isWhiteSpace(byte: u8) bool {
-    return switch (byte) {
-        ' ', '\t', '\n', '\r' => true,
-        else => false,
-    };
-}
+pub const trim = @compileError("deprecated; use std.mem.trim with std.ascii.spaces instead");
+pub const isWhiteSpace = @compileError("deprecated; use std.ascii.isSpace instead");
 
 pub fn hexToBytes(out: []u8, input: []const u8) !void {
     if (out.len * 2 < input.len)
@@ -1914,4 +1949,3 @@ test "null" {
     const inst = null;
     try testFmt("null", "{}", .{inst});
 }
-
