@@ -1270,7 +1270,7 @@ pub const Value = union(enum) {
             .Integer => |inner| try stringify(inner, options, out_stream),
             .Float => |inner| try stringify(inner, options, out_stream),
             .String => |inner| try stringify(inner, options, out_stream),
-            .Array => |inner| try stringify(inner.span(), options, out_stream),
+            .Array => |inner| try stringify(inner.items, options, out_stream),
             .Object => |inner| {
                 try out_stream.writeByte('{');
                 var field_output = false;
@@ -2057,7 +2057,7 @@ pub const Parser = struct {
     }
 
     fn pushToParent(p: *Parser, value: *const Value) !void {
-        switch (p.stack.span()[p.stack.items.len - 1]) {
+        switch (p.stack.items[p.stack.items.len - 1]) {
             // Object Parent -> [ ..., object, <key>, value ]
             Value.String => |key| {
                 _ = p.stack.pop();
@@ -2101,7 +2101,7 @@ pub const Parser = struct {
 // Unescape a JSON string
 // Only to be used on strings already validated by the parser
 // (note the unreachable statements and lack of bounds checking)
-fn unescapeString(output: []u8, input: []const u8) !void {
+pub fn unescapeString(output: []u8, input: []const u8) !void {
     var inIndex: usize = 0;
     var outIndex: usize = 0;
 
