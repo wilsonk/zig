@@ -385,6 +385,7 @@ pub const InitOptions = struct {
     single_threaded: bool = false,
     function_sections: bool = false,
     is_native_os: bool,
+    is_native_abi: bool,
     time_report: bool = false,
     stack_report: bool = false,
     link_eh_frame_hdr: bool = false,
@@ -600,7 +601,19 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
 
             break :dl false;
         };
-        const default_link_mode: std.builtin.LinkMode = if (must_dynamic_link) .Dynamic else .Static;
+        const default_link_mode: std.builtin.LinkMode = blk: {
+            if (must_dynamic_link) {
+                break :blk .Dynamic;
+            } else if (is_exe_or_dyn_lib and link_libc and
+                options.is_native_abi and options.target.abi.isMusl())
+            {
+                // If targeting the system's native ABI and the system's
+                // libc is musl, link dynamically by default.
+                break :blk .Dynamic;
+            } else {
+                break :blk .Static;
+            }
+        };
         const link_mode: std.builtin.LinkMode = if (options.link_mode) |lm| blk: {
             if (lm == .Static and must_dynamic_link) {
                 return error.UnableToStaticLink;
@@ -910,6 +923,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .rpath_list = options.rpath_list,
             .strip = strip,
             .is_native_os = options.is_native_os,
+            .is_native_abi = options.is_native_abi,
             .function_sections = options.function_sections,
             .allow_shlib_undefined = options.linker_allow_shlib_undefined,
             .bind_global_refs_locally = options.linker_bind_global_refs_locally orelse false,
@@ -1025,7 +1039,10 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
                 .{ .musl_crt_file = .crt1_o },
                 .{ .musl_crt_file = .scrt1_o },
                 .{ .musl_crt_file = .rcrt1_o },
-                .{ .musl_crt_file = .libc_a },
+                switch (comp.bin_file.options.link_mode) {
+                    .Static => .{ .musl_crt_file = .libc_a },
+                    .Dynamic => .{ .musl_crt_file = .libc_so },
+                },
             });
         }
         if (comp.wantBuildMinGWFromSource()) {
@@ -1762,7 +1779,7 @@ fn updateCObject(comp: *Compilation, c_object: *CObject, c_comp_progress_node: *
     const o_basename_noext = if (direct_o)
         comp.bin_file.options.root_name
     else
-        mem.split(c_source_basename, ".").next().?;
+        c_source_basename[0 .. c_source_basename.len - std.fs.path.extension(c_source_basename).len];
     const o_basename = try std.fmt.allocPrint(arena, "{s}{s}", .{ o_basename_noext, comp.getTarget().oFileExt() });
 
     const digest = if (!comp.disable_c_depfile and try man.hit()) man.final() else blk: {
@@ -2731,7 +2748,7 @@ fn buildOutputFromZig(
         },
         .root_src_path = src_basename,
     };
-    const root_name = mem.split(src_basename, ".").next().?;
+    const root_name = src_basename[0 .. src_basename.len - std.fs.path.extension(src_basename).len];
     const target = comp.getTarget();
     const fixed_output_mode = if (target.cpu.arch.isWasm()) .Obj else output_mode;
     const bin_basename = try std.zig.binNameAlloc(comp.gpa, .{
@@ -2775,6 +2792,7 @@ fn buildOutputFromZig(
         .emit_h = null,
         .strip = comp.bin_file.options.strip,
         .is_native_os = comp.bin_file.options.is_native_os,
+        .is_native_abi = comp.bin_file.options.is_native_abi,
         .self_exe_path = comp.self_exe_path,
         .verbose_cc = comp.verbose_cc,
         .verbose_link = comp.bin_file.options.verbose_link,
@@ -3145,6 +3163,7 @@ pub fn build_crt_file(
         .emit_h = null,
         .strip = comp.bin_file.options.strip,
         .is_native_os = comp.bin_file.options.is_native_os,
+        .is_native_abi = comp.bin_file.options.is_native_abi,
         .self_exe_path = comp.self_exe_path,
         .c_source_files = c_source_files,
         .verbose_cc = comp.verbose_cc,
@@ -3174,6 +3193,11 @@ pub fn build_crt_file(
 }
 
 pub fn stage1AddLinkLib(comp: *Compilation, lib_name: []const u8) !void {
+    // Avoid deadlocking on building import libs such as kernel32.lib
+    // This can happen when the user uses `build-exe foo.obj -lkernel32` and then
+    // when we create a sub-Compilation for zig libc, it also tries to build kernel32.lib.
+    if (comp.bin_file.options.is_compiler_rt_or_libc) return;
+
     // This happens when an `extern "foo"` function is referenced by the stage1 backend.
     // If we haven't seen this library yet and we're targeting Windows, we need to queue up
     // a work item to produce the DLL import library for this.
