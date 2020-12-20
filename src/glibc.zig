@@ -287,6 +287,8 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
             try args.appendSlice(&[_][]const u8{
                 "-D_LIBC_REENTRANT",
                 "-DMODULE_NAME=libc",
+                "-include",
+                try lib_path(comp, arena, lib_libc_glibc ++ "include" ++ path.sep_str ++ "libc-symbols.h"),
                 "-DTOP_NAMESPACE=glibc",
                 "-DASSEMBLER",
                 "-g",
@@ -934,7 +936,6 @@ fn buildSharedLib(
         .root_pkg = null,
         .output_mode = .Lib,
         .link_mode = .Dynamic,
-        .rand = comp.rand,
         .libc_installation = comp.bin_file.options.libc_installation,
         .emit_bin = emit_bin,
         .optimize_mode = comp.bin_file.options.optimize_mode,

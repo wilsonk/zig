@@ -372,6 +372,13 @@ const SOName = union(enum) {
     yes: []const u8,
 };
 
+const EmitBin = union(enum) {
+    no,
+    yes_default_path,
+    yes: []const u8,
+    yes_a_out,
+};
+
 const Emit = union(enum) {
     no,
     yes_default_path,
@@ -471,7 +478,7 @@ fn buildOutputType(
     var time_report = false;
     var stack_report = false;
     var show_builtin = false;
-    var emit_bin: Emit = .yes_default_path;
+    var emit_bin: EmitBin = .yes_default_path;
     var emit_asm: Emit = .no;
     var emit_llvm_ir: Emit = .no;
     var emit_zir: Emit = .no;
@@ -1284,7 +1291,7 @@ fn buildOutputType(
             switch (c_out_mode) {
                 .link => {
                     output_mode = if (is_shared_lib) .Lib else .Exe;
-                    emit_bin = .{ .yes = out_path orelse "a.out" };
+                    emit_bin = if (out_path) |p| .{ .yes = p } else EmitBin.yes_a_out;
                     enable_cache = true;
                 },
                 .object => {
@@ -1498,6 +1505,11 @@ fn buildOutputType(
         },
     };
 
+    const a_out_basename = switch (object_format) {
+        .pe, .coff => "a.exe",
+        else => "a.out",
+    };
+
     const emit_bin_loc: ?Compilation.EmitLoc = switch (emit_bin) {
         .no => null,
         .yes_default_path => Compilation.EmitLoc{
@@ -1548,6 +1560,10 @@ fn buildOutputType(
                     .directory = .{ .path = null, .handle = fs.cwd() },
                 };
             }
+        },
+        .yes_a_out => Compilation.EmitLoc{
+            .directory = null,
+            .basename = a_out_basename,
         },
     };
 
@@ -1615,13 +1631,6 @@ fn buildOutputType(
             fatal("unable to find zig installation directory: {}", .{@errorName(err)});
         };
     defer zig_lib_directory.handle.close();
-
-    const random_seed = blk: {
-        var random_seed: u64 = undefined;
-        try std.crypto.randomBytes(mem.asBytes(&random_seed));
-        break :blk random_seed;
-    };
-    var default_prng = std.rand.DefaultPrng.init(random_seed);
 
     var libc_installation: ?LibCInstallation = null;
     defer if (libc_installation) |*l| l.deinit(gpa);
@@ -1738,7 +1747,6 @@ fn buildOutputType(
         .single_threaded = single_threaded,
         .function_sections = function_sections,
         .self_exe_path = self_exe_path,
-        .rand = &default_prng.random,
         .clang_passthrough_mode = arg_mode != .build,
         .clang_preprocessor_mode = clang_preprocessor_mode,
         .version = optional_version,
@@ -1784,6 +1792,7 @@ fn buildOutputType(
                 .print = comp.bin_file.options.emit.?.directory.path orelse ".",
             },
             .yes => |full_path| break :blk .{ .update = full_path },
+            .yes_a_out => break :blk .{ .update = a_out_basename },
         }
     };
 
@@ -2403,12 +2412,6 @@ pub fn cmdBuild(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
             .directory = null, // Use the local zig-cache.
             .basename = exe_basename,
         };
-        const random_seed = blk: {
-            var random_seed: u64 = undefined;
-            try std.crypto.randomBytes(mem.asBytes(&random_seed));
-            break :blk random_seed;
-        };
-        var default_prng = std.rand.DefaultPrng.init(random_seed);
         const comp = Compilation.create(gpa, .{
             .zig_lib_directory = zig_lib_directory,
             .local_cache_directory = local_cache_directory,
@@ -2424,7 +2427,6 @@ pub fn cmdBuild(gpa: *Allocator, arena: *Allocator, args: []const []const u8) !v
             .emit_h = null,
             .optimize_mode = .Debug,
             .self_exe_path = self_exe_path,
-            .rand = &default_prng.random,
         }) catch |err| {
             fatal("unable to create compilation: {}", .{@errorName(err)});
         };

@@ -4592,7 +4592,7 @@ pub fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) SigaltstackError!void {
 }
 
 /// Examine and change a signal action.
-pub fn sigaction(sig: u6, act: *const Sigaction, oact: ?*Sigaction) void {
+pub fn sigaction(sig: u6, act: ?*const Sigaction, oact: ?*Sigaction) void {
     switch (errno(system.sigaction(sig, act, oact))) {
         0 => return,
         EFAULT => unreachable,
@@ -4774,8 +4774,33 @@ pub const SendError = error{
     BrokenPipe,
 
     FileDescriptorNotASocket,
-    AddressFamilyNotSupported,
 } || UnexpectedError;
+
+pub const SendToError = SendError || error{
+    /// The passed address didn't have the correct address family in its sa_family field.
+    AddressFamilyNotSupported,
+
+    /// Returned when socket is AF_UNIX and the given path has a symlink loop.
+    SymLinkLoop,
+
+    /// Returned when socket is AF_UNIX and the given path length exceeds `MAX_PATH_BYTES` bytes.
+    NameTooLong,
+
+    /// Returned when socket is AF_UNIX and the given path does not point to an existing file.
+    FileNotFound,
+    NotDir,
+
+    /// Network is unreachable.
+    NetworkUnreachable,
+
+    /// Insufficient memory was available to fulfill the request.
+    SystemResources,
+
+    /// The socket is not connected (connection-oriented sockets only).
+    SocketNotConnected,
+    WouldBlock,
+    AddressNotAvailable,
+};
 
 /// Transmit a message to another socket.
 ///
@@ -4810,19 +4835,31 @@ pub fn sendto(
     flags: u32,
     dest_addr: ?*const sockaddr,
     addrlen: socklen_t,
-) SendError!usize {
+) SendToError!usize {
     while (true) {
         const rc = system.sendto(sockfd, buf.ptr, buf.len, flags, dest_addr, addrlen);
         if (builtin.os.tag == .windows) {
             if (rc == windows.ws2_32.SOCKET_ERROR) {
                 switch (windows.ws2_32.WSAGetLastError()) {
                     .WSAEACCES => return error.AccessDenied,
+                    .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
                     .WSAECONNRESET => return error.ConnectionResetByPeer,
                     .WSAEMSGSIZE => return error.MessageTooBig,
                     .WSAENOBUFS => return error.SystemResources,
                     .WSAENOTSOCK => return error.FileDescriptorNotASocket,
                     .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
-                    // TODO: handle more errors
+                    .WSAEDESTADDRREQ => unreachable, // A destination address is required.
+                    .WSAEFAULT => unreachable, // The lpBuffers, lpTo, lpOverlapped, lpNumberOfBytesSent, or lpCompletionRoutine parameters are not part of the user address space, or the lpTo parameter is too small.
+                    .WSAEHOSTUNREACH => return error.NetworkUnreachable,
+                    // TODO: WSAEINPROGRESS, WSAEINTR
+                    .WSAEINVAL => unreachable,
+                    .WSAENETDOWN => return error.NetworkUnreachable,
+                    .WSAENETRESET => return error.ConnectionResetByPeer,
+                    .WSAENETUNREACH => return error.NetworkUnreachable,
+                    .WSAENOTCONN => return error.SocketNotConnected,
+                    .WSAESHUTDOWN => unreachable, // The socket has been shut down; it is not possible to WSASendTo on a socket after shutdown has been invoked with how set to SD_SEND or SD_BOTH.
+                    .WSAEWOULDBLOCK => return error.WouldBlock,
+                    .WSANOTINITIALISED => unreachable, // A successful WSAStartup call must occur before using this function.
                     else => |err| return windows.unexpectedWSAError(err),
                 }
             } else {
@@ -4850,6 +4887,11 @@ pub fn sendto(
                 EOPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
                 EPIPE => return error.BrokenPipe,
                 EAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                ELOOP => return error.SymLinkLoop,
+                ENAMETOOLONG => return error.NameTooLong,
+                ENOENT => return error.FileNotFound,
+                ENOTDIR => return error.NotDir,
+                EHOSTUNREACH => return error.NetworkUnreachable,
                 else => |err| return unexpectedErrno(err),
             }
         }
@@ -5800,6 +5842,54 @@ pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void 
         EFAULT => unreachable, // bogus pointer
         EINVAL => unreachable,
         EPERM => return error.PermissionDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub const MadviseError = error{
+    /// advice is MADV_REMOVE, but the specified address range is not a shared writable mapping.
+    AccessDenied,
+    /// advice is MADV_HWPOISON, but the caller does not have the CAP_SYS_ADMIN capability.
+    PermissionDenied,
+    /// A kernel resource was temporarily unavailable.
+    SystemResources,
+    /// One of the following:
+    /// * addr is not page-aligned or length is negative
+    /// * advice is not valid
+    /// * advice is MADV_DONTNEED or MADV_REMOVE and the specified address range
+    ///   includes locked, Huge TLB pages, or VM_PFNMAP pages.
+    /// * advice is MADV_MERGEABLE or MADV_UNMERGEABLE, but the kernel was not
+    ///   configured with CONFIG_KSM.
+    /// * advice is MADV_FREE or MADV_WIPEONFORK but the specified address range
+    ///   includes file, Huge TLB, MAP_SHARED, or VM_PFNMAP ranges.
+    InvalidSyscall,
+    /// (for MADV_WILLNEED) Paging in this area would exceed the process's
+    /// maximum resident set size.
+    WouldExceedMaximumResidentSetSize,
+    /// One of the following:
+    /// * (for MADV_WILLNEED) Not enough memory: paging in failed.
+    /// * Addresses in the specified range are not currently mapped, or
+    ///   are outside the address space of the process.
+    OutOfMemory,
+    /// The madvise syscall is not available on this version and configuration
+    /// of the Linux kernel.
+    MadviseUnavailable,
+    /// The operating system returned an undocumented error code.
+    Unexpected,
+};
+
+/// Give advice about use of memory.
+/// This syscall is optional and is sometimes configured to be disabled.
+pub fn madvise(ptr: [*]align(mem.page_size) u8, length: usize, advice: u32) MadviseError!void {
+    switch (errno(system.madvise(ptr, length, advice))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EAGAIN => return error.SystemResources,
+        EBADF => unreachable, // The map exists, but the area maps something that isn't a file.
+        EINVAL => return error.InvalidSyscall,
+        EIO => return error.WouldExceedMaximumResidentSetSize,
+        ENOMEM => return error.OutOfMemory,
+        ENOSYS => return error.MadviseUnavailable,
         else => |err| return unexpectedErrno(err),
     }
 }

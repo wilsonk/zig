@@ -1441,8 +1441,14 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
 
     if (link_in_crt) {
         const crt1o: []const u8 = o: {
-            if (target.os.tag == .netbsd or target.os.tag == .openbsd) {
+            if (target.os.tag == .netbsd) {
                 break :o "crt0.o";
+            } else if (target.os.tag == .openbsd) {
+                if (self.base.options.link_mode == .Static) {
+                    break :o "rcrt0.o";
+                } else {
+                    break :o "crt0.o";
+                }
             } else if (target.isAndroid()) {
                 if (self.base.options.link_mode == .Dynamic) {
                     break :o "crtbegin_dynamic.o";
@@ -1584,7 +1590,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
                     try argv.append("-lm");
                 }
 
-                if (target.os.tag == .freebsd or target.os.tag == .netbsd) {
+                if (target.os.tag == .freebsd or target.os.tag == .netbsd or target.os.tag == .openbsd) {
                     try argv.append("-lpthread");
                 }
             } else if (target.isGnuLibC()) {

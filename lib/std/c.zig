@@ -200,7 +200,7 @@ pub usingnamespace switch (builtin.os.tag) {
         pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
         pub extern "c" fn nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int;
         pub extern "c" fn sched_yield() c_int;
-        pub extern "c" fn sigaction(sig: c_int, noalias act: *const Sigaction, noalias oact: ?*Sigaction) c_int;
+        pub extern "c" fn sigaction(sig: c_int, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) c_int;
         pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
         pub extern "c" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) c_int;
         pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *libc_stat) c_int;
@@ -215,7 +215,7 @@ pub usingnamespace switch (builtin.os.tag) {
         pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
         pub extern "c" fn nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int;
         pub extern "c" fn sched_yield() c_int;
-        pub extern "c" fn sigaction(sig: c_int, noalias act: *const Sigaction, noalias oact: ?*Sigaction) c_int;
+        pub extern "c" fn sigaction(sig: c_int, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) c_int;
         pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
         pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *libc_stat) c_int;
     },
@@ -227,7 +227,7 @@ pub usingnamespace switch (builtin.os.tag) {
         pub extern "c" fn gettimeofday(noalias tv: ?*timeval, noalias tz: ?*timezone) c_int;
         pub extern "c" fn nanosleep(rqtp: *const timespec, rmtp: ?*timespec) c_int;
         pub extern "c" fn sched_yield() c_int;
-        pub extern "c" fn sigaction(sig: c_int, noalias act: *const Sigaction, noalias oact: ?*Sigaction) c_int;
+        pub extern "c" fn sigaction(sig: c_int, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) c_int;
         pub extern "c" fn sigprocmask(how: c_int, noalias set: ?*const sigset_t, noalias oset: ?*sigset_t) c_int;
         pub extern "c" fn socket(domain: c_uint, sock_type: c_uint, protocol: c_uint) c_int;
         pub extern "c" fn stat(noalias path: [*:0]const u8, noalias buf: *libc_stat) c_int;
@@ -264,6 +264,11 @@ pub extern "c" fn pthread_attr_setguardsize(attr: *pthread_attr_t, guardsize: us
 pub extern "c" fn pthread_attr_destroy(attr: *pthread_attr_t) c_int;
 pub extern "c" fn pthread_self() pthread_t;
 pub extern "c" fn pthread_join(thread: pthread_t, arg_return: ?*?*c_void) c_int;
+pub extern "c" fn pthread_atfork(
+    prepare: ?fn () callconv(.C) void,
+    parent: ?fn () callconv(.C) void,
+    child: ?fn () callconv(.C) void,
+) c_int;
 
 pub extern "c" fn kqueue() c_int;
 pub extern "c" fn kevent(
