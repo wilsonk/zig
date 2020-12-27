@@ -225,22 +225,22 @@ pub fn main() !void {
         var list = std.ArrayList([]const u8).init(allocator);
         var it = global_fn_set.iterator();
         while (it.next()) |entry| try list.append(entry.key);
-        std.sort.sort([]const u8, list.span(), {}, strCmpLessThan);
-        break :blk list.span();
+        std.sort.sort([]const u8, list.items, {}, strCmpLessThan);
+        break :blk list.items;
     };
     const global_ver_list = blk: {
         var list = std.ArrayList([]const u8).init(allocator);
         var it = global_ver_set.iterator();
         while (it.next()) |entry| try list.append(entry.key);
-        std.sort.sort([]const u8, list.span(), {}, versionLessThan);
-        break :blk list.span();
+        std.sort.sort([]const u8, list.items, {}, versionLessThan);
+        break :blk list.items;
     };
     {
         const vers_txt_path = try fs.path.join(allocator, &[_][]const u8{ glibc_out_dir, "vers.txt" });
         const vers_txt_file = try fs.cwd().createFile(vers_txt_path, .{});
         defer vers_txt_file.close();
-        var buffered = std.io.bufferedOutStream(vers_txt_file.outStream());
-        const vers_txt = buffered.outStream();
+        var buffered = std.io.bufferedOutStream(vers_txt_file.writer());
+        const vers_txt = buffered.writer();
         for (global_ver_list) |name, i| {
             _ = global_ver_set.put(name, i) catch unreachable;
             try vers_txt.print("{}\n", .{name});
@@ -251,8 +251,8 @@ pub fn main() !void {
         const fns_txt_path = try fs.path.join(allocator, &[_][]const u8{ glibc_out_dir, "fns.txt" });
         const fns_txt_file = try fs.cwd().createFile(fns_txt_path, .{});
         defer fns_txt_file.close();
-        var buffered = std.io.bufferedOutStream(fns_txt_file.outStream());
-        const fns_txt = buffered.outStream();
+        var buffered = std.io.bufferedOutStream(fns_txt_file.writer());
+        const fns_txt = buffered.writer();
         for (global_fn_list) |name, i| {
             const entry = global_fn_set.getEntry(name).?;
             entry.value.index = i;
@@ -266,13 +266,13 @@ pub fn main() !void {
     for (abi_lists) |*abi_list, abi_index| {
         const entry = target_functions.getEntry(@ptrToInt(abi_list)).?;
         const fn_vers_list = &entry.value.fn_vers_list;
-        for (entry.value.list.span()) |*ver_fn| {
+        for (entry.value.list.items) |*ver_fn| {
             const gop = try fn_vers_list.getOrPut(ver_fn.name);
             if (!gop.found_existing) {
                 gop.entry.value = std.ArrayList(usize).init(allocator);
             }
             const ver_index = global_ver_set.getEntry(ver_fn.ver).?.value;
-            if (std.mem.indexOfScalar(usize, gop.entry.value.span(), ver_index) == null) {
+            if (std.mem.indexOfScalar(usize, gop.entry.value.items, ver_index) == null) {
                 try gop.entry.value.append(ver_index);
             }
         }
@@ -282,8 +282,8 @@ pub fn main() !void {
         const abilist_txt_path = try fs.path.join(allocator, &[_][]const u8{ glibc_out_dir, "abi.txt" });
         const abilist_txt_file = try fs.cwd().createFile(abilist_txt_path, .{});
         defer abilist_txt_file.close();
-        var buffered = std.io.bufferedOutStream(abilist_txt_file.outStream());
-        const abilist_txt = buffered.outStream();
+        var buffered = std.io.bufferedOutStream(abilist_txt_file.writer());
+        const abilist_txt = buffered.writer();
 
         // first iterate over the abi lists
         for (abi_lists) |*abi_list, abi_index| {
@@ -299,7 +299,7 @@ pub fn main() !void {
                     try abilist_txt.writeByte('\n');
                     continue;
                 };
-                for (entry.value.span()) |ver_index, it_i| {
+                for (entry.value.items) |ver_index, it_i| {
                     if (it_i != 0) try abilist_txt.writeByte(' ');
                     try abilist_txt.print("{d}", .{ver_index});
                 }

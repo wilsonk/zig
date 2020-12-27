@@ -32,6 +32,24 @@ pub const Kevent = extern struct {
     udata: usize,
 };
 
+// Modes and flags for dlopen()
+// include/dlfcn.h
+
+/// Bind function calls lazily.
+pub const RTLD_LAZY = 1;
+
+/// Bind function calls immediately.
+pub const RTLD_NOW = 2;
+
+/// Make symbols globally available.
+pub const RTLD_GLOBAL = 0x100;
+
+/// Opposite of RTLD_GLOBAL, and the default.
+pub const RTLD_LOCAL = 0x000;
+
+/// Trace loaded objects and exit.
+pub const RTLD_TRACE = 0x200;
+
 pub const dl_phdr_info = extern struct {
     dlpi_addr: std.elf.Addr,
     dlpi_name: ?[*:0]const u8,
@@ -43,18 +61,18 @@ pub const Flock = extern struct {
     l_start: off_t,
     l_len: off_t,
     l_pid: pid_t,
-    l_type: i16,
-    l_whence: i16,
+    l_type: c_short,
+    l_whence: c_short,
 };
 
 pub const addrinfo = extern struct {
-    flags: i32,
-    family: i32,
-    socktype: i32,
-    protocol: i32,
+    flags: c_int,
+    family: c_int,
+    socktype: c_int,
+    protocol: c_int,
     addrlen: socklen_t,
-    canonname: ?[*:0]u8,
     addr: ?*sockaddr,
+    canonname: ?[*:0]u8,
     next: ?*addrinfo,
 };
 
@@ -117,7 +135,7 @@ pub const msghdr = extern struct {
     msg_iov: [*]iovec,
 
     /// # elements in msg_iov
-    msg_iovlen: i32,
+    msg_iovlen: c_uint,
 
     /// ancillary data
     msg_control: ?*c_void,
@@ -126,7 +144,7 @@ pub const msghdr = extern struct {
     msg_controllen: socklen_t,
 
     /// flags on received message
-    msg_flags: i32,
+    msg_flags: c_int,
 };
 
 pub const msghdr_const = extern struct {
@@ -140,7 +158,7 @@ pub const msghdr_const = extern struct {
     msg_iov: [*]iovec_const,
 
     /// # elements in msg_iov
-    msg_iovlen: i32,
+    msg_iovlen: c_uint,
 
     /// ancillary data
     msg_control: ?*c_void,
@@ -149,7 +167,7 @@ pub const msghdr_const = extern struct {
     msg_controllen: socklen_t,
 
     /// flags on received message
-    msg_flags: i32,
+    msg_flags: c_int,
 };
 
 pub const libc_stat = extern struct {
@@ -185,7 +203,17 @@ pub const libc_stat = extern struct {
 
 pub const timespec = extern struct {
     tv_sec: time_t,
-    tv_nsec: isize,
+    tv_nsec: c_long,
+};
+
+pub const timeval = extern struct {
+    tv_sec: time_t,
+    tv_usec: c_long,
+};
+
+pub const timezone = extern struct {
+    tz_minuteswest: c_int,
+    tz_dsttime: c_int,
 };
 
 pub const MAXNAMLEN = 255;
@@ -264,9 +292,12 @@ pub const AI_ADDRCONFIG = 64;
 
 pub const CTL_KERN = 1;
 pub const CTL_DEBUG = 5;
+pub const CTL_HW = 6;
 
 pub const KERN_PROC_ARGS = 55;
 pub const KERN_PROC_ARGV = 1;
+
+pub const HW_NCPUONLINE = 25;
 
 pub const PATH_MAX = 1024;
 
@@ -449,6 +480,36 @@ pub const SOCK_SEQPACKET = 5;
 
 pub const SOCK_CLOEXEC = 0x8000;
 pub const SOCK_NONBLOCK = 0x4000;
+
+pub const SO_DEBUG = 0x0001;
+pub const SO_ACCEPTCONN = 0x0002;
+pub const SO_REUSEADDR = 0x0004;
+pub const SO_KEEPALIVE = 0x0008;
+pub const SO_DONTROUTE = 0x0010;
+pub const SO_BROADCAST = 0x0020;
+pub const SO_USELOOPBACK = 0x0040;
+pub const SO_LINGER = 0x0080;
+pub const SO_OOBINLINE = 0x0100;
+pub const SO_REUSEPORT = 0x0200;
+pub const SO_TIMESTAMP = 0x0800;
+pub const SO_BINDANY = 0x1000;
+pub const SO_ZEROIZE = 0x2000;
+pub const SO_SNDBUF = 0x1001;
+pub const SO_RCVBUF = 0x1002;
+pub const SO_SNDLOWAT = 0x1003;
+pub const SO_RCVLOWAT = 0x1004;
+pub const SO_SNDTIMEO = 0x1005;
+pub const SO_RCVTIMEO = 0x1006;
+pub const SO_ERROR = 0x1007;
+pub const SO_TYPE = 0x1008;
+pub const SO_NETPROC = 0x1020;
+pub const SO_RTABLE = 0x1021;
+pub const SO_PEERCRED = 0x1022;
+pub const SO_SPLICE = 0x1023;
+pub const SO_DOMAIN = 0x1024;
+pub const SO_PROTOCOL = 0x1025;
+
+pub const SOL_SOCKET = 0xffff;
 
 pub const PF_UNSPEC = AF_UNSPEC;
 pub const PF_LOCAL = AF_LOCAL;
@@ -678,10 +739,10 @@ pub fn WIFSIGNALED(s: u32) bool {
 }
 
 pub const winsize = extern struct {
-    ws_row: u16,
-    ws_col: u16,
-    ws_xpixel: u16,
-    ws_ypixel: u16,
+    ws_row: c_ushort,
+    ws_col: c_ushort,
+    ws_xpixel: c_ushort,
+    ws_ypixel: c_ushort,
 };
 
 const NSIG = 33;
@@ -689,16 +750,23 @@ const NSIG = 33;
 pub const SIG_ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
 pub const SIG_DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
 pub const SIG_IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
+pub const SIG_CATCH = @intToPtr(?Sigaction.sigaction_fn, 2);
+pub const SIG_HOLD = @intToPtr(?Sigaction.sigaction_fn, 3);
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const sigaction_fn = fn (c_int, *siginfo_t, ?*c_void) callconv(.C) void;
+    pub const handler_fn = fn (c_int) callconv(.C) void;
+    pub const sigaction_fn = fn (c_int, *const siginfo_t, ?*const c_void) callconv(.C) void;
+
     /// signal handler
-    sigaction: ?sigaction_fn,
+    handler: extern union {
+        handler: ?handler_fn,
+        sigaction: ?sigaction_fn,
+    },
     /// signal mask to apply
     mask: sigset_t,
     /// signal options
-    flags: c_int,
+    flags: c_uint,
 };
 
 pub const sigval = extern union {
@@ -706,33 +774,97 @@ pub const sigval = extern union {
     ptr: ?*c_void,
 };
 
-pub const siginfo_t = extern union {
-    pad: [128]u8,
-    info: _ksiginfo,
-};
-
-pub const _ksiginfo = extern struct {
+pub const siginfo_t = extern struct {
     signo: c_int,
     code: c_int,
     errno: c_int,
     data: extern union {
         proc: extern struct {
             pid: pid_t,
-            uid: uid_t,
-            value: sigval,
-            utime: clock_t,
-            stime: clock_t,
-            status: c_int,
+            pdata: extern union {
+                kill: extern struct {
+                    uid: uid_t,
+                    value: sigval,
+                },
+                cld: extern struct {
+                    utime: clock_t,
+                    stime: clock_t,
+                    status: c_int,
+                },
+            },
         },
         fault: extern struct {
             addr: ?*c_void,
             trapno: c_int,
         },
-    } align(@sizeOf(usize)),
+        __pad: [128 - 3 * @sizeOf(c_int)]u8,
+    },
+};
+
+comptime {
+    if (@sizeOf(usize) == 4)
+        std.debug.assert(@sizeOf(siginfo_t) == 128)
+    else
+    // Take into account the padding between errno and data fields.
+        std.debug.assert(@sizeOf(siginfo_t) == 136);
+}
+
+pub usingnamespace switch (builtin.arch) {
+    .x86_64 => struct {
+        pub const ucontext_t = extern struct {
+            sc_rdi: c_long,
+            sc_rsi: c_long,
+            sc_rdx: c_long,
+            sc_rcx: c_long,
+            sc_r8: c_long,
+            sc_r9: c_long,
+            sc_r10: c_long,
+            sc_r11: c_long,
+            sc_r12: c_long,
+            sc_r13: c_long,
+            sc_r14: c_long,
+            sc_r15: c_long,
+            sc_rbp: c_long,
+            sc_rbx: c_long,
+            sc_rax: c_long,
+            sc_gs: c_long,
+            sc_fs: c_long,
+            sc_es: c_long,
+            sc_ds: c_long,
+            sc_trapno: c_long,
+            sc_err: c_long,
+            sc_rip: c_long,
+            sc_cs: c_long,
+            sc_rflags: c_long,
+            sc_rsp: c_long,
+            sc_ss: c_long,
+
+            sc_fpstate: fxsave64,
+            __sc_unused: c_int,
+            sc_mask: c_int,
+            sc_cookie: c_long,
+        };
+
+        pub const fxsave64 = packed struct {
+            fx_fcw: u16,
+            fx_fsw: u16,
+            fx_ftw: u8,
+            fx_unused1: u8,
+            fx_fop: u16,
+            fx_rip: u64,
+            fx_rdp: u64,
+            fx_mxcsr: u32,
+            fx_mxcsr_mask: u32,
+            fx_st: [8][2]u64,
+            fx_xmm: [16][2]u64,
+            fx_unused3: [96]u8,
+        };
+    },
+    else => struct {},
 };
 
 pub const sigset_t = c_uint;
-pub const empty_sigset = sigset_t(0);
+pub const empty_sigset: sigset_t = 0;
 
 pub const EPERM = 1; // Operation not permitted
 pub const ENOENT = 2; // No such file or directory
@@ -1073,3 +1205,7 @@ pub const rlimit = extern struct {
     /// Hard limit
     max: rlim_t,
 };
+
+pub const SHUT_RD = 0;
+pub const SHUT_WR = 1;
+pub const SHUT_RDWR = 2;

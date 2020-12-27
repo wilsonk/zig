@@ -19,6 +19,7 @@ const iovec = linux.iovec;
 const iovec_const = linux.iovec_const;
 
 pub const mode_t = usize;
+pub const time_t = isize;
 
 pub const SYS = extern enum(usize) {
     read = 0,
@@ -369,8 +370,11 @@ pub const SYS = extern enum(usize) {
     fspick = 433,
     pidfd_open = 434,
     clone3 = 435,
+    close_range = 436,
     openat2 = 437,
     pidfd_getfd = 438,
+    faccessat2 = 439,
+    process_madvise = 440,
 
     _,
 };
@@ -511,10 +515,11 @@ pub const msghdr_const = extern struct {
 
 pub const off_t = i64;
 pub const ino_t = u64;
+pub const dev_t = u64;
 
 // The `stat` definition used by the Linux kernel.
 pub const kernel_stat = extern struct {
-    dev: u64,
+    dev: dev_t,
     ino: ino_t,
     nlink: usize,
 
@@ -522,7 +527,7 @@ pub const kernel_stat = extern struct {
     uid: uid_t,
     gid: gid_t,
     __pad0: u32,
-    rdev: u64,
+    rdev: dev_t,
     size: off_t,
     blksize: isize,
     blocks: i64,

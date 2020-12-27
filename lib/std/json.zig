@@ -375,7 +375,7 @@ pub const StreamingParser = struct {
                 '}' => {
                     // unlikely
                     if (p.stack & 1 != object_bit) {
-                        return error.UnexpectedClosingBracket;
+                        return error.UnexpectedClosingBrace;
                     }
                     if (p.stack_used == 0) {
                         return error.TooManyClosingItems;
@@ -401,7 +401,7 @@ pub const StreamingParser = struct {
                 },
                 ']' => {
                     if (p.stack & 1 != array_bit) {
-                        return error.UnexpectedClosingBrace;
+                        return error.UnexpectedClosingBracket;
                     }
                     if (p.stack_used == 0) {
                         return error.TooManyClosingItems;
@@ -571,8 +571,11 @@ pub const StreamingParser = struct {
                     p.state = .ValueBeginNoClosing;
                 },
                 ']' => {
+                    if (p.stack & 1 != array_bit) {
+                        return error.UnexpectedClosingBracket;
+                    }
                     if (p.stack_used == 0) {
-                        return error.UnbalancedBrackets;
+                        return error.TooManyClosingItems;
                     }
 
                     p.state = .ValueEnd;
@@ -589,8 +592,12 @@ pub const StreamingParser = struct {
                     token.* = Token.ArrayEnd;
                 },
                 '}' => {
+                    // unlikely
+                    if (p.stack & 1 != object_bit) {
+                        return error.UnexpectedClosingBrace;
+                    }
                     if (p.stack_used == 0) {
-                        return error.UnbalancedBraces;
+                        return error.TooManyClosingItems;
                     }
 
                     p.state = .ValueEnd;
@@ -1189,6 +1196,15 @@ test "json.token" {
     testing.expect((try p.next()) == null);
 }
 
+test "json.token mismatched close" {
+    var p = TokenStream.init("[102, 111, 111 }");
+    checkNext(&p, .ArrayBegin);
+    checkNext(&p, .Number);
+    checkNext(&p, .Number);
+    checkNext(&p, .Number);
+    testing.expectError(error.UnexpectedClosingBrace, p.next());
+}
+
 /// Validate a JSON string. This does not limit number precision so a decoder may not necessarily
 /// be able to decode the string even if this returns true.
 pub fn validate(s: []const u8) bool {
@@ -1207,7 +1223,12 @@ pub fn validate(s: []const u8) bool {
 }
 
 test "json.validate" {
-    testing.expect(validate("{}"));
+    testing.expectEqual(true, validate("{}"));
+    testing.expectEqual(true, validate("[]"));
+    testing.expectEqual(true, validate("[{[[[[{}]]]]}]"));
+    testing.expectEqual(false, validate("{]"));
+    testing.expectEqual(false, validate("[}"));
+    testing.expectEqual(false, validate("{{{{[]}}}]"));
 }
 
 const Allocator = std.mem.Allocator;
@@ -1249,7 +1270,7 @@ pub const Value = union(enum) {
             .Integer => |inner| try stringify(inner, options, out_stream),
             .Float => |inner| try stringify(inner, options, out_stream),
             .String => |inner| try stringify(inner, options, out_stream),
-            .Array => |inner| try stringify(inner.span(), options, out_stream),
+            .Array => |inner| try stringify(inner.items, options, out_stream),
             .Object => |inner| {
                 try out_stream.writeByte('{');
                 var field_output = false;
@@ -1532,7 +1553,7 @@ fn parseInternal(comptime T: type, token: Token, tokens: *TokenStream, options: 
                     const source_slice = stringToken.slice(tokens.slice, tokens.i - 1);
                     switch (stringToken.escapes) {
                         .None => mem.copy(u8, &r, source_slice),
-                        .Some => try unescapeString(&r, source_slice),
+                        .Some => try unescapeValidString(&r, source_slice),
                     }
                     return r;
                 },
@@ -1579,7 +1600,7 @@ fn parseInternal(comptime T: type, token: Token, tokens: *TokenStream, options: 
                                 .Some => |some_escapes| {
                                     const output = try allocator.alloc(u8, stringToken.decodedLength());
                                     errdefer allocator.free(output);
-                                    try unescapeString(output, source_slice);
+                                    try unescapeValidString(output, source_slice);
                                     return output;
                                 },
                             }
@@ -2036,7 +2057,7 @@ pub const Parser = struct {
     }
 
     fn pushToParent(p: *Parser, value: *const Value) !void {
-        switch (p.stack.span()[p.stack.items.len - 1]) {
+        switch (p.stack.items[p.stack.items.len - 1]) {
             // Object Parent -> [ ..., object, <key>, value ]
             Value.String => |key| {
                 _ = p.stack.pop();
@@ -2063,7 +2084,7 @@ pub const Parser = struct {
             .Some => |some_escapes| {
                 const output = try allocator.alloc(u8, s.decodedLength());
                 errdefer allocator.free(output);
-                try unescapeString(output, slice);
+                try unescapeValidString(output, slice);
                 return Value{ .String = output };
             },
         }
@@ -2077,10 +2098,10 @@ pub const Parser = struct {
     }
 };
 
-// Unescape a JSON string
-// Only to be used on strings already validated by the parser
-// (note the unreachable statements and lack of bounds checking)
-fn unescapeString(output: []u8, input: []const u8) !void {
+/// Unescape a JSON string
+/// Only to be used on strings already validated by the parser
+/// (note the unreachable statements and lack of bounds checking)
+pub fn unescapeValidString(output: []u8, input: []const u8) !void {
     var inIndex: usize = 0;
     var outIndex: usize = 0;
 
@@ -2126,8 +2147,8 @@ fn unescapeString(output: []u8, input: []const u8) !void {
                 const secondCodeUnit = std.fmt.parseInt(u16, input[inIndex + 8 .. inIndex + 12], 16) catch unreachable;
 
                 const utf16le_seq = [2]u16{
-                    mem.littleToNative(u16, firstCodeUnit),
-                    mem.littleToNative(u16, secondCodeUnit),
+                    mem.nativeToLittle(u16, firstCodeUnit),
+                    mem.nativeToLittle(u16, secondCodeUnit),
                 };
                 if (std.unicode.utf16leToUtf8(output[outIndex..], &utf16le_seq)) |byteCount| {
                     outIndex += byteCount;

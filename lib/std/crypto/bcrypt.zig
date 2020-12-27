@@ -11,6 +11,7 @@ const math = std.math;
 const mem = std.mem;
 const debug = std.debug;
 const testing = std.testing;
+const utils = std.crypto.utils;
 
 const salt_length: usize = 16;
 const salt_str_length: usize = 22;
@@ -226,7 +227,7 @@ fn strHashInternal(password: []const u8, rounds_log: u6, salt: [salt_length]u8) 
         state.expand0(passwordZ);
         state.expand0(salt[0..]);
     }
-    mem.secureZero(u8, &password_buf);
+    utils.secureZero(u8, &password_buf);
 
     var cdata = [6]u32{ 0x4f727068, 0x65616e42, 0x65686f6c, 0x64657253, 0x63727944, 0x6f756274 }; // "OrpheanBeholderScryDoubt"
     k = 0;
@@ -261,7 +262,7 @@ fn strHashInternal(password: []const u8, rounds_log: u6, salt: [salt_length]u8) 
 /// and then use the resulting hash as the password parameter for bcrypt.
 pub fn strHash(password: []const u8, rounds_log: u6) ![hash_length]u8 {
     var salt: [salt_length]u8 = undefined;
-    try crypto.randomBytes(&salt);
+    crypto.random.bytes(&salt);
     return strHashInternal(password, rounds_log, salt);
 }
 
@@ -282,7 +283,7 @@ pub fn strVerify(h: [hash_length]u8, password: []const u8) BcryptError!void {
 
 test "bcrypt codec" {
     var salt: [salt_length]u8 = undefined;
-    try crypto.randomBytes(&salt);
+    crypto.random.bytes(&salt);
     var salt_str: [salt_str_length]u8 = undefined;
     Codec.encode(salt_str[0..], salt[0..]);
     var salt2: [salt_length]u8 = undefined;

@@ -15,11 +15,11 @@ const windows = os.windows;
 const mem = std.mem;
 const debug = std.debug;
 const BufMap = std.BufMap;
-const ArrayListSentineled = std.ArrayListSentineled;
 const builtin = @import("builtin");
 const Os = builtin.Os;
 const TailQueue = std.TailQueue;
 const maxInt = std.math.maxInt;
+const assert = std.debug.assert;
 
 pub const ChildProcess = struct {
     pid: if (builtin.os.tag == .windows) void else i32,
@@ -368,6 +368,7 @@ pub const ChildProcess = struct {
                 error.DeviceBusy => unreachable,
                 error.FileLocksNotSupported => unreachable,
                 error.BadPathName => unreachable, // Windows-only
+                error.WouldBlock => unreachable,
                 else => |e| return e,
             }
         else
@@ -376,19 +377,44 @@ pub const ChildProcess = struct {
             if (any_ignore) os.close(dev_null_fd);
         }
 
-        var env_map_owned: BufMap = undefined;
-        var we_own_env_map: bool = undefined;
-        const env_map = if (self.env_map) |env_map| x: {
-            we_own_env_map = false;
-            break :x env_map;
-        } else x: {
-            we_own_env_map = true;
-            env_map_owned = try process.getEnvMap(self.allocator);
-            break :x &env_map_owned;
-        };
-        defer {
-            if (we_own_env_map) env_map_owned.deinit();
+        var arena_allocator = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena_allocator.deinit();
+        const arena = &arena_allocator.allocator;
+
+        // The POSIX standard does not allow malloc() between fork() and execve(),
+        // and `self.allocator` may be a libc allocator.
+        // I have personally observed the child process deadlocking when it tries
+        // to call malloc() due to a heap allocation between fork() and execve(),
+        // in musl v1.1.24.
+        // Additionally, we want to reduce the number of possible ways things
+        // can fail between fork() and execve().
+        // Therefore, we do all the allocation for the execve() before the fork().
+        // This means we must do the null-termination of argv and env vars here.
+        const argv_buf = try arena.alloc(?[*:0]u8, self.argv.len + 1);
+        for (self.argv) |arg, i| {
+            const arg_buf = try arena.alloc(u8, arg.len + 1);
+            @memcpy(arg_buf.ptr, arg.ptr, arg.len);
+            arg_buf[arg.len] = 0;
+            argv_buf[i] = arg_buf[0..arg.len :0].ptr;
         }
+        argv_buf[self.argv.len] = null;
+        const argv_ptr = argv_buf[0..self.argv.len :null].ptr;
+
+        const envp = m: {
+            if (self.env_map) |env_map| {
+                const envp_buf = try createNullDelimitedEnvMap(arena, env_map);
+                break :m envp_buf.ptr;
+            } else if (std.builtin.link_libc) {
+                break :m std.c.environ;
+            } else if (std.builtin.output_mode == .Exe) {
+                // Then we have Zig start code and this works.
+                // TODO type-safety for null-termination of `os.environ`.
+                break :m @ptrCast([*:null]?[*:0]u8, os.environ.ptr);
+            } else {
+                // TODO come up with a solution for this.
+                @compileError("missing std lib enhancement: ChildProcess implementation has no way to collect the environment variables to forward to the child process");
+            }
+        };
 
         // This pipe is used to communicate errors between the time of fork
         // and execve from the child process to the parent process.
@@ -438,7 +464,10 @@ pub const ChildProcess = struct {
                 os.setreuid(uid, uid) catch |err| forkChildErrReport(err_pipe[1], err);
             }
 
-            const err = os.execvpe_expandArg0(self.allocator, self.expand_arg0, self.argv, env_map);
+            const err = switch (self.expand_arg0) {
+                .expand => os.execvpeZ_expandArg0(.expand, argv_buf.ptr[0].?, argv_ptr, envp),
+                .no_expand => os.execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_ptr, envp),
+            };
             forkChildErrReport(err_pipe[1], err);
         }
 
@@ -748,38 +777,37 @@ fn windowsCreateProcess(app_name: [*:0]u16, cmd_line: [*:0]u16, envp_ptr: ?[*]u1
 
 /// Caller must dealloc.
 fn windowsCreateCommandLine(allocator: *mem.Allocator, argv: []const []const u8) ![:0]u8 {
-    var buf = try ArrayListSentineled(u8, 0).initSize(allocator, 0);
+    var buf = std.ArrayList(u8).init(allocator);
     defer buf.deinit();
-    const buf_stream = buf.outStream();
 
     for (argv) |arg, arg_i| {
-        if (arg_i != 0) try buf_stream.writeByte(' ');
+        if (arg_i != 0) try buf.append(' ');
         if (mem.indexOfAny(u8, arg, " \t\n\"") == null) {
-            try buf_stream.writeAll(arg);
+            try buf.appendSlice(arg);
             continue;
         }
-        try buf_stream.writeByte('"');
+        try buf.append('"');
         var backslash_count: usize = 0;
         for (arg) |byte| {
             switch (byte) {
                 '\\' => backslash_count += 1,
                 '"' => {
-                    try buf_stream.writeByteNTimes('\\', backslash_count * 2 + 1);
-                    try buf_stream.writeByte('"');
+                    try buf.appendNTimes('\\', backslash_count * 2 + 1);
+                    try buf.append('"');
                     backslash_count = 0;
                 },
                 else => {
-                    try buf_stream.writeByteNTimes('\\', backslash_count);
-                    try buf_stream.writeByte(byte);
+                    try buf.appendNTimes('\\', backslash_count);
+                    try buf.append(byte);
                     backslash_count = 0;
                 },
             }
         }
-        try buf_stream.writeByteNTimes('\\', backslash_count * 2);
-        try buf_stream.writeByte('"');
+        try buf.appendNTimes('\\', backslash_count * 2);
+        try buf.append('"');
     }
 
-    return buf.toOwnedSlice();
+    return buf.toOwnedSliceSentinel(0);
 }
 
 fn windowsDestroyPipe(rd: ?windows.HANDLE, wr: ?windows.HANDLE) void {
@@ -820,8 +848,9 @@ fn forkChildErrReport(fd: i32, err: ChildProcess.SpawnError) noreturn {
     // which we really do not want to run in the fork child. I caught LLVM doing this and
     // it caused a deadlock instead of doing an exit syscall. In the words of Avril Lavigne,
     // "Why'd you have to go and make things so complicated?"
-    if (std.Target.current.os.tag == .linux) {
-        std.os.linux.exit(1); // By-pass libc regardless of whether it is linked.
+    if (builtin.link_libc) {
+        // The _exit(2) function does nothing but make the exit syscall, unlike exit(3)
+        std.c._exit(1);
     }
     os.exit(1);
 }
@@ -881,4 +910,25 @@ pub fn createWindowsEnvBlock(allocator: *mem.Allocator, env_map: *const BufMap) 
     result[i] = 0;
     i += 1;
     return allocator.shrink(result, i);
+}
+
+pub fn createNullDelimitedEnvMap(arena: *mem.Allocator, env_map: *const std.BufMap) ![:null]?[*:0]u8 {
+    const envp_count = env_map.count();
+    const envp_buf = try arena.alloc(?[*:0]u8, envp_count + 1);
+    mem.set(?[*:0]u8, envp_buf, null);
+    {
+        var it = env_map.iterator();
+        var i: usize = 0;
+        while (it.next()) |pair| : (i += 1) {
+            const env_buf = try arena.alloc(u8, pair.key.len + pair.value.len + 2);
+            @memcpy(env_buf.ptr, pair.key.ptr, pair.key.len);
+            env_buf[pair.key.len] = '=';
+            @memcpy(env_buf.ptr + pair.key.len + 1, pair.value.ptr, pair.value.len);
+            const len = env_buf.len - 1;
+            env_buf[len] = 0;
+            envp_buf[i] = env_buf[0..len :0].ptr;
+        }
+        assert(i == envp_count);
+    }
+    return envp_buf[0..envp_count :null];
 }

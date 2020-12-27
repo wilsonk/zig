@@ -13,6 +13,9 @@ pub extern "c" fn getdents(fd: c_int, buf_ptr: [*]u8, nbytes: usize) usize;
 pub extern "c" fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) c_int;
 pub extern "c" fn getrandom(buf_ptr: [*]u8, buf_len: usize, flags: c_uint) isize;
 
+pub extern "c" fn posix_memalign(memptr: *?*c_void, alignment: usize, size: usize) c_int;
+pub extern "c" fn malloc_usable_size(?*const c_void) usize;
+
 pub const sf_hdtr = extern struct {
     headers: [*]const iovec_const,
     hdr_cnt: c_int,
@@ -42,6 +45,15 @@ pub const pthread_cond_t = extern struct {
 pub const pthread_attr_t = extern struct {
     __size: [56]u8,
     __align: c_long,
+};
+
+pub const sem_t = extern struct {
+    _magic: u32,
+    _kern: extern struct {
+        _count: u32,
+        _flags: u32,
+    },
+    _padding: u32,
 };
 
 pub const EAI = extern enum(c_int) {

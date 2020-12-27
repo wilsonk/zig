@@ -53,7 +53,7 @@ decl_table: std.ArrayHashMapUnmanaged(Scope.NameHash, *Decl, Scope.name_hash_has
 /// The ErrorMsg memory is owned by the decl, using Module's general purpose allocator.
 /// Note that a Decl can succeed but the Fn it represents can fail. In this case,
 /// a Decl can have a failed_decls entry but have analysis status of success.
-failed_decls: std.AutoArrayHashMapUnmanaged(*Decl, *Compilation.ErrorMsg) = .{},
+failed_decls: std.AutoArrayHashMapUnmanaged(*Decl, ArrayListUnmanaged(*Compilation.ErrorMsg)) = .{},
 /// Using a map here for consistency with the other fields here.
 /// The ErrorMsg memory is owned by the `Scope`, using Module's general purpose allocator.
 failed_files: std.AutoArrayHashMapUnmanaged(*Scope, *Compilation.ErrorMsg) = .{},
@@ -77,6 +77,9 @@ import_table: std.StringArrayHashMapUnmanaged(*Scope.File) = .{},
 /// field to determine whether a Decl's status applies to an ongoing update, or a
 /// previous analysis.
 generation: u32 = 0,
+
+/// When populated it means there was an error opening/reading the root source file.
+failed_root_src_file: ?anyerror = null,
 
 stage1_flags: packed struct {
     have_winmain: bool = false,
@@ -793,11 +796,15 @@ pub const Scope = struct {
         /// The first N instructions in a function body ZIR are arg instructions.
         instructions: std.ArrayListUnmanaged(*zir.Inst) = .{},
         label: ?Label = null,
+        break_block: ?*zir.Inst.Block = null,
+        continue_block: ?*zir.Inst.Block = null,
+        /// only valid if label != null or (continue_block and break_block) != null
+        break_result_loc: astgen.ResultLoc = undefined,
 
         pub const Label = struct {
             token: ast.TokenIndex,
             block_inst: *zir.Inst.Block,
-            result_loc: astgen.ResultLoc,
+            used: bool = false,
         };
     };
 
@@ -842,8 +849,11 @@ pub fn deinit(self: *Module) void {
     }
     self.decl_table.deinit(gpa);
 
-    for (self.failed_decls.items()) |entry| {
-        entry.value.destroy(gpa);
+    for (self.failed_decls.items()) |*entry| {
+        for (entry.value.items) |compile_err| {
+            compile_err.destroy(gpa);
+        }
+        entry.value.deinit(gpa);
     }
     self.failed_decls.deinit(gpa);
 
@@ -939,8 +949,7 @@ pub fn ensureDeclAnalyzed(self: *Module, decl: *Decl) InnerError!void {
             error.OutOfMemory => return error.OutOfMemory,
             error.AnalysisFail => return error.AnalysisFail,
             else => {
-                try self.failed_decls.ensureCapacity(self.gpa, self.failed_decls.items().len + 1);
-                self.failed_decls.putAssumeCapacityNoClobber(decl, try Compilation.ErrorMsg.create(
+                try self.addDeclErr(decl, try Compilation.ErrorMsg.create(
                     self.gpa,
                     decl.src(),
                     "unable to analyze: {}",
@@ -1547,7 +1556,7 @@ pub fn analyzeContainer(self: *Module, container_scope: *Scope.Container) !void 
                     decl.analysis = .sema_failure;
                     const err_msg = try Compilation.ErrorMsg.create(self.gpa, tree.token_locs[name_tok].start, "redefinition of '{}'", .{decl.name});
                     errdefer err_msg.destroy(self.gpa);
-                    try self.failed_decls.putNoClobber(self.gpa, decl, err_msg);
+                    try self.addDeclErr(decl, err_msg);
                 } else {
                     if (!srcHashEql(decl.contents_hash, contents_hash)) {
                         try self.markOutdatedDecl(decl);
@@ -1589,7 +1598,7 @@ pub fn analyzeContainer(self: *Module, container_scope: *Scope.Container) !void 
                     decl.analysis = .sema_failure;
                     const err_msg = try Compilation.ErrorMsg.create(self.gpa, name_loc.start, "redefinition of '{}'", .{decl.name});
                     errdefer err_msg.destroy(self.gpa);
-                    try self.failed_decls.putNoClobber(self.gpa, decl, err_msg);
+                    try self.addDeclErr(decl, err_msg);
                 } else if (!srcHashEql(decl.contents_hash, contents_hash)) {
                     try self.markOutdatedDecl(decl);
                     decl.contents_hash = contents_hash;
@@ -1715,8 +1724,11 @@ pub fn deleteDecl(self: *Module, decl: *Decl) !void {
             try self.markOutdatedDecl(dep);
         }
     }
-    if (self.failed_decls.remove(decl)) |entry| {
-        entry.value.destroy(self.gpa);
+    if (self.failed_decls.remove(decl)) |*entry| {
+        for (entry.value.items) |compile_err| {
+            compile_err.destroy(self.gpa);
+        }
+        entry.value.deinit(self.gpa);
     }
     self.deleteDeclExports(decl);
     self.comp.bin_file.freeDecl(decl);
@@ -1795,8 +1807,11 @@ pub fn analyzeFnBody(self: *Module, decl: *Decl, func: *Fn) !void {
 fn markOutdatedDecl(self: *Module, decl: *Decl) !void {
     log.debug("mark {} outdated\n", .{decl.name});
     try self.comp.work_queue.writeItem(.{ .analyze_decl = decl });
-    if (self.failed_decls.remove(decl)) |entry| {
-        entry.value.destroy(self.gpa);
+    if (self.failed_decls.remove(decl)) |*entry| {
+        for (entry.value.items) |compile_err| {
+            compile_err.destroy(self.gpa);
+        }
+        entry.value.deinit(self.gpa);
     }
     decl.analysis = .outdated;
 }
@@ -2633,7 +2648,7 @@ pub fn cmpNumeric(
         dest_float_type = lhs.ty;
     } else {
         const int_info = lhs.ty.intInfo(self.getTarget());
-        lhs_bits = int_info.bits + @boolToInt(!int_info.signed and dest_int_is_signed);
+        lhs_bits = int_info.bits + @boolToInt(int_info.signedness == .unsigned and dest_int_is_signed);
     }
 
     var rhs_bits: usize = undefined;
@@ -2668,7 +2683,7 @@ pub fn cmpNumeric(
         dest_float_type = rhs.ty;
     } else {
         const int_info = rhs.ty.intInfo(self.getTarget());
-        rhs_bits = int_info.bits + @boolToInt(!int_info.signed and dest_int_is_signed);
+        rhs_bits = int_info.bits + @boolToInt(int_info.signedness == .unsigned and dest_int_is_signed);
     }
 
     const dest_type = if (dest_float_type) |ft| ft else blk: {
@@ -2817,9 +2832,9 @@ pub fn coerce(self: *Module, scope: *Scope, dest_type: Type, inst: *Inst) !*Inst
 
         const src_info = inst.ty.intInfo(self.getTarget());
         const dst_info = dest_type.intInfo(self.getTarget());
-        if ((src_info.signed == dst_info.signed and dst_info.bits >= src_info.bits) or
+        if ((src_info.signedness == dst_info.signedness and dst_info.bits >= src_info.bits) or
             // small enough unsigned ints can get casted to large enough signed ints
-            (src_info.signed and !dst_info.signed and dst_info.bits > src_info.bits))
+            (src_info.signedness == .signed and dst_info.signedness == .unsigned and dst_info.bits > src_info.bits))
         {
             const b = try self.requireRuntimeBlock(scope, inst.src);
             return self.addUnOp(b, inst.src, dest_type, .intcast, inst);
@@ -2941,10 +2956,14 @@ pub fn failNode(
     return self.fail(scope, src, format, args);
 }
 
+pub fn addDeclErr(self: *Module, decl: *Decl, err: *Compilation.ErrorMsg) error{OutOfMemory}!void {
+    const entry = try self.failed_decls.getOrPutValue(self.gpa, decl, .{});
+    try entry.value.append(self.gpa, err);
+}
+
 fn failWithOwnedErrorMsg(self: *Module, scope: *Scope, src: usize, err_msg: *Compilation.ErrorMsg) InnerError {
     {
         errdefer err_msg.destroy(self.gpa);
-        try self.failed_decls.ensureCapacity(self.gpa, self.failed_decls.items().len + 1);
         try self.failed_files.ensureCapacity(self.gpa, self.failed_files.items().len + 1);
     }
     switch (scope.tag) {
@@ -2952,7 +2971,7 @@ fn failWithOwnedErrorMsg(self: *Module, scope: *Scope, src: usize, err_msg: *Com
             const decl = scope.cast(Scope.DeclAnalysis).?.decl;
             decl.analysis = .sema_failure;
             decl.generation = self.generation;
-            self.failed_decls.putAssumeCapacityNoClobber(decl, err_msg);
+            try self.addDeclErr(decl, err_msg);
         },
         .block => {
             const block = scope.cast(Scope.Block).?;
@@ -2962,25 +2981,25 @@ fn failWithOwnedErrorMsg(self: *Module, scope: *Scope, src: usize, err_msg: *Com
                 block.decl.analysis = .sema_failure;
                 block.decl.generation = self.generation;
             }
-            self.failed_decls.putAssumeCapacityNoClobber(block.decl, err_msg);
+            try self.addDeclErr(block.decl, err_msg);
         },
         .gen_zir => {
             const gen_zir = scope.cast(Scope.GenZIR).?;
             gen_zir.decl.analysis = .sema_failure;
             gen_zir.decl.generation = self.generation;
-            self.failed_decls.putAssumeCapacityNoClobber(gen_zir.decl, err_msg);
+            try self.addDeclErr(gen_zir.decl, err_msg);
         },
         .local_val => {
             const gen_zir = scope.cast(Scope.LocalVal).?.gen_zir;
             gen_zir.decl.analysis = .sema_failure;
             gen_zir.decl.generation = self.generation;
-            self.failed_decls.putAssumeCapacityNoClobber(gen_zir.decl, err_msg);
+            try self.addDeclErr(gen_zir.decl, err_msg);
         },
         .local_ptr => {
             const gen_zir = scope.cast(Scope.LocalPtr).?.gen_zir;
             gen_zir.decl.analysis = .sema_failure;
             gen_zir.decl.generation = self.generation;
-            self.failed_decls.putAssumeCapacityNoClobber(gen_zir.decl, err_msg);
+            try self.addDeclErr(gen_zir.decl, err_msg);
         },
         .zir_module => {
             const zir_module = scope.cast(Scope.ZIRModule).?;

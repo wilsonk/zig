@@ -19,9 +19,6 @@ pub const Address = extern union {
     in6: Ip6Address,
     un: if (has_unix_sockets) os.sockaddr_un else void,
 
-    // TODO this crashed the compiler. https://github.com/ziglang/zig/issues/3512
-    //pub const localhost = initIp4(parseIp4("127.0.0.1") catch unreachable, 0);
-
     /// Parse the given IP address string into an Address value.
     /// It is recommended to use `resolveIp` instead, to handle
     /// IPv6 link-local unix addresses.
@@ -178,7 +175,7 @@ pub const Address = extern union {
                     unreachable;
                 }
 
-                const path_len = std.mem.len(@ptrCast([*:0]const u8, &self.un.path));
+                const path_len = std.mem.len(std.meta.assumeSentinel(&self.un.path, 0));
                 return @intCast(os.socklen_t, @sizeOf(os.sockaddr_un) - self.un.path.len + path_len);
             },
             else => unreachable,
@@ -196,7 +193,7 @@ pub const Ip4Address = extern struct {
                 .addr = undefined,
             },
         };
-        const out_ptr = mem.sliceAsBytes(@as(*[1]u32, &result.sa.addr)[0..]);
+        const out_ptr = mem.asBytes(&result.sa.addr);
 
         var x: u8 = 0;
         var index: u8 = 0;
@@ -721,7 +718,7 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
             .next = null,
         };
         var res: *os.addrinfo = undefined;
-        const rc = sys.getaddrinfo(name_c.ptr, @ptrCast([*:0]const u8, port_c.ptr), &hints, &res);
+        const rc = sys.getaddrinfo(name_c.ptr, std.meta.assumeSentinel(port_c.ptr, 0), &hints, &res);
         if (builtin.os.tag == .windows) switch (@intToEnum(os.windows.ws2_32.WinsockError, @intCast(u16, rc))) {
             @intToEnum(os.windows.ws2_32.WinsockError, 0) => {},
             .WSATRY_AGAIN => return error.TemporaryNameServerFailure,
@@ -786,17 +783,17 @@ pub fn getAddressList(allocator: *mem.Allocator, name: []const u8, port: u16) !*
         var lookup_addrs = std.ArrayList(LookupAddr).init(allocator);
         defer lookup_addrs.deinit();
 
-        var canon = std.ArrayListSentineled(u8, 0).initNull(arena);
+        var canon = std.ArrayList(u8).init(arena);
         defer canon.deinit();
 
         try linuxLookupName(&lookup_addrs, &canon, name, family, flags, port);
 
         result.addrs = try arena.alloc(Address, lookup_addrs.items.len);
-        if (!canon.isNull()) {
+        if (canon.items.len != 0) {
             result.canon_name = canon.toOwnedSlice();
         }
 
-        for (lookup_addrs.span()) |lookup_addr, i| {
+        for (lookup_addrs.items) |lookup_addr, i| {
             result.addrs[i] = lookup_addr.addr;
             assert(result.addrs[i].getPort() == port);
         }
@@ -821,7 +818,7 @@ const DAS_ORDER_SHIFT = 0;
 
 fn linuxLookupName(
     addrs: *std.ArrayList(LookupAddr),
-    canon: *std.ArrayListSentineled(u8, 0),
+    canon: *std.ArrayList(u8),
     opt_name: ?[]const u8,
     family: os.sa_family_t,
     flags: u32,
@@ -829,7 +826,8 @@ fn linuxLookupName(
 ) !void {
     if (opt_name) |name| {
         // reject empty name and check len so it fits into temp bufs
-        try canon.replaceContents(name);
+        canon.items.len = 0;
+        try canon.appendSlice(name);
         if (Address.parseExpectingFamily(name, family, port)) |addr| {
             try addrs.append(LookupAddr{ .addr = addr });
         } else |name_err| if ((flags & std.c.AI_NUMERICHOST) != 0) {
@@ -838,6 +836,20 @@ fn linuxLookupName(
             try linuxLookupNameFromHosts(addrs, canon, name, family, port);
             if (addrs.items.len == 0) {
                 try linuxLookupNameFromDnsSearch(addrs, canon, name, family, port);
+            }
+            if (addrs.items.len == 0) {
+                // RFC 6761 Section 6.3
+                // Name resolution APIs and libraries SHOULD recognize localhost
+                // names as special and SHOULD always return the IP loopback address
+                // for address queries and negative responses for all other query
+                // types.
+
+                // Check for equal to "localhost" or ends in ".localhost"
+                if (mem.endsWith(u8, name, "localhost") and (name.len == "localhost".len or name[name.len - "localhost".len] == '.')) {
+                    try addrs.append(LookupAddr{ .addr = .{ .in = Ip4Address.parse("127.0.0.1", port) catch unreachable } });
+                    try addrs.append(LookupAddr{ .addr = .{ .in6 = Ip6Address.parse("::1", port) catch unreachable } });
+                    return;
+                }
             }
         }
     } else {
@@ -849,7 +861,7 @@ fn linuxLookupName(
     // No further processing is needed if there are fewer than 2
     // results or if there are only IPv4 results.
     if (addrs.items.len == 1 or family == os.AF_INET) return;
-    const all_ip4 = for (addrs.span()) |addr| {
+    const all_ip4 = for (addrs.items) |addr| {
         if (addr.addr.any.family != os.AF_INET) break false;
     } else true;
     if (all_ip4) return;
@@ -861,7 +873,7 @@ fn linuxLookupName(
     // So far the label/precedence table cannot be customized.
     // This implementation is ported from musl libc.
     // A more idiomatic "ziggy" implementation would be welcome.
-    for (addrs.span()) |*addr, i| {
+    for (addrs.items) |*addr, i| {
         var key: i32 = 0;
         var sa6: os.sockaddr_in6 = undefined;
         @memset(@ptrCast([*]u8, &sa6), 0, @sizeOf(os.sockaddr_in6));
@@ -926,7 +938,7 @@ fn linuxLookupName(
         key |= (MAXADDRS - @intCast(i32, i)) << DAS_ORDER_SHIFT;
         addr.sortkey = key;
     }
-    std.sort.sort(LookupAddr, addrs.span(), {}, addrCmpLessThan);
+    std.sort.sort(LookupAddr, addrs.items, {}, addrCmpLessThan);
 }
 
 const Policy = struct {
@@ -1080,7 +1092,7 @@ fn linuxLookupNameFromNull(
 
 fn linuxLookupNameFromHosts(
     addrs: *std.ArrayList(LookupAddr),
-    canon: *std.ArrayListSentineled(u8, 0),
+    canon: *std.ArrayList(u8),
     name: []const u8,
     family: os.sa_family_t,
     port: u16,
@@ -1131,7 +1143,8 @@ fn linuxLookupNameFromHosts(
         // first name is canonical name
         const name_text = first_name_text.?;
         if (isValidHostName(name_text)) {
-            try canon.replaceContents(name_text);
+            canon.items.len = 0;
+            try canon.appendSlice(name_text);
         }
     }
 }
@@ -1150,7 +1163,7 @@ pub fn isValidHostName(hostname: []const u8) bool {
 
 fn linuxLookupNameFromDnsSearch(
     addrs: *std.ArrayList(LookupAddr),
-    canon: *std.ArrayListSentineled(u8, 0),
+    canon: *std.ArrayList(u8),
     name: []const u8,
     family: os.sa_family_t,
     port: u16,
@@ -1166,10 +1179,10 @@ fn linuxLookupNameFromDnsSearch(
         if (byte == '.') dots += 1;
     }
 
-    const search = if (rc.search.isNull() or dots >= rc.ndots or mem.endsWith(u8, name, "."))
+    const search = if (dots >= rc.ndots or mem.endsWith(u8, name, "."))
         ""
     else
-        rc.search.span();
+        rc.search.items;
 
     var canon_name = name;
 
@@ -1182,14 +1195,14 @@ fn linuxLookupNameFromDnsSearch(
     // name is not a CNAME record) and serves as a buffer for passing
     // the full requested name to name_from_dns.
     try canon.resize(canon_name.len);
-    mem.copy(u8, canon.span(), canon_name);
+    mem.copy(u8, canon.items, canon_name);
     try canon.append('.');
 
     var tok_it = mem.tokenize(search, " \t");
     while (tok_it.next()) |tok| {
         canon.shrink(canon_name.len + 1);
         try canon.appendSlice(tok);
-        try linuxLookupNameFromDns(addrs, canon, canon.span(), family, rc, port);
+        try linuxLookupNameFromDns(addrs, canon, canon.items, family, rc, port);
         if (addrs.items.len != 0) return;
     }
 
@@ -1199,13 +1212,13 @@ fn linuxLookupNameFromDnsSearch(
 
 const dpc_ctx = struct {
     addrs: *std.ArrayList(LookupAddr),
-    canon: *std.ArrayListSentineled(u8, 0),
+    canon: *std.ArrayList(u8),
     port: u16,
 };
 
 fn linuxLookupNameFromDns(
     addrs: *std.ArrayList(LookupAddr),
-    canon: *std.ArrayListSentineled(u8, 0),
+    canon: *std.ArrayList(u8),
     name: []const u8,
     family: os.sa_family_t,
     rc: ResolvConf,
@@ -1260,7 +1273,7 @@ const ResolvConf = struct {
     attempts: u32,
     ndots: u32,
     timeout: u32,
-    search: std.ArrayListSentineled(u8, 0),
+    search: std.ArrayList(u8),
     ns: std.ArrayList(LookupAddr),
 
     fn deinit(rc: *ResolvConf) void {
@@ -1275,7 +1288,7 @@ const ResolvConf = struct {
 fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
     rc.* = ResolvConf{
         .ns = std.ArrayList(LookupAddr).init(allocator),
-        .search = std.ArrayListSentineled(u8, 0).initNull(allocator),
+        .search = std.ArrayList(u8).init(allocator),
         .ndots = 1,
         .timeout = 5,
         .attempts = 2,
@@ -1327,7 +1340,8 @@ fn getResolvConf(allocator: *mem.Allocator, rc: *ResolvConf) !void {
             const ip_txt = line_it.next() orelse continue;
             try linuxLookupNameFromNumericUnspec(&rc.ns, ip_txt, 53);
         } else if (mem.eql(u8, token, "domain") or mem.eql(u8, token, "search")) {
-            try rc.search.replaceContents(line_it.rest());
+            rc.search.items.len = 0;
+            try rc.search.appendSlice(line_it.rest());
         }
     }
 
@@ -1361,9 +1375,9 @@ fn resMSendRc(
     defer ns_list.deinit();
 
     try ns_list.resize(rc.ns.items.len);
-    const ns = ns_list.span();
+    const ns = ns_list.items;
 
-    for (rc.ns.span()) |iplit, i| {
+    for (rc.ns.items) |iplit, i| {
         ns[i] = iplit.addr;
         assert(ns[i].getPort() == 53);
         if (iplit.addr.any.family != os.AF_INET) {
@@ -1556,9 +1570,10 @@ fn dnsParseCallback(ctx: dpc_ctx, rr: u8, data: []const u8, packet: []const u8) 
             var tmp: [256]u8 = undefined;
             // Returns len of compressed name. strlen to get canon name.
             _ = try os.dn_expand(packet, data, &tmp);
-            const canon_name = mem.spanZ(@ptrCast([*:0]const u8, &tmp));
+            const canon_name = mem.spanZ(std.meta.assumeSentinel(&tmp, 0));
             if (isValidHostName(canon_name)) {
-                try ctx.canon.replaceContents(canon_name);
+                ctx.canon.items.len = 0;
+                try ctx.canon.appendSlice(canon_name);
             }
         },
         else => return,
@@ -1660,10 +1675,6 @@ pub const StreamServer = struct {
 
         /// Firewall rules forbid connection.
         BlockedByFirewall,
-
-        /// Permission to create a socket of the specified type and/or
-        /// protocol is denied.
-        PermissionDenied,
 
         FileDescriptorNotASocket,
 

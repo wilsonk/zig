@@ -122,6 +122,8 @@ pub const Inst = struct {
         coerce_to_ptr_elem,
         /// Emit an error message and fail compilation.
         compileerror,
+        /// Log compile time variables and emit an error message.
+        compilelog,
         /// Conditional branch. Splits control flow based on a boolean condition value.
         condbr,
         /// Special case, has no textual representation.
@@ -251,6 +253,8 @@ pub const Inst = struct {
         subwrap,
         /// Returns the type of a value.
         typeof,
+        /// Is the builtin @TypeOf which returns the type after peertype resolution of one or more params
+        typeof_peer,
         /// Asserts control-flow will not reach this instruction. Not safety checked - the compiler
         /// will assume the correctness of this instruction.
         unreach_nocheck,
@@ -384,6 +388,7 @@ pub const Inst = struct {
                 .declval_in_module => DeclValInModule,
                 .coerce_result_block_ptr => CoerceResultBlockPtr,
                 .compileerror => CompileError,
+                .compilelog => CompileLog,
                 .loop => Loop,
                 .@"const" => Const,
                 .str => Str,
@@ -403,6 +408,7 @@ pub const Inst = struct {
                 .error_set => ErrorSet,
                 .slice => Slice,
                 .switchbr => SwitchBr,
+                .typeof_peer => TypeOfPeer,
             };
         }
 
@@ -510,6 +516,8 @@ pub const Inst = struct {
                 .slice_start,
                 .import,
                 .switch_range,
+                .compilelog,
+                .typeof_peer,
                 => false,
 
                 .@"break",
@@ -701,6 +709,19 @@ pub const Inst = struct {
             msg: []const u8,
         },
         kw_args: struct {},
+    };
+
+    pub const CompileLog = struct {
+        pub const base_tag = Tag.compilelog;
+        base: Inst,
+
+        positionals: struct {
+            to_log: []*Inst,
+        },
+        kw_args: struct {
+            /// If we have seen it already so don't make another error
+            seen: bool = false,
+        },
     };
 
     pub const Const = struct {
@@ -1031,6 +1052,14 @@ pub const Inst = struct {
             item: *Inst,
             body: Module.Body,
         };
+    };
+    pub const TypeOfPeer = struct {
+        pub const base_tag = .typeof_peer;
+        base: Inst,
+        positionals: struct {
+            items: []*Inst,
+        },
+        kw_args: struct {},
     };
 };
 
@@ -1913,7 +1942,7 @@ const EmitZIR = struct {
                 .sema_failure,
                 .sema_failure_retryable,
                 .dependency_failure,
-                => if (self.old_module.failed_decls.get(ir_decl)) |err_msg| {
+                => if (self.old_module.failed_decls.get(ir_decl)) |err_msg_list| {
                     const fail_inst = try self.arena.allocator.create(Inst.CompileError);
                     fail_inst.* = .{
                         .base = .{
@@ -1921,7 +1950,7 @@ const EmitZIR = struct {
                             .tag = Inst.CompileError.base_tag,
                         },
                         .positionals = .{
-                            .msg = try self.arena.allocator.dupe(u8, err_msg.msg),
+                            .msg = try self.arena.allocator.dupe(u8, err_msg_list.items[0].msg),
                         },
                         .kw_args = .{},
                     };
@@ -1952,10 +1981,9 @@ const EmitZIR = struct {
                     };
                     _ = try self.emitUnnamedDecl(&export_inst.base);
                 }
-            } else {
-                const new_decl = try self.emitTypedValue(ir_decl.src(), ir_decl.typed_value.most_recent.typed_value);
-                new_decl.name = try self.arena.allocator.dupe(u8, mem.spanZ(ir_decl.name));
             }
+            const new_decl = try self.emitTypedValue(ir_decl.src(), ir_decl.typed_value.most_recent.typed_value);
+            new_decl.name = try self.arena.allocator.dupe(u8, mem.spanZ(ir_decl.name));
         }
     }
 
@@ -2044,7 +2072,7 @@ const EmitZIR = struct {
                 try self.emitBody(body, &inst_table, &instructions);
             },
             .sema_failure => {
-                const err_msg = self.old_module.failed_decls.get(module_fn.owner_decl).?;
+                const err_msg = self.old_module.failed_decls.get(module_fn.owner_decl).?.items[0];
                 const fail_inst = try self.arena.allocator.create(Inst.CompileError);
                 fail_inst.* = .{
                     .base = .{
@@ -2331,6 +2359,9 @@ const EmitZIR = struct {
                 .cmp_neq => try self.emitBinOp(inst.src, new_body, inst.castTag(.cmp_neq).?, .cmp_neq),
                 .booland => try self.emitBinOp(inst.src, new_body, inst.castTag(.booland).?, .booland),
                 .boolor => try self.emitBinOp(inst.src, new_body, inst.castTag(.boolor).?, .boolor),
+                .bitand => try self.emitBinOp(inst.src, new_body, inst.castTag(.bitand).?, .bitand),
+                .bitor => try self.emitBinOp(inst.src, new_body, inst.castTag(.bitor).?, .bitor),
+                .xor => try self.emitBinOp(inst.src, new_body, inst.castTag(.xor).?, .xor),
 
                 .bitcast => try self.emitCast(inst.src, new_body, inst.castTag(.bitcast).?, .bitcast),
                 .intcast => try self.emitCast(inst.src, new_body, inst.castTag(.intcast).?, .intcast),
@@ -2687,7 +2718,10 @@ const EmitZIR = struct {
                 },
                 .Int => {
                     const info = ty.intInfo(self.old_module.getTarget());
-                    const signed = try self.emitPrimitive(src, if (info.signed) .@"true" else .@"false");
+                    const signed = try self.emitPrimitive(src, switch (info.signedness) {
+                        .signed => .@"true",
+                        .unsigned => .@"false",
+                    });
                     const bits_payload = try self.arena.allocator.create(Value.Payload.Int_u64);
                     bits_payload.* = .{ .int = info.bits };
                     const bits = try self.emitComptimeIntVal(src, Value.initPayload(&bits_payload.base));

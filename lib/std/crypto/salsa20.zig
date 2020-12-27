@@ -9,6 +9,7 @@ const crypto = std.crypto;
 const debug = std.debug;
 const math = std.math;
 const mem = std.mem;
+const utils = std.crypto.utils;
 const Vector = std.meta.Vector;
 
 const Poly1305 = crypto.onetimeauth.Poly1305;
@@ -414,7 +415,7 @@ pub const XSalsa20Poly1305 = struct {
             acc |= computedTag[i] ^ tag[i];
         }
         if (acc != 0) {
-            mem.secureZero(u8, &computedTag);
+            utils.secureZero(u8, &computedTag);
             return error.AuthenticationFailed;
         }
         mem.copy(u8, m[0..mlen0], block0[32..][0..mlen0]);
@@ -532,7 +533,7 @@ pub const SealedBox = struct {
         const nonce = createNonce(ekp.public_key, public_key);
         mem.copy(u8, c[0..public_length], ekp.public_key[0..]);
         try Box.seal(c[Box.public_length..], m, nonce, public_key, ekp.secret_key);
-        mem.secureZero(u8, ekp.secret_key[0..]);
+        utils.secureZero(u8, ekp.secret_key[0..]);
     }
 
     /// Decrypt a message using a key pair.
@@ -570,9 +571,9 @@ test "xsalsa20poly1305" {
     var key: [XSalsa20Poly1305.key_length]u8 = undefined;
     var nonce: [XSalsa20Poly1305.nonce_length]u8 = undefined;
     var tag: [XSalsa20Poly1305.tag_length]u8 = undefined;
-    try crypto.randomBytes(&msg);
-    try crypto.randomBytes(&key);
-    try crypto.randomBytes(&nonce);
+    crypto.random.bytes(&msg);
+    crypto.random.bytes(&key);
+    crypto.random.bytes(&nonce);
 
     XSalsa20Poly1305.encrypt(c[0..], &tag, msg[0..], "ad", nonce, key);
     try XSalsa20Poly1305.decrypt(msg2[0..], c[0..], tag, "ad", nonce, key);
@@ -584,9 +585,9 @@ test "xsalsa20poly1305 secretbox" {
     var key: [XSalsa20Poly1305.key_length]u8 = undefined;
     var nonce: [Box.nonce_length]u8 = undefined;
     var boxed: [msg.len + Box.tag_length]u8 = undefined;
-    try crypto.randomBytes(&msg);
-    try crypto.randomBytes(&key);
-    try crypto.randomBytes(&nonce);
+    crypto.random.bytes(&msg);
+    crypto.random.bytes(&key);
+    crypto.random.bytes(&nonce);
 
     SecretBox.seal(boxed[0..], msg[0..], nonce, key);
     try SecretBox.open(msg2[0..], boxed[0..], nonce, key);
@@ -597,8 +598,8 @@ test "xsalsa20poly1305 box" {
     var msg2: [msg.len]u8 = undefined;
     var nonce: [Box.nonce_length]u8 = undefined;
     var boxed: [msg.len + Box.tag_length]u8 = undefined;
-    try crypto.randomBytes(&msg);
-    try crypto.randomBytes(&nonce);
+    crypto.random.bytes(&msg);
+    crypto.random.bytes(&nonce);
 
     var kp1 = try Box.KeyPair.create(null);
     var kp2 = try Box.KeyPair.create(null);
@@ -610,7 +611,7 @@ test "xsalsa20poly1305 sealedbox" {
     var msg: [100]u8 = undefined;
     var msg2: [msg.len]u8 = undefined;
     var boxed: [msg.len + SealedBox.seal_length]u8 = undefined;
-    try crypto.randomBytes(&msg);
+    crypto.random.bytes(&msg);
 
     var kp = try Box.KeyPair.create(null);
     try SealedBox.seal(boxed[0..], msg[0..], kp.public_key);

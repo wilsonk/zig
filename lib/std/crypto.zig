@@ -23,6 +23,8 @@ pub const aead = struct {
         pub const XChaCha20Poly1305 = @import("crypto/chacha20.zig").XChacha20Poly1305;
     };
 
+    pub const isap = @import("crypto/isap.zig");
+
     pub const salsa_poly = struct {
         pub const XSalsa20Poly1305 = @import("crypto/salsa20.zig").XSalsa20Poly1305;
     };
@@ -130,8 +132,12 @@ pub const nacl = struct {
     pub const SealedBox = salsa20.SealedBox;
 };
 
+pub const utils = @import("crypto/utils.zig");
+
+/// This is a thread-local, cryptographically secure pseudo random number generator.
+pub const random = &@import("crypto/tlcsprng.zig").interface;
+
 const std = @import("std.zig");
-pub const randomBytes = std.os.getrandom;
 
 test "crypto" {
     inline for (std.meta.declarations(@This())) |decl| {
@@ -155,6 +161,7 @@ test "crypto" {
     _ = @import("crypto/chacha20.zig");
     _ = @import("crypto/gimli.zig");
     _ = @import("crypto/hmac.zig");
+    _ = @import("crypto/isap.zig");
     _ = @import("crypto/md5.zig");
     _ = @import("crypto/modes.zig");
     _ = @import("crypto/pbkdf2.zig");
@@ -171,6 +178,13 @@ test "crypto" {
     _ = @import("crypto/25519/scalar.zig");
     _ = @import("crypto/25519/x25519.zig");
     _ = @import("crypto/25519/ristretto255.zig");
+}
+
+test "CSPRNG" {
+    const a = random.int(u64);
+    const b = random.int(u64);
+    const c = random.int(u64);
+    std.testing.expect(a ^ b ^ c != 0);
 }
 
 test "issue #4532: no index out of bounds" {

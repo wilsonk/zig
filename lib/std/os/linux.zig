@@ -50,7 +50,7 @@ pub fn getauxval(index: usize) usize {
 
 // Some architectures (and some syscalls) require 64bit parameters to be passed
 // in a even-aligned register pair.
-const require_aligned_register_pair = //
+const require_aligned_register_pair =
     std.Target.current.cpu.arch.isMIPS() or
     std.Target.current.cpu.arch.isARM() or
     std.Target.current.cpu.arch.isThumb();
@@ -112,7 +112,9 @@ pub fn execve(path: [*:0]const u8, argv: [*:null]const ?[*:0]const u8, envp: [*:
 }
 
 pub fn fork() usize {
-    if (@hasField(SYS, "fork")) {
+    if (comptime builtin.arch.isSPARC()) {
+        return syscall_fork();
+    } else if (@hasField(SYS, "fork")) {
         return syscall0(.fork);
     } else {
         return syscall2(.clone, SIGCHLD, 0);
@@ -278,7 +280,7 @@ pub fn poll(fds: [*]pollfd, n: nfds_t, timeout: i32) usize {
     if (@hasField(SYS, "poll")) {
         return syscall3(.poll, @ptrToInt(fds), n, @bitCast(u32, timeout));
     } else {
-        return syscall6(
+        return syscall5(
             .ppoll,
             @ptrToInt(fds),
             n,
@@ -290,10 +292,13 @@ pub fn poll(fds: [*]pollfd, n: nfds_t, timeout: i32) usize {
             else
                 null),
             0,
-            0,
             NSIG / 8,
         );
     }
+}
+
+pub fn ppoll(fds: [*]pollfd, n: nfds_t, timeout: ?*timespec, sigmask: ?*const sigset_t) usize {
+    return syscall5(.ppoll, @ptrToInt(fds), n, @ptrToInt(timeout), @ptrToInt(sigmask), NSIG / 8);
 }
 
 pub fn read(fd: i32, buf: [*]u8, count: usize) usize {
@@ -740,33 +745,33 @@ pub fn setregid(rgid: gid_t, egid: gid_t) usize {
 
 pub fn getuid() uid_t {
     if (@hasField(SYS, "getuid32")) {
-        return @as(uid_t, syscall0(.getuid32));
+        return @intCast(uid_t, syscall0(.getuid32));
     } else {
-        return @as(uid_t, syscall0(.getuid));
+        return @intCast(uid_t, syscall0(.getuid));
     }
 }
 
 pub fn getgid() gid_t {
     if (@hasField(SYS, "getgid32")) {
-        return @as(gid_t, syscall0(.getgid32));
+        return @intCast(gid_t, syscall0(.getgid32));
     } else {
-        return @as(gid_t, syscall0(.getgid));
+        return @intCast(gid_t, syscall0(.getgid));
     }
 }
 
 pub fn geteuid() uid_t {
     if (@hasField(SYS, "geteuid32")) {
-        return @as(uid_t, syscall0(.geteuid32));
+        return @intCast(uid_t, syscall0(.geteuid32));
     } else {
-        return @as(uid_t, syscall0(.geteuid));
+        return @intCast(uid_t, syscall0(.geteuid));
     }
 }
 
 pub fn getegid() gid_t {
     if (@hasField(SYS, "getegid32")) {
-        return @as(gid_t, syscall0(.getegid32));
+        return @intCast(gid_t, syscall0(.getegid32));
     } else {
-        return @as(gid_t, syscall0(.getegid));
+        return @intCast(gid_t, syscall0(.getegid));
     }
 }
 
@@ -777,7 +782,7 @@ pub fn seteuid(euid: uid_t) usize {
     // The setresuid(2) man page says that if -1 is passed the corresponding
     // id will not be changed. Since uid_t is unsigned, this wraps around to the
     // max value in C.
-    comptime assert(@typeInfo(uid_t) == .Int and !@typeInfo(uid_t).Int.is_signed);
+    comptime assert(@typeInfo(uid_t) == .Int and @typeInfo(uid_t).Int.signedness == .unsigned);
     return setresuid(std.math.maxInt(uid_t), euid, std.math.maxInt(uid_t));
 }
 
@@ -788,7 +793,7 @@ pub fn setegid(egid: gid_t) usize {
     // The setresgid(2) man page says that if -1 is passed the corresponding
     // id will not be changed. Since gid_t is unsigned, this wraps around to the
     // max value in C.
-    comptime assert(@typeInfo(uid_t) == .Int and !@typeInfo(uid_t).Int.is_signed);
+    comptime assert(@typeInfo(uid_t) == .Int and @typeInfo(uid_t).Int.signedness == .unsigned);
     return setresgid(std.math.maxInt(gid_t), egid, std.math.maxInt(gid_t));
 }
 
@@ -852,35 +857,42 @@ pub fn sigprocmask(flags: u32, noalias set: ?*const sigset_t, noalias oldset: ?*
     return syscall4(.rt_sigprocmask, flags, @ptrToInt(set), @ptrToInt(oldset), NSIG / 8);
 }
 
-pub fn sigaction(sig: u6, noalias act: *const Sigaction, noalias oact: ?*Sigaction) usize {
+pub fn sigaction(sig: u6, noalias act: ?*const Sigaction, noalias oact: ?*Sigaction) usize {
     assert(sig >= 1);
     assert(sig != SIGKILL);
     assert(sig != SIGSTOP);
 
-    const restorer_fn = if ((act.flags & SA_SIGINFO) != 0) restore_rt else restore;
-    var ksa = k_sigaction{
-        .sigaction = act.sigaction,
-        .flags = act.flags | SA_RESTORER,
-        .mask = undefined,
-        .restorer = @ptrCast(fn () callconv(.C) void, restorer_fn),
-    };
-    var ksa_old: k_sigaction = undefined;
-    const ksa_mask_size = @sizeOf(@TypeOf(ksa_old.mask));
-    @memcpy(@ptrCast([*]u8, &ksa.mask), @ptrCast([*]const u8, &act.mask), ksa_mask_size);
+    var ksa: k_sigaction = undefined;
+    var oldksa: k_sigaction = undefined;
+    const mask_size = @sizeOf(@TypeOf(ksa.mask));
+
+    if (act) |new| {
+        const restorer_fn = if ((new.flags & SA_SIGINFO) != 0) restore_rt else restore;
+        ksa = k_sigaction{
+            .handler = new.handler.handler,
+            .flags = new.flags | SA_RESTORER,
+            .mask = undefined,
+            .restorer = @ptrCast(fn () callconv(.C) void, restorer_fn),
+        };
+        @memcpy(@ptrCast([*]u8, &ksa.mask), @ptrCast([*]const u8, &new.mask), mask_size);
+    }
+
+    const ksa_arg = if (act != null) @ptrToInt(&ksa) else 0;
+    const oldksa_arg = if (oact != null) @ptrToInt(&oldksa) else 0;
+
     const result = switch (builtin.arch) {
         // The sparc version of rt_sigaction needs the restorer function to be passed as an argument too.
-        .sparc, .sparcv9 => syscall5(.rt_sigaction, sig, @ptrToInt(&ksa), @ptrToInt(&ksa_old), @ptrToInt(ksa.restorer), ksa_mask_size),
-        else => syscall4(.rt_sigaction, sig, @ptrToInt(&ksa), @ptrToInt(&ksa_old), ksa_mask_size),
+        .sparc, .sparcv9 => syscall5(.rt_sigaction, sig, ksa_arg, oldksa_arg, @ptrToInt(ksa.restorer), mask_size),
+        else => syscall4(.rt_sigaction, sig, ksa_arg, oldksa_arg, mask_size),
     };
-    const err = getErrno(result);
-    if (err != 0) {
-        return result;
-    }
+    if (getErrno(result) != 0) return result;
+
     if (oact) |old| {
-        old.sigaction = ksa_old.sigaction;
-        old.flags = @truncate(u32, ksa_old.flags);
-        @memcpy(@ptrCast([*]u8, &old.mask), @ptrCast([*]const u8, &ksa_old.mask), ksa_mask_size);
+        old.handler.handler = oldksa.handler;
+        old.flags = @truncate(c_uint, oldksa.flags);
+        @memcpy(@ptrCast([*]u8, &old.mask), @ptrCast([*]const u8, &oldksa.mask), mask_size);
     }
+
     return 0;
 }
 
@@ -1098,6 +1110,8 @@ pub fn lstat(pathname: [*:0]const u8, statbuf: *kernel_stat) usize {
 pub fn fstatat(dirfd: i32, path: [*:0]const u8, stat_buf: *kernel_stat, flags: u32) usize {
     if (@hasField(SYS, "fstatat64")) {
         return syscall4(.fstatat64, @bitCast(usize, @as(isize, dirfd)), @ptrToInt(path), @ptrToInt(stat_buf), flags);
+    } else if (@hasField(SYS, "newfstatat")) {
+        return syscall4(.newfstatat, @bitCast(usize, @as(isize, dirfd)), @ptrToInt(path), @ptrToInt(stat_buf), flags);
     } else {
         return syscall4(.fstatat, @bitCast(usize, @as(isize, dirfd)), @ptrToInt(path), @ptrToInt(stat_buf), flags);
     }
@@ -1192,7 +1206,7 @@ pub fn epoll_wait(epoll_fd: i32, events: [*]epoll_event, maxevents: u32, timeout
     return epoll_pwait(epoll_fd, events, maxevents, timeout, null);
 }
 
-pub fn epoll_pwait(epoll_fd: i32, events: [*]epoll_event, maxevents: u32, timeout: i32, sigmask: ?*sigset_t) usize {
+pub fn epoll_pwait(epoll_fd: i32, events: [*]epoll_event, maxevents: u32, timeout: i32, sigmask: ?*const sigset_t) usize {
     return syscall6(
         .epoll_pwait,
         @bitCast(usize, @as(isize, epoll_fd)),
@@ -1335,6 +1349,10 @@ pub fn prlimit(pid: pid_t, resource: rlimit_resource, new_limit: ?*const rlimit,
         @ptrToInt(new_limit),
         @ptrToInt(old_limit),
     );
+}
+
+pub fn madvise(address: [*]u8, len: usize, advice: u32) usize {
+    return syscall3(.madvise, @ptrToInt(address), len, advice);
 }
 
 test "" {

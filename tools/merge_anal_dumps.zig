@@ -17,13 +17,13 @@ pub fn main() anyerror!void {
     var dump = Dump.init(allocator);
     for (args[1..]) |arg| {
         parser = json.Parser.init(allocator, false);
-        const json_text = try std.io.readFileAlloc(allocator, arg);
+        const json_text = try std.fs.cwd().readFileAlloc(allocator, arg, std.math.maxInt(usize));
         const tree = try parser.parse(json_text);
         try dump.mergeJson(tree.root);
     }
 
     const stdout = try std.io.getStdOut();
-    try dump.render(stdout.outStream());
+    try dump.render(stdout.writer());
 }
 
 /// AST source node
@@ -33,12 +33,12 @@ const Node = struct {
     col: usize,
     fields: []usize,
 
-    fn hash(n: Node) u32 {
+    fn hash(n: Node) u64 {
         var hasher = std.hash.Wyhash.init(0);
         std.hash.autoHash(&hasher, n.file);
         std.hash.autoHash(&hasher, n.line);
         std.hash.autoHash(&hasher, n.col);
-        return @truncate(u32, hasher.final());
+        return hasher.final();
     }
 
     fn eql(a: Node, b: Node) bool {
@@ -52,10 +52,10 @@ const Error = struct {
     src: usize,
     name: []const u8,
 
-    fn hash(n: Error) u32 {
+    fn hash(n: Error) u64 {
         var hasher = std.hash.Wyhash.init(0);
         std.hash.autoHash(&hasher, n.src);
-        return @truncate(u32, hasher.final());
+        return hasher.final();
     }
 
     fn eql(a: Error, b: Error) bool {
@@ -103,7 +103,6 @@ const Type = union(builtin.TypeId) {
     Union, // TODO
     Fn, // TODO
     BoundFn, // TODO
-    ArgTuple, // TODO
     Opaque, // TODO
     Frame, // TODO
 
@@ -127,10 +126,10 @@ const Type = union(builtin.TypeId) {
         len: usize,
     };
 
-    fn hash(t: Type) u32 {
+    fn hash(t: Type) u64 {
         var hasher = std.hash.Wyhash.init(0);
-        std.hash.autoHash(&hasher, builtin.TypeId(t));
-        return @truncate(u32, hasher.final());
+        std.hash.autoHash(&hasher, t);
+        return hasher.final();
     }
 
     fn eql(a: Type, b: Type) bool {
@@ -144,21 +143,22 @@ const Dump = struct {
     root_name: ?[]const u8 = null,
     targets: std.ArrayList([]const u8),
 
-    const FileMap = std.StringHashMap(usize);
     file_list: std.ArrayList([]const u8),
     file_map: FileMap,
 
-    const NodeMap = std.HashMap(Node, usize, Node.hash, Node.eql);
     node_list: std.ArrayList(Node),
     node_map: NodeMap,
 
-    const ErrorMap = std.HashMap(Error, usize, Error.hash, Error.eql);
     error_list: std.ArrayList(Error),
     error_map: ErrorMap,
 
-    const TypeMap = std.HashMap(Type, usize, Type.hash, Type.eql);
     type_list: std.ArrayList(Type),
     type_map: TypeMap,
+
+    const FileMap = std.StringHashMap(usize);
+    const NodeMap = std.HashMap(Node, usize, Node.hash, Node.eql, 80);
+    const ErrorMap = std.HashMap(Error, usize, Error.hash, Error.eql, 80);
+    const TypeMap = std.HashMap(Type, usize, Type.hash, Type.eql, 80);
 
     fn init(allocator: *mem.Allocator) Dump {
         return Dump{
@@ -183,13 +183,13 @@ const Dump = struct {
         try mergeSameStrings(&self.zig_version, zig_version);
         try mergeSameStrings(&self.root_name, root_name);
 
-        for (params.get("builds").?.value.Array.span()) |json_build| {
+        for (params.get("builds").?.value.Array.items) |json_build| {
             const target = json_build.Object.get("target").?.value.String;
             try self.targets.append(target);
         }
 
         // Merge files. If the string matches, it's the same file.
-        const other_files = root.Object.get("files").?.value.Array.span();
+        const other_files = root.Object.get("files").?.value.Array.items;
         var other_file_to_mine = std.AutoHashMap(usize, usize).init(self.a());
         for (other_files) |other_file, i| {
             const gop = try self.file_map.getOrPut(other_file.String);
@@ -201,7 +201,7 @@ const Dump = struct {
         }
 
         // Merge AST nodes. If the file id, line, and column all match, it's the same AST node.
-        const other_ast_nodes = root.Object.get("astNodes").?.value.Array.span();
+        const other_ast_nodes = root.Object.get("astNodes").?.value.Array.items;
         var other_ast_node_to_mine = std.AutoHashMap(usize, usize).init(self.a());
         for (other_ast_nodes) |other_ast_node_json, i| {
             const other_file_id = jsonObjInt(other_ast_node_json, "file");
@@ -221,9 +221,9 @@ const Dump = struct {
         // convert fields lists
         for (other_ast_nodes) |other_ast_node_json, i| {
             const my_node_index = other_ast_node_to_mine.get(i).?.value;
-            const my_node = &self.node_list.span()[my_node_index];
+            const my_node = &self.node_list.items[my_node_index];
             if (other_ast_node_json.Object.get("fields")) |fields_json_kv| {
-                const other_fields = fields_json_kv.value.Array.span();
+                const other_fields = fields_json_kv.value.Array.items;
                 my_node.fields = try self.a().alloc(usize, other_fields.len);
                 for (other_fields) |other_field_index, field_i| {
                     const other_index = @intCast(usize, other_field_index.Integer);
@@ -233,7 +233,7 @@ const Dump = struct {
         }
 
         // Merge errors. If the AST Node matches, it's the same error value.
-        const other_errors = root.Object.get("errors").?.value.Array.span();
+        const other_errors = root.Object.get("errors").?.value.Array.items;
         var other_error_to_mine = std.AutoHashMap(usize, usize).init(self.a());
         for (other_errors) |other_error_json, i| {
             const other_src_id = jsonObjInt(other_error_json, "src");
@@ -253,7 +253,7 @@ const Dump = struct {
         // First we identify all the simple types and merge those.
         // Example: void, type, noreturn
         // We can also do integers and floats.
-        const other_types = root.Object.get("types").?.value.Array.span();
+        const other_types = root.Object.get("types").?.value.Array.items;
         var other_types_to_mine = std.AutoHashMap(usize, usize).init(self.a());
         for (other_types) |other_type_json, i| {
             const type_kind = jsonObjInt(other_type_json, "kind");
@@ -310,7 +310,7 @@ const Dump = struct {
         try other_types_to_mine.putNoClobber(other_type_index, gop.kv.value);
     }
 
-    fn render(self: *Dump, stream: var) !void {
+    fn render(self: *Dump, stream: anytype) !void {
         var jw = json.WriteStream(@TypeOf(stream).Child, 10).init(stream);
         try jw.beginObject();
 
@@ -336,7 +336,7 @@ const Dump = struct {
 
         try jw.objectField("builds");
         try jw.beginArray();
-        for (self.targets.span()) |target| {
+        for (self.targets.items) |target| {
             try jw.arrayElem();
             try jw.beginObject();
             try jw.objectField("target");
@@ -349,7 +349,7 @@ const Dump = struct {
 
         try jw.objectField("types");
         try jw.beginArray();
-        for (self.type_list.span()) |t| {
+        for (self.type_list.items) |t| {
             try jw.arrayElem();
             try jw.beginObject();
 
@@ -379,7 +379,7 @@ const Dump = struct {
 
         try jw.objectField("errors");
         try jw.beginArray();
-        for (self.error_list.span()) |zig_error| {
+        for (self.error_list.items) |zig_error| {
             try jw.arrayElem();
             try jw.beginObject();
 
@@ -395,7 +395,7 @@ const Dump = struct {
 
         try jw.objectField("astNodes");
         try jw.beginArray();
-        for (self.node_list.span()) |node| {
+        for (self.node_list.items) |node| {
             try jw.arrayElem();
             try jw.beginObject();
 
@@ -425,7 +425,7 @@ const Dump = struct {
 
         try jw.objectField("files");
         try jw.beginArray();
-        for (self.file_list.span()) |file| {
+        for (self.file_list.items) |file| {
             try jw.arrayElem();
             try jw.emitString(file);
         }

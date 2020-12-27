@@ -59,13 +59,7 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
             self.allocator.free(self.allocatedSlice());
         }
 
-        /// Deprecated: use `items` field directly.
-        /// Return contents as a slice. Only valid while the list
-        /// doesn't change size.
-        pub fn span(self: anytype) @TypeOf(self.items) {
-            return self.items;
-        }
-
+        pub const span = @compileError("deprecated: use `items` field directly");
         pub const toSlice = @compileError("deprecated: use `items` field directly");
         pub const toSliceConst = @compileError("deprecated: use `items` field directly");
         pub const at = @compileError("deprecated: use `list.items[i]`");
@@ -95,6 +89,13 @@ pub fn ArrayListAligned(comptime T: type, comptime alignment: ?u29) type {
             const result = allocator.shrink(self.allocatedSlice(), self.items.len);
             self.* = init(allocator);
             return result;
+        }
+
+        /// The caller owns the returned memory. ArrayList becomes empty.
+        pub fn toOwnedSliceSentinel(self: *Self, comptime sentinel: T) ![:sentinel]T {
+            try self.append(sentinel);
+            const result = self.toOwnedSlice();
+            return result[0 .. result.len - 1 :sentinel];
         }
 
         /// Insert `item` at index `n` by moving `list[n .. list.len]` to make room.
@@ -393,6 +394,13 @@ pub fn ArrayListAlignedUnmanaged(comptime T: type, comptime alignment: ?u29) typ
             const result = allocator.shrink(self.allocatedSlice(), self.items.len);
             self.* = Self{};
             return result;
+        }
+
+        /// The caller owns the returned memory. ArrayList becomes empty.
+        pub fn toOwnedSliceSentinel(self: *Self, allocator: *Allocator, comptime sentinel: T) ![:sentinel]T {
+            try self.append(allocator, sentinel);
+            const result = self.toOwnedSlice(allocator);
+            return result[0 .. result.len - 1 :sentinel];
         }
 
         /// Insert `item` at index `n`. Moves `list[n .. list.len]`
@@ -1061,7 +1069,7 @@ test "std.ArrayList(u8) implements outStream" {
     const y: i32 = 1234;
     try buffer.outStream().print("x: {}\ny: {}\n", .{ x, y });
 
-    testing.expectEqualSlices(u8, "x: 42\ny: 1234\n", buffer.span());
+    testing.expectEqualSlices(u8, "x: 42\ny: 1234\n", buffer.items);
 }
 
 test "std.ArrayList/ArrayListUnmanaged.shrink still sets length on error.OutOfMemory" {
@@ -1125,5 +1133,29 @@ test "std.ArrayList/ArrayListUnmanaged.addManyAsArray" {
         list.addManyAsArrayAssumeCapacity(4).* = "asdf".*;
 
         testing.expectEqualSlices(u8, list.items, "aoeuasdf");
+    }
+}
+
+test "std.ArrayList/ArrayListUnmanaged.toOwnedSliceSentinel" {
+    const a = testing.allocator;
+    {
+        var list = ArrayList(u8).init(a);
+        defer list.deinit();
+
+        try list.appendSlice("foobar");
+
+        const result = try list.toOwnedSliceSentinel(0);
+        defer a.free(result);
+        testing.expectEqualStrings(result, mem.spanZ(result.ptr));
+    }
+    {
+        var list = ArrayListUnmanaged(u8){};
+        defer list.deinit(a);
+
+        try list.appendSlice(a, "foobar");
+
+        const result = try list.toOwnedSliceSentinel(a, 0);
+        defer a.free(result);
+        testing.expectEqualStrings(result, mem.spanZ(result.ptr));
     }
 }

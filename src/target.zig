@@ -14,6 +14,7 @@ pub const available_libcs = [_]ArchOsAbi{
     .{ .arch = .aarch64, .os = .linux, .abi = .gnu },
     .{ .arch = .aarch64, .os = .linux, .abi = .musl },
     .{ .arch = .aarch64, .os = .windows, .abi = .gnu },
+    .{ .arch = .aarch64, .os = .macos, .abi = .gnu },
     .{ .arch = .armeb, .os = .linux, .abi = .gnueabi },
     .{ .arch = .armeb, .os = .linux, .abi = .gnueabihf },
     .{ .arch = .armeb, .os = .linux, .abi = .musleabi },
@@ -58,8 +59,11 @@ pub const available_libcs = [_]ArchOsAbi{
 };
 
 pub fn libCGenericName(target: std.Target) [:0]const u8 {
-    if (target.os.tag == .windows)
-        return "mingw";
+    switch (target.os.tag) {
+        .windows => return "mingw",
+        .macos, .ios, .tvos, .watchos => return "darwin",
+        else => {},
+    }
     switch (target.abi) {
         .gnu,
         .gnuabin32,
@@ -99,6 +103,7 @@ pub fn archMuslName(arch: std.Target.Cpu.Arch) [:0]const u8 {
         .i386 => return "i386",
         .x86_64 => return "x86_64",
         .riscv64 => return "riscv64",
+        .wasm32, .wasm64 => return "wasm",
         else => unreachable,
     }
 }
@@ -320,8 +325,6 @@ pub fn is_libc_lib_name(target: std.Target, name: []const u8) bool {
             return true;
         if (eqlIgnoreCase(ignore_case, name, "dl"))
             return true;
-        if (eqlIgnoreCase(ignore_case, name, "util"))
-            return true;
     }
 
     if (target.os.tag.isDarwin() and eqlIgnoreCase(ignore_case, name, "System"))
@@ -340,4 +343,12 @@ pub fn is_libcpp_lib_name(target: std.Target, name: []const u8) bool {
 
 pub fn hasDebugInfo(target: std.Target) bool {
     return !target.cpu.arch.isWasm();
+}
+
+pub fn defaultCompilerRtOptimizeMode(target: std.Target) std.builtin.Mode {
+    if (target.cpu.arch.isWasm() and target.os.tag == .freestanding) {
+        return .ReleaseSmall;
+    } else {
+        return .ReleaseFast;
+    }
 }

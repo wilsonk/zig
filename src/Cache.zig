@@ -12,6 +12,14 @@ const mem = std.mem;
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
 
+/// Process-scoped map keeping track of all locked Cache hashes, to detect deadlocks.
+/// This protection is conditionally compiled depending on `want_debug_deadlock`.
+var all_cache_digest_set: std.AutoHashMapUnmanaged(BinDigest, void) = .{};
+var all_cache_digest_lock: std.Mutex = .{};
+const want_debug_deadlock = std.debug.runtime_safety;
+const DebugBinDigest = if (want_debug_deadlock) BinDigest else void;
+const null_debug_bin_digest = if (want_debug_deadlock) ([1]u8{0} ** bin_digest_len) else {};
+
 /// Be sure to call `Manifest.deinit` after successful initialization.
 pub fn obtain(cache: *const Cache) Manifest {
     return Manifest{
@@ -26,6 +34,7 @@ pub fn obtain(cache: *const Cache) Manifest {
 /// This is 128 bits - Even with 2^54 cache entries, the probably of a collision would be under 10^-6
 pub const bin_digest_len = 16;
 pub const hex_digest_len = bin_digest_len * 2;
+pub const BinDigest = [bin_digest_len]u8;
 
 const manifest_file_size_max = 50 * 1024 * 1024;
 
@@ -41,7 +50,7 @@ pub const File = struct {
     path: ?[]const u8,
     max_file_size: ?usize,
     stat: fs.File.Stat,
-    bin_digest: [bin_digest_len]u8,
+    bin_digest: BinDigest,
     contents: ?[]const u8,
 
     pub fn deinit(self: *File, allocator: *Allocator) void {
@@ -60,6 +69,8 @@ pub const File = struct {
 pub const HashHelper = struct {
     hasher: Hasher = hasher_init,
 
+    const EmitLoc = @import("Compilation.zig").EmitLoc;
+
     /// Record a slice of bytes as an dependency of the process being cached
     pub fn addBytes(hh: *HashHelper, bytes: []const u8) void {
         hh.hasher.update(mem.asBytes(&bytes.len));
@@ -69,6 +80,15 @@ pub const HashHelper = struct {
     pub fn addOptionalBytes(hh: *HashHelper, optional_bytes: ?[]const u8) void {
         hh.add(optional_bytes != null);
         hh.addBytes(optional_bytes orelse return);
+    }
+
+    pub fn addEmitLoc(hh: *HashHelper, emit_loc: EmitLoc) void {
+        hh.addBytes(emit_loc.basename);
+    }
+
+    pub fn addOptionalEmitLoc(hh: *HashHelper, optional_emit_loc: ?EmitLoc) void {
+        hh.add(optional_emit_loc != null);
+        hh.addEmitLoc(optional_emit_loc orelse return);
     }
 
     pub fn addListOfBytes(hh: *HashHelper, list_of_bytes: []const []const u8) void {
@@ -128,16 +148,16 @@ pub const HashHelper = struct {
         return copy.final();
     }
 
-    pub fn peekBin(hh: HashHelper) [bin_digest_len]u8 {
+    pub fn peekBin(hh: HashHelper) BinDigest {
         var copy = hh;
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         copy.hasher.final(&bin_digest);
         return bin_digest;
     }
 
     /// Returns a hex encoded hash of the inputs, mutating the state of the hasher.
     pub fn final(hh: *HashHelper) [hex_digest_len]u8 {
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         hh.hasher.final(&bin_digest);
 
         var out_digest: [hex_digest_len]u8 = undefined;
@@ -148,8 +168,15 @@ pub const HashHelper = struct {
 
 pub const Lock = struct {
     manifest_file: fs.File,
+    debug_bin_digest: DebugBinDigest,
 
     pub fn release(lock: *Lock) void {
+        if (want_debug_deadlock) {
+            const held = all_cache_digest_lock.acquire();
+            defer held.release();
+
+            all_cache_digest_set.removeAssertDiscard(lock.debug_bin_digest);
+        }
         lock.manifest_file.close();
         lock.* = undefined;
     }
@@ -166,6 +193,7 @@ pub const Manifest = struct {
     manifest_dirty: bool,
     files: std.ArrayListUnmanaged(File) = .{},
     hex_digest: [hex_digest_len]u8,
+    debug_bin_digest: DebugBinDigest = null_debug_bin_digest,
 
     /// Add a file as a dependency of process being cached. When `hit` is
     /// called, the file's contents will be checked to ensure that it matches
@@ -230,8 +258,25 @@ pub const Manifest = struct {
         const ext = ".txt";
         var manifest_file_path: [self.hex_digest.len + ext.len]u8 = undefined;
 
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         self.hash.hasher.final(&bin_digest);
+
+        if (want_debug_deadlock) {
+            self.debug_bin_digest = bin_digest;
+
+            const held = all_cache_digest_lock.acquire();
+            defer held.release();
+
+            const gop = try all_cache_digest_set.getOrPut(self.cache.gpa, bin_digest);
+            if (gop.found_existing) {
+                std.debug.print("Cache deadlock detected in Cache.hit. Manifest has {d} files:\n", .{self.files.items.len});
+                for (self.files.items) |file| {
+                    const p: []const u8 = file.path orelse "(null)";
+                    std.debug.print("  file: {s}\n", .{p});
+                }
+                @panic("Cache deadlock detected");
+            }
+        }
 
         _ = std.fmt.bufPrint(&self.hex_digest, "{x}", .{bin_digest}) catch unreachable;
 
@@ -336,7 +381,7 @@ pub const Manifest = struct {
                     cache_hash_file.stat.inode = 0;
                 }
 
-                var actual_digest: [bin_digest_len]u8 = undefined;
+                var actual_digest: BinDigest = undefined;
                 try hashFile(this_file, &actual_digest);
 
                 if (!mem.eql(u8, &cache_hash_file.bin_digest, &actual_digest)) {
@@ -370,7 +415,7 @@ pub const Manifest = struct {
         return true;
     }
 
-    pub fn unhit(self: *Manifest, bin_digest: [bin_digest_len]u8, input_file_count: usize) void {
+    pub fn unhit(self: *Manifest, bin_digest: BinDigest, input_file_count: usize) void {
         // Reset the hash.
         self.hash.hasher = hasher_init;
         self.hash.hasher.update(&bin_digest);
@@ -519,7 +564,7 @@ pub const Manifest = struct {
         // cache_release is called we still might be working on creating
         // the artifacts to cache.
 
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         self.hash.hasher.final(&bin_digest);
 
         var out_digest: [hex_digest_len]u8 = undefined;
@@ -558,15 +603,27 @@ pub const Manifest = struct {
     /// The `Manifest` remains safe to deinit.
     /// Don't forget to call `writeManifest` before this!
     pub fn toOwnedLock(self: *Manifest) Lock {
-        const manifest_file = self.manifest_file.?;
+        const lock: Lock = .{
+            .manifest_file = self.manifest_file.?,
+            .debug_bin_digest = self.debug_bin_digest,
+        };
         self.manifest_file = null;
-        return Lock{ .manifest_file = manifest_file };
+        self.debug_bin_digest = null_debug_bin_digest;
+        return lock;
     }
 
     /// Releases the manifest file and frees any memory the Manifest was using.
     /// `Manifest.hit` must be called first.
     /// Don't forget to call `writeManifest` before this!
     pub fn deinit(self: *Manifest) void {
+        if (want_debug_deadlock) {
+            if (!mem.eql(u8, &self.debug_bin_digest, &null_debug_bin_digest)) {
+                const held = all_cache_digest_lock.acquire();
+                defer held.release();
+
+                all_cache_digest_set.removeAssertDiscard(self.debug_bin_digest);
+            }
+        }
         if (self.manifest_file) |file| {
             file.close();
         }
@@ -650,6 +707,11 @@ test "cache file and then recall it" {
         // https://github.com/ziglang/zig/issues/5437
         return error.SkipZigTest;
     }
+    defer if (want_debug_deadlock) {
+        testing.expect(all_cache_digest_set.count() == 0);
+        all_cache_digest_set.clearAndFree(testing.allocator);
+    };
+
     const cwd = fs.cwd();
 
     const temp_file = "test.txt";
@@ -727,6 +789,10 @@ test "check that changing a file makes cache fail" {
         // https://github.com/ziglang/zig/issues/5437
         return error.SkipZigTest;
     }
+    defer if (want_debug_deadlock) {
+        testing.expect(all_cache_digest_set.count() == 0);
+        all_cache_digest_set.clearAndFree(testing.allocator);
+    };
     const cwd = fs.cwd();
 
     const temp_file = "cache_hash_change_file_test.txt";
@@ -803,6 +869,10 @@ test "no file inputs" {
         // https://github.com/ziglang/zig/issues/5437
         return error.SkipZigTest;
     }
+    defer if (want_debug_deadlock) {
+        testing.expect(all_cache_digest_set.count() == 0);
+        all_cache_digest_set.clearAndFree(testing.allocator);
+    };
     const cwd = fs.cwd();
     const temp_manifest_dir = "no_file_inputs_manifest_dir";
     defer cwd.deleteTree(temp_manifest_dir) catch {};
@@ -848,6 +918,10 @@ test "Manifest with files added after initial hash work" {
         // https://github.com/ziglang/zig/issues/5437
         return error.SkipZigTest;
     }
+    defer if (want_debug_deadlock) {
+        testing.expect(all_cache_digest_set.count() == 0);
+        all_cache_digest_set.clearAndFree(testing.allocator);
+    };
     const cwd = fs.cwd();
 
     const temp_file1 = "cache_hash_post_file_test1.txt";
