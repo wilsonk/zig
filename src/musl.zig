@@ -155,21 +155,21 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 if (!is_arch_specific) {
                     // Look for an arch specific override.
                     override_path.shrinkRetainingCapacity(0);
-                    try override_path.writer().print("{}" ++ s ++ "{}" ++ s ++ "{}.s", .{
+                    try override_path.writer().print("{s}" ++ s ++ "{s}" ++ s ++ "{s}.s", .{
                         dirname, arch_name, noextbasename,
                     });
                     if (source_table.contains(override_path.items))
                         continue;
 
                     override_path.shrinkRetainingCapacity(0);
-                    try override_path.writer().print("{}" ++ s ++ "{}" ++ s ++ "{}.S", .{
+                    try override_path.writer().print("{s}" ++ s ++ "{s}" ++ s ++ "{s}.S", .{
                         dirname, arch_name, noextbasename,
                     });
                     if (source_table.contains(override_path.items))
                         continue;
 
                     override_path.shrinkRetainingCapacity(0);
-                    try override_path.writer().print("{}" ++ s ++ "{}" ++ s ++ "{}.c", .{
+                    try override_path.writer().print("{s}" ++ s ++ "{s}" ++ s ++ "{s}.c", .{
                         dirname, arch_name, noextbasename,
                     });
                     if (source_table.contains(override_path.items))
@@ -200,14 +200,16 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 .root_pkg = null,
                 .output_mode = .Lib,
                 .link_mode = .Dynamic,
+                .thread_pool = comp.thread_pool,
                 .libc_installation = comp.bin_file.options.libc_installation,
                 .emit_bin = Compilation.EmitLoc{ .directory = null, .basename = "libc.so" },
-                .optimize_mode = comp.bin_file.options.optimize_mode,
+                .optimize_mode = comp.compilerRtOptMode(),
                 .want_sanitize_c = false,
                 .want_stack_check = false,
                 .want_valgrind = false,
+                .want_tsan = false,
                 .emit_h = null,
-                .strip = comp.bin_file.options.strip,
+                .strip = comp.compilerRtStrip(),
                 .is_native_os = false,
                 .is_native_abi = false,
                 .self_exe_path = comp.self_exe_path,
@@ -223,7 +225,7 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 .c_source_files = &[_]Compilation.CSourceFile{
                     .{ .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libc", "musl", "libc.s" }) },
                 },
-                .is_compiler_rt_or_libc = true,
+                .skip_linker_dependencies = true,
                 .soname = "libc.so",
             });
             defer sub_compilation.destroy();
@@ -320,7 +322,7 @@ fn add_cc_args(
     const target = comp.getTarget();
     const arch_name = target_util.archMuslName(target.cpu.arch);
     const os_name = @tagName(target.os.tag);
-    const triple = try std.fmt.allocPrint(arena, "{}-{}-musl", .{ arch_name, os_name });
+    const triple = try std.fmt.allocPrint(arena, "{s}-{s}-musl", .{ arch_name, os_name });
     const o_arg = if (want_O3) "-O3" else "-Os";
 
     try args.appendSlice(&[_][]const u8{

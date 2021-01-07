@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -1348,89 +1348,10 @@ pub fn execvpeZ_expandArg0(
 /// If `file` is an absolute path, this is the same as `execveZ`.
 pub fn execvpeZ(
     file: [*:0]const u8,
-    argv: [*:null]const ?[*:0]const u8,
+    argv_ptr: [*:null]const ?[*:0]const u8,
     envp: [*:null]const ?[*:0]const u8,
 ) ExecveError {
-    return execvpeZ_expandArg0(.no_expand, file, argv, envp);
-}
-
-/// This is the same as `execvpe` except if the `arg0_expand` parameter is set to `.expand`,
-/// then argv[0] will be replaced with the expanded version of it, after resolving in accordance
-/// with the PATH environment variable.
-pub fn execvpe_expandArg0(
-    allocator: *mem.Allocator,
-    arg0_expand: Arg0Expand,
-    argv_slice: []const []const u8,
-    env_map: *const std.BufMap,
-) (ExecveError || error{OutOfMemory}) {
-    const argv_buf = try allocator.alloc(?[*:0]u8, argv_slice.len + 1);
-    mem.set(?[*:0]u8, argv_buf, null);
-    defer {
-        for (argv_buf) |arg| {
-            const arg_buf = mem.spanZ(arg) orelse break;
-            allocator.free(arg_buf);
-        }
-        allocator.free(argv_buf);
-    }
-    for (argv_slice) |arg, i| {
-        const arg_buf = try allocator.alloc(u8, arg.len + 1);
-        @memcpy(arg_buf.ptr, arg.ptr, arg.len);
-        arg_buf[arg.len] = 0;
-        argv_buf[i] = arg_buf[0..arg.len :0].ptr;
-    }
-    argv_buf[argv_slice.len] = null;
-    const argv_ptr = argv_buf[0..argv_slice.len :null].ptr;
-
-    const envp_buf = try createNullDelimitedEnvMap(allocator, env_map);
-    defer freeNullDelimitedEnvMap(allocator, envp_buf);
-
-    switch (arg0_expand) {
-        .expand => return execvpeZ_expandArg0(.expand, argv_buf.ptr[0].?, argv_ptr, envp_buf.ptr),
-        .no_expand => return execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_ptr, envp_buf.ptr),
-    }
-}
-
-/// This function must allocate memory to add a null terminating bytes on path and each arg.
-/// It must also convert to KEY=VALUE\0 format for environment variables, and include null
-/// pointers after the args and after the environment variables.
-/// `argv_slice[0]` is the executable path.
-/// This function also uses the PATH environment variable to get the full path to the executable.
-pub fn execvpe(
-    allocator: *mem.Allocator,
-    argv_slice: []const []const u8,
-    env_map: *const std.BufMap,
-) (ExecveError || error{OutOfMemory}) {
-    return execvpe_expandArg0(allocator, .no_expand, argv_slice, env_map);
-}
-
-pub fn createNullDelimitedEnvMap(allocator: *mem.Allocator, env_map: *const std.BufMap) ![:null]?[*:0]u8 {
-    const envp_count = env_map.count();
-    const envp_buf = try allocator.alloc(?[*:0]u8, envp_count + 1);
-    mem.set(?[*:0]u8, envp_buf, null);
-    errdefer freeNullDelimitedEnvMap(allocator, envp_buf);
-    {
-        var it = env_map.iterator();
-        var i: usize = 0;
-        while (it.next()) |pair| : (i += 1) {
-            const env_buf = try allocator.alloc(u8, pair.key.len + pair.value.len + 2);
-            @memcpy(env_buf.ptr, pair.key.ptr, pair.key.len);
-            env_buf[pair.key.len] = '=';
-            @memcpy(env_buf.ptr + pair.key.len + 1, pair.value.ptr, pair.value.len);
-            const len = env_buf.len - 1;
-            env_buf[len] = 0;
-            envp_buf[i] = env_buf[0..len :0].ptr;
-        }
-        assert(i == envp_count);
-    }
-    return envp_buf[0..envp_count :null];
-}
-
-pub fn freeNullDelimitedEnvMap(allocator: *mem.Allocator, envp_buf: []?[*:0]u8) void {
-    for (envp_buf) |env| {
-        const env_buf = if (env) |ptr| ptr[0 .. mem.len(ptr) + 1] else break;
-        allocator.free(env_buf);
-    }
-    allocator.free(envp_buf);
+    return execvpeZ_expandArg0(.no_expand, file, argv_ptr, envp);
 }
 
 /// Get an environment variable.
@@ -4335,7 +4256,7 @@ pub fn getFdPath(fd: fd_t, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
         },
         .linux => {
             var procfs_buf: ["/proc/self/fd/-2147483648".len:0]u8 = undefined;
-            const proc_path = std.fmt.bufPrint(procfs_buf[0..], "/proc/self/fd/{}\x00", .{fd}) catch unreachable;
+            const proc_path = std.fmt.bufPrint(procfs_buf[0..], "/proc/self/fd/{d}\x00", .{fd}) catch unreachable;
 
             const target = readlinkZ(std.meta.assumeSentinel(proc_path.ptr, 0), out_buffer) catch |err| {
                 switch (err) {
@@ -4566,7 +4487,7 @@ pub const UnexpectedError = error{
 /// and you get an unexpected error.
 pub fn unexpectedErrno(err: usize) UnexpectedError {
     if (unexpected_error_tracing) {
-        std.debug.warn("unexpected errno: {}\n", .{err});
+        std.debug.warn("unexpected errno: {d}\n", .{err});
         std.debug.dumpCurrentStackTrace(null);
     }
     return error.Unexpected;
@@ -4774,6 +4695,12 @@ pub const SendError = error{
     BrokenPipe,
 
     FileDescriptorNotASocket,
+
+    /// Network is unreachable.
+    NetworkUnreachable,
+
+    /// The local network interface used to reach the destination is down.
+    NetworkSubsystemFailed,
 } || UnexpectedError;
 
 pub const SendToError = SendError || error{
@@ -4790,15 +4717,8 @@ pub const SendToError = SendError || error{
     FileNotFound,
     NotDir,
 
-    /// Network is unreachable.
-    NetworkUnreachable,
-
-    /// Insufficient memory was available to fulfill the request.
-    SystemResources,
-
     /// The socket is not connected (connection-oriented sockets only).
     SocketNotConnected,
-    WouldBlock,
     AddressNotAvailable,
 };
 
@@ -4853,7 +4773,7 @@ pub fn sendto(
                     .WSAEHOSTUNREACH => return error.NetworkUnreachable,
                     // TODO: WSAEINPROGRESS, WSAEINTR
                     .WSAEINVAL => unreachable,
-                    .WSAENETDOWN => return error.NetworkUnreachable,
+                    .WSAENETDOWN => return error.NetworkSubsystemFailed,
                     .WSAENETRESET => return error.ConnectionResetByPeer,
                     .WSAENETUNREACH => return error.NetworkUnreachable,
                     .WSAENOTCONN => return error.SocketNotConnected,
@@ -4882,7 +4802,6 @@ pub fn sendto(
                 EMSGSIZE => return error.MessageTooBig,
                 ENOBUFS => return error.SystemResources,
                 ENOMEM => return error.SystemResources,
-                ENOTCONN => unreachable, // The socket is not connected, and no target has been given.
                 ENOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
                 EOPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
                 EPIPE => return error.BrokenPipe,
@@ -4892,6 +4811,9 @@ pub fn sendto(
                 ENOENT => return error.FileNotFound,
                 ENOTDIR => return error.NotDir,
                 EHOSTUNREACH => return error.NetworkUnreachable,
+                ENETUNREACH => return error.NetworkUnreachable,
+                ENOTCONN => return error.SocketNotConnected,
+                ENETDOWN => return error.NetworkSubsystemFailed,
                 else => |err| return unexpectedErrno(err),
             }
         }
@@ -4923,7 +4845,17 @@ pub fn send(
     buf: []const u8,
     flags: u32,
 ) SendError!usize {
-    return sendto(sockfd, buf, flags, null, 0);
+    return sendto(sockfd, buf, flags, null, 0) catch |err| switch (err) {
+        error.AddressFamilyNotSupported => unreachable,
+        error.SymLinkLoop => unreachable,
+        error.NameTooLong => unreachable,
+        error.FileNotFound => unreachable,
+        error.NotDir => unreachable,
+        error.NetworkUnreachable => unreachable,
+        error.AddressNotAvailable => unreachable,
+        error.SocketNotConnected => unreachable,
+        else => |e| return e,
+    };
 }
 
 pub const SendFileError = PReadError || WriteError || SendError;
@@ -5338,7 +5270,8 @@ pub const PollError = error{
 
 pub fn poll(fds: []pollfd, timeout: i32) PollError!usize {
     while (true) {
-        const rc = system.poll(fds.ptr, fds.len, timeout);
+        const fds_count = math.cast(nfds_t, fds.len) catch return error.SystemResources;
+        const rc = system.poll(fds.ptr, fds_count, timeout);
         if (builtin.os.tag == .windows) {
             if (rc == windows.ws2_32.SOCKET_ERROR) {
                 switch (windows.ws2_32.WSAGetLastError()) {

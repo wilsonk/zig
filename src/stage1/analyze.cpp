@@ -3281,7 +3281,8 @@ static Error resolve_union_zero_bits(CodeGen *g, ZigType *union_type) {
         tag_type->data.enumeration.src_field_count = field_count;
         tag_type->data.enumeration.fields = heap::c_allocator.allocate<TypeEnumField>(field_count);
         tag_type->data.enumeration.fields_by_name.init(field_count);
-        tag_type->data.enumeration.decls_scope = union_type->data.unionation.decls_scope;
+        tag_type->data.enumeration.decls_scope = create_decls_scope(
+                g, nullptr, nullptr, tag_type, get_scope_import(scope), &tag_type->name);
     } else if (enum_type_node != nullptr) {
         tag_type = analyze_type_expr(g, scope, enum_type_node);
     } else {
@@ -7231,13 +7232,13 @@ bool const_values_equal(CodeGen *g, ZigValue *a, ZigValue *b) {
             }
             return true;
         case ZigTypeIdFnFrame:
-            zig_panic("TODO");
+            zig_panic("TODO: const_values_equal ZigTypeIdFnFrame");
         case ZigTypeIdAnyFrame:
-            zig_panic("TODO");
+            zig_panic("TODO: const_values_equal ZigTypeIdAnyFrame");
         case ZigTypeIdUndefined:
-            zig_panic("TODO");
+            zig_panic("TODO: const_values_equal ZigTypeIdUndefined");
         case ZigTypeIdNull:
-            zig_panic("TODO");
+            zig_panic("TODO: const_values_equal ZigTypeIdNull");
         case ZigTypeIdOptional:
             if (get_src_ptr_type(a->type) != nullptr)
                 return const_values_equal_ptr(a, b);
@@ -7246,8 +7247,16 @@ bool const_values_equal(CodeGen *g, ZigValue *a, ZigValue *b) {
             } else {
                 return const_values_equal(g, a->data.x_optional, b->data.x_optional);
             }
-        case ZigTypeIdErrorUnion:
-            zig_panic("TODO");
+        case ZigTypeIdErrorUnion: {
+            bool a_is_err = a->data.x_err_union.error_set->data.x_err_set != nullptr;
+            bool b_is_err = b->data.x_err_union.error_set->data.x_err_set != nullptr;
+            if (a_is_err != b_is_err) return false;
+            if (a_is_err) {
+                return const_values_equal(g, a->data.x_err_union.error_set, b->data.x_err_union.error_set);
+            } else {
+                return const_values_equal(g, a->data.x_err_union.payload, b->data.x_err_union.payload);
+            }
+        }
         case ZigTypeIdBoundFn:
         case ZigTypeIdInvalid:
         case ZigTypeIdUnreachable:
