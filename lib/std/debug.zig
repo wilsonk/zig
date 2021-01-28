@@ -50,7 +50,7 @@ pub const LineInfo = struct {
     }
 };
 
-var stderr_mutex = std.Mutex{};
+var stderr_mutex = std.Thread.Mutex{};
 
 /// Deprecated. Use `std.log` functions for logging or `std.debug.print` for
 /// "printf debugging".
@@ -65,7 +65,7 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     nosuspend stderr.print(fmt, args) catch return;
 }
 
-pub fn getStderrMutex() *std.Mutex {
+pub fn getStderrMutex() *std.Thread.Mutex {
     return &stderr_mutex;
 }
 
@@ -235,7 +235,7 @@ pub fn panic(comptime format: []const u8, args: anytype) noreturn {
 var panicking: u8 = 0;
 
 // Locked to avoid interleaving panic messages from multiple threads.
-var panic_mutex = std.Mutex{};
+var panic_mutex = std.Thread.Mutex{};
 
 /// Counts how many times the panic handler is invoked by this thread.
 /// This is used to catch and handle panics triggered by the panic handler.
@@ -249,6 +249,24 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
         // the handler.
         resetSegfaultHandler();
     }
+
+    if (comptime std.Target.current.isDarwin() and std.Target.current.cpu.arch == .aarch64)
+        nosuspend {
+            // As a workaround for not having threadlocal variable support in LLD for this target,
+            // we have a simpler panic implementation that does not use threadlocal variables.
+            // TODO https://github.com/ziglang/zig/issues/7527
+            const stderr = io.getStdErr().writer();
+            if (@atomicRmw(u8, &panicking, .Add, 1, .SeqCst) == 0) {
+                stderr.print("panic: " ++ format ++ "\n", args) catch os.abort();
+                if (trace) |t| {
+                    dumpStackTrace(t.*);
+                }
+                dumpCurrentStackTrace(first_trace_addr);
+            } else {
+                stderr.print("Panicked during a panic. Aborting.\n", .{}) catch os.abort();
+            }
+            os.abort();
+        };
 
     nosuspend switch (panic_stage) {
         0 => {
@@ -280,7 +298,7 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
                 // and call abort()
 
                 // Sleep forever without hammering the CPU
-                var event: std.StaticResetEvent = .{};
+                var event: std.Thread.StaticResetEvent = .{};
                 event.wait();
                 unreachable;
             }
@@ -517,15 +535,15 @@ fn populateModule(di: *ModuleDebugInfo, mod: *Module) !void {
 
     const modi = di.pdb.getStreamById(mod.mod_info.ModuleSymStream) orelse return error.MissingDebugInfo;
 
-    const signature = try modi.inStream().readIntLittle(u32);
+    const signature = try modi.reader().readIntLittle(u32);
     if (signature != 4)
         return error.InvalidDebugInfo;
 
     mod.symbols = try allocator.alloc(u8, mod.mod_info.SymByteSize - 4);
-    try modi.inStream().readNoEof(mod.symbols);
+    try modi.reader().readNoEof(mod.symbols);
 
     mod.subsect_info = try allocator.alloc(u8, mod.mod_info.C13ByteSize);
-    try modi.inStream().readNoEof(mod.subsect_info);
+    try modi.reader().readNoEof(mod.subsect_info);
 
     var sect_offset: usize = 0;
     var skip_len: usize = undefined;
@@ -639,6 +657,7 @@ fn printLineInfo(
             } else |err| switch (err) {
                 error.EndOfFile, error.FileNotFound => {},
                 error.BadPathName => {},
+                error.AccessDenied => {},
                 else => return err,
             }
         }
@@ -704,11 +723,11 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         try di.pdb.openFile(di.coff, path);
 
         var pdb_stream = di.pdb.getStream(pdb.StreamType.Pdb) orelse return error.InvalidDebugInfo;
-        const version = try pdb_stream.inStream().readIntLittle(u32);
-        const signature = try pdb_stream.inStream().readIntLittle(u32);
-        const age = try pdb_stream.inStream().readIntLittle(u32);
+        const version = try pdb_stream.reader().readIntLittle(u32);
+        const signature = try pdb_stream.reader().readIntLittle(u32);
+        const age = try pdb_stream.reader().readIntLittle(u32);
         var guid: [16]u8 = undefined;
-        try pdb_stream.inStream().readNoEof(&guid);
+        try pdb_stream.reader().readNoEof(&guid);
         if (version != 20000404) // VC70, only value observed by LLVM team
             return error.UnknownPDBVersion;
         if (!mem.eql(u8, &di.coff.guid, &guid) or di.coff.age != age)
@@ -716,9 +735,9 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         // We validated the executable and pdb match.
 
         const string_table_index = str_tab_index: {
-            const name_bytes_len = try pdb_stream.inStream().readIntLittle(u32);
+            const name_bytes_len = try pdb_stream.reader().readIntLittle(u32);
             const name_bytes = try allocator.alloc(u8, name_bytes_len);
-            try pdb_stream.inStream().readNoEof(name_bytes);
+            try pdb_stream.reader().readNoEof(name_bytes);
 
             const HashTableHeader = packed struct {
                 Size: u32,
@@ -728,17 +747,17 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
                     return cap * 2 / 3 + 1;
                 }
             };
-            const hash_tbl_hdr = try pdb_stream.inStream().readStruct(HashTableHeader);
+            const hash_tbl_hdr = try pdb_stream.reader().readStruct(HashTableHeader);
             if (hash_tbl_hdr.Capacity == 0)
                 return error.InvalidDebugInfo;
 
             if (hash_tbl_hdr.Size > HashTableHeader.maxLoad(hash_tbl_hdr.Capacity))
                 return error.InvalidDebugInfo;
 
-            const present = try readSparseBitVector(&pdb_stream.inStream(), allocator);
+            const present = try readSparseBitVector(&pdb_stream.reader(), allocator);
             if (present.len != hash_tbl_hdr.Size)
                 return error.InvalidDebugInfo;
-            const deleted = try readSparseBitVector(&pdb_stream.inStream(), allocator);
+            const deleted = try readSparseBitVector(&pdb_stream.reader(), allocator);
 
             const Bucket = struct {
                 first: u32,
@@ -746,8 +765,8 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
             };
             const bucket_list = try allocator.alloc(Bucket, present.len);
             for (present) |_| {
-                const name_offset = try pdb_stream.inStream().readIntLittle(u32);
-                const name_index = try pdb_stream.inStream().readIntLittle(u32);
+                const name_offset = try pdb_stream.reader().readIntLittle(u32);
+                const name_index = try pdb_stream.reader().readIntLittle(u32);
                 const name = mem.spanZ(std.meta.assumeSentinel(name_bytes.ptr + name_offset, 0));
                 if (mem.eql(u8, name, "/names")) {
                     break :str_tab_index name_index;
@@ -762,7 +781,7 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         const dbi = di.pdb.dbi;
 
         // Dbi Header
-        const dbi_stream_header = try dbi.inStream().readStruct(pdb.DbiStreamHeader);
+        const dbi_stream_header = try dbi.reader().readStruct(pdb.DbiStreamHeader);
         if (dbi_stream_header.VersionHeader != 19990903) // V70, only value observed by LLVM team
             return error.UnknownPDBVersion;
         if (dbi_stream_header.Age != age)
@@ -776,7 +795,7 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         // Module Info Substream
         var mod_info_offset: usize = 0;
         while (mod_info_offset != mod_info_size) {
-            const mod_info = try dbi.inStream().readStruct(pdb.ModInfo);
+            const mod_info = try dbi.reader().readStruct(pdb.ModInfo);
             var this_record_len: usize = @sizeOf(pdb.ModInfo);
 
             const module_name = try dbi.readNullTermString(allocator);
@@ -814,14 +833,14 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         var sect_contribs = ArrayList(pdb.SectionContribEntry).init(allocator);
         var sect_cont_offset: usize = 0;
         if (section_contrib_size != 0) {
-            const ver = @intToEnum(pdb.SectionContrSubstreamVersion, try dbi.inStream().readIntLittle(u32));
+            const ver = @intToEnum(pdb.SectionContrSubstreamVersion, try dbi.reader().readIntLittle(u32));
             if (ver != pdb.SectionContrSubstreamVersion.Ver60)
                 return error.InvalidDebugInfo;
             sect_cont_offset += @sizeOf(u32);
         }
         while (sect_cont_offset != section_contrib_size) {
             const entry = try sect_contribs.addOne();
-            entry.* = try dbi.inStream().readStruct(pdb.SectionContribEntry);
+            entry.* = try dbi.reader().readStruct(pdb.SectionContribEntry);
             sect_cont_offset += @sizeOf(pdb.SectionContribEntry);
 
             if (sect_cont_offset > section_contrib_size)

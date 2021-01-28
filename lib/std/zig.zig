@@ -8,6 +8,8 @@ const tokenizer = @import("zig/tokenizer.zig");
 
 pub const Token = tokenizer.Token;
 pub const Tokenizer = tokenizer.Tokenizer;
+pub const fmtId = @import("zig/fmt.zig").fmtId;
+pub const fmtEscapes = @import("zig/fmt.zig").fmtEscapes;
 pub const parse = @import("zig/parse.zig").parse;
 pub const parseStringLiteral = @import("zig/string_literal.zig").parse;
 pub const render = @import("zig/render.zig").render;
@@ -253,6 +255,6 @@ test "parseCharLiteral" {
     std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFF}x'", &bad_index));
 }
 
-test "" {
+test {
     @import("std").testing.refAllDecls(@This());
 }

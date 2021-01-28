@@ -710,6 +710,12 @@ fn visitFnDecl(c: *Context, fn_decl: *const clang.FunctionDecl) Error!void {
     return addTopLevelDecl(c, fn_name, &proto_node.base);
 }
 
+fn transQualTypeMaybeInitialized(rp: RestorePoint, qt: clang.QualType, decl_init: ?*const clang.Expr, loc: clang.SourceLocation) TransError!*ast.Node {
+    return if (decl_init) |init_expr|
+        transQualTypeInitialized(rp, qt, init_expr, loc)
+    else
+        transQualType(rp, qt, loc);
+}
 /// if mangled_name is not null, this var decl was declared in a block scope.
 fn visitVarDecl(c: *Context, var_decl: *const clang.VarDecl, mangled_name: ?[]const u8) Error!void {
     const var_name = mangled_name orelse try c.str(@ptrCast(*const clang.NamedDecl, var_decl).getName_bytes_begin());
@@ -734,6 +740,7 @@ fn visitVarDecl(c: *Context, var_decl: *const clang.VarDecl, mangled_name: ?[]co
     const storage_class = var_decl.getStorageClass();
     const is_const = qual_type.isConstQualified();
     const has_init = var_decl.hasInit();
+    const decl_init = var_decl.getInit();
 
     // In C extern variables with initializers behave like Zig exports.
     // extern int foo = 2;
@@ -755,8 +762,9 @@ fn visitVarDecl(c: *Context, var_decl: *const clang.VarDecl, mangled_name: ?[]co
     const name_tok = try appendIdentifier(c, checked_name);
 
     _ = try appendToken(c, .Colon, ":");
-    const type_node = transQualType(rp, qual_type, var_decl_loc) catch |err| switch (err) {
-        error.UnsupportedType => {
+
+    const type_node = transQualTypeMaybeInitialized(rp, qual_type, decl_init, var_decl_loc) catch |err| switch (err) {
+        error.UnsupportedTranslation, error.UnsupportedType => {
             return failDecl(c, var_decl_loc, checked_name, "unable to resolve variable type", .{});
         },
         error.OutOfMemory => |e| return e,
@@ -770,17 +778,22 @@ fn visitVarDecl(c: *Context, var_decl: *const clang.VarDecl, mangled_name: ?[]co
     // with the variable type.
     if (has_init) {
         eq_tok = try appendToken(c, .Equal, "=");
-        init_node = if (var_decl.getInit()) |expr|
-            transExprCoercing(rp, &c.global_scope.base, expr, .used, .r_value) catch |err| switch (err) {
+        if (decl_init) |expr| {
+            const node_or_error = if (expr.getStmtClass() == .StringLiteralClass)
+                transStringLiteralAsArray(rp, &c.global_scope.base, @ptrCast(*const clang.StringLiteral, expr), zigArraySize(rp.c, type_node) catch 0)
+            else
+                transExprCoercing(rp, scope, expr, .used, .r_value);
+            init_node = node_or_error catch |err| switch (err) {
                 error.UnsupportedTranslation,
                 error.UnsupportedType,
                 => {
                     return failDecl(c, var_decl_loc, checked_name, "unable to translate initializer", .{});
                 },
                 error.OutOfMemory => |e| return e,
-            }
-        else
-            try transCreateNodeUndefinedLiteral(c);
+            };
+        } else {
+            init_node = try transCreateNodeUndefinedLiteral(c);
+        }
     } else if (storage_class != .Extern) {
         eq_tok = try appendToken(c, .Equal, "=");
         // The C language specification states that variables with static or threadlocal
@@ -1620,6 +1633,7 @@ fn transDeclStmtOne(
     switch (decl.getKind()) {
         .Var => {
             const var_decl = @ptrCast(*const clang.VarDecl, decl);
+            const decl_init = var_decl.getInit();
 
             const qual_type = var_decl.getTypeSourceInfo_getType();
             const name = try c.str(@ptrCast(*const clang.NamedDecl, var_decl).getName_bytes_begin());
@@ -1643,11 +1657,14 @@ fn transDeclStmtOne(
 
             _ = try appendToken(c, .Colon, ":");
             const loc = decl.getLocation();
-            const type_node = try transQualType(rp, qual_type, loc);
+            const type_node = try transQualTypeMaybeInitialized(rp, qual_type, decl_init, loc);
 
             const eq_token = try appendToken(c, .Equal, "=");
-            var init_node = if (var_decl.getInit()) |expr|
-                try transExprCoercing(rp, scope, expr, .used, .r_value)
+            var init_node = if (decl_init) |expr|
+                if (expr.getStmtClass() == .StringLiteralClass)
+                    try transStringLiteralAsArray(rp, scope, @ptrCast(*const clang.StringLiteral, expr), try zigArraySize(rp.c, type_node))
+                else
+                    try transExprCoercing(rp, scope, expr, .used, .r_value)
             else
                 try transCreateNodeUndefinedLiteral(c);
             if (!qualTypeIsBoolean(qual_type) and isBoolRes(init_node)) {
@@ -1740,7 +1757,7 @@ fn transImplicitCastExpr(
             return maybeSuppressResult(rp, scope, result_used, sub_expr_node);
         },
         .ArrayToPointerDecay => {
-            if (exprIsStringLiteral(sub_expr)) {
+            if (exprIsNarrowStringLiteral(sub_expr)) {
                 const sub_expr_node = try transExpr(rp, scope, sub_expr, .used, .r_value);
                 return maybeSuppressResult(rp, scope, result_used, sub_expr_node);
             }
@@ -1841,17 +1858,20 @@ fn exprIsBooleanType(expr: *const clang.Expr) bool {
     return qualTypeIsBoolean(expr.getType());
 }
 
-fn exprIsStringLiteral(expr: *const clang.Expr) bool {
+fn exprIsNarrowStringLiteral(expr: *const clang.Expr) bool {
     switch (expr.getStmtClass()) {
-        .StringLiteralClass => return true,
+        .StringLiteralClass => {
+            const string_lit = @ptrCast(*const clang.StringLiteral, expr);
+            return string_lit.getCharByteWidth() == 1;
+        },
         .PredefinedExprClass => return true,
         .UnaryOperatorClass => {
             const op_expr = @ptrCast(*const clang.UnaryOperator, expr).getSubExpr();
-            return exprIsStringLiteral(op_expr);
+            return exprIsNarrowStringLiteral(op_expr);
         },
         .ParenExprClass => {
             const op_expr = @ptrCast(*const clang.ParenExpr, expr).getSubExpr();
-            return exprIsStringLiteral(op_expr);
+            return exprIsNarrowStringLiteral(op_expr);
         },
         else => return false,
     }
@@ -2031,7 +2051,7 @@ fn transStringLiteral(
             const bytes_ptr = stmt.getString_bytes_begin_size(&len);
             const str = bytes_ptr[0..len];
 
-            const token = try appendTokenFmt(rp.c, .StringLiteral, "\"{Z}\"", .{str});
+            const token = try appendTokenFmt(rp.c, .StringLiteral, "\"{}\"", .{std.zig.fmtEscapes(str)});
             const node = try rp.c.arena.create(ast.Node.OneToken);
             node.* = .{
                 .base = .{ .tag = .StringLiteral },
@@ -2039,14 +2059,105 @@ fn transStringLiteral(
             };
             return maybeSuppressResult(rp, scope, result_used, &node.base);
         },
-        .UTF16, .UTF32, .Wide => return revertAndWarn(
-            rp,
-            error.UnsupportedTranslation,
-            @ptrCast(*const clang.Stmt, stmt).getBeginLoc(),
-            "TODO: support string literal kind {s}",
-            .{kind},
-        ),
+        .UTF16, .UTF32, .Wide => {
+            const node = try transWideStringLiteral(rp, scope, stmt);
+            return maybeSuppressResult(rp, scope, result_used, node);
+        },
     }
+}
+
+/// Translates a wide string literal as a global "anonymous" array of the relevant-sized
+/// integer type + null terminator, and returns an identifier node for it
+fn transWideStringLiteral(rp: RestorePoint, scope: *Scope, stmt: *const clang.StringLiteral) TransError!*ast.Node {
+    const str_type = @tagName(stmt.getKind());
+    const mangle = rp.c.getMangle();
+    const name = try std.fmt.allocPrint(rp.c.arena, "zig.{s}_string_{d}", .{ str_type, mangle });
+
+    const const_tok = try appendToken(rp.c, .Keyword_const, "const");
+    const name_tok = try appendIdentifier(rp.c, name);
+    const eq_tok = try appendToken(rp.c, .Equal, "=");
+    var semi_tok: ast.TokenIndex = undefined;
+
+    const lit_array = try transStringLiteralAsArray(rp, scope, stmt, stmt.getLength() + 1);
+
+    semi_tok = try appendToken(rp.c, .Semicolon, ";");
+    const var_decl_node = try ast.Node.VarDecl.create(rp.c.arena, .{
+        .name_token = name_tok,
+        .mut_token = const_tok,
+        .semicolon_token = semi_tok,
+    }, .{
+        .visib_token = null,
+        .eq_token = eq_tok,
+        .init_node = lit_array,
+    });
+    try addTopLevelDecl(rp.c, name, &var_decl_node.base);
+    return transCreateNodeIdentifier(rp.c, name);
+}
+
+/// Parse the size of an array back out from an ast Node.
+fn zigArraySize(c: *Context, node: *ast.Node) TransError!usize {
+    if (node.castTag(.ArrayType)) |array| {
+        if (array.len_expr.castTag(.IntegerLiteral)) |int_lit| {
+            const tok = tokenSlice(c, int_lit.token);
+            return std.fmt.parseUnsigned(usize, tok, 10) catch error.UnsupportedTranslation;
+        }
+    }
+    return error.UnsupportedTranslation;
+}
+
+/// Translate a string literal to an array of integers. Used when an
+/// array is initialized from a string literal. `array_size` is the
+/// size of the array being initialized. If the string literal is larger
+/// than the array, truncate the string. If the array is larger than the
+/// string literal, pad the array with 0's
+fn transStringLiteralAsArray(
+    rp: RestorePoint,
+    scope: *Scope,
+    stmt: *const clang.StringLiteral,
+    array_size: usize,
+) TransError!*ast.Node {
+    if (array_size == 0) return error.UnsupportedType;
+
+    const str_length = stmt.getLength();
+
+    const expr_base = @ptrCast(*const clang.Expr, stmt);
+    const ty = expr_base.getType().getTypePtr();
+    const const_arr_ty = @ptrCast(*const clang.ConstantArrayType, ty);
+
+    const ty_node = try rp.c.arena.create(ast.Node.ArrayType);
+    const op_token = try appendToken(rp.c, .LBracket, "[");
+    const len_expr = try transCreateNodeInt(rp.c, array_size);
+    _ = try appendToken(rp.c, .RBracket, "]");
+
+    ty_node.* = .{
+        .op_token = op_token,
+        .rhs = try transQualType(rp, const_arr_ty.getElementType(), expr_base.getBeginLoc()),
+        .len_expr = len_expr,
+    };
+    _ = try appendToken(rp.c, .LBrace, "{");
+    var init_node = try ast.Node.ArrayInitializer.alloc(rp.c.arena, array_size);
+    init_node.* = .{
+        .lhs = &ty_node.base,
+        .rtoken = undefined,
+        .list_len = array_size,
+    };
+    const init_list = init_node.list();
+
+    var i: c_uint = 0;
+    const kind = stmt.getKind();
+    const narrow = kind == .Ascii or kind == .UTF8;
+    while (i < str_length and i < array_size) : (i += 1) {
+        const code_unit = stmt.getCodeUnit(i);
+        init_list[i] = try transCreateCharLitNode(rp.c, narrow, code_unit);
+        _ = try appendToken(rp.c, .Comma, ",");
+    }
+    while (i < array_size) : (i += 1) {
+        init_list[i] = try transCreateNodeInt(rp.c, 0);
+        _ = try appendToken(rp.c, .Comma, ",");
+    }
+    init_node.rtoken = try appendToken(rp.c, .RBrace, "}");
+
+    return &init_node.base;
 }
 
 fn cIsEnum(qt: clang.QualType) bool {
@@ -2082,12 +2193,19 @@ fn transCCast(
         // 3. Bit-cast to correct signed-ness
         const src_type_is_signed = cIsSignedInteger(src_type) or cIsEnum(src_type);
         const src_int_type = if (cIsInteger(src_type)) src_type else cIntTypeForEnum(src_type);
-        const src_int_expr = if (cIsInteger(src_type)) expr else try transEnumToInt(rp.c, expr);
+        var src_int_expr = if (cIsInteger(src_type)) expr else try transEnumToInt(rp.c, expr);
 
         // @bitCast(dest_type, intermediate_value)
         const cast_node = try rp.c.createBuiltinCall("@bitCast", 2);
         cast_node.params()[0] = try transQualType(rp, dst_type, loc);
         _ = try appendToken(rp.c, .Comma, ",");
+
+        if (isBoolRes(src_int_expr)) {
+            const bool_to_int_node = try rp.c.createBuiltinCall("@boolToInt", 1);
+            bool_to_int_node.params()[0] = src_int_expr;
+            bool_to_int_node.rparen_token = try appendToken(rp.c, .RParen, ")");
+            src_int_expr = &bool_to_int_node.base;
+        }
 
         switch (cIntTypeCmp(dst_type, src_int_type)) {
             .lt => {
@@ -2336,6 +2454,18 @@ fn transCreateNodeArrayType(
     return &node.base;
 }
 
+fn transCreateEmptyArray(rp: RestorePoint, loc: clang.SourceLocation, ty: *const clang.Type) TransError!*ast.Node {
+    const ty_node = try transCreateNodeArrayType(rp, loc, ty, 0);
+    _ = try appendToken(rp.c, .LBrace, "{");
+    const filler_init_node = try ast.Node.ArrayInitializer.alloc(rp.c.arena, 0);
+    filler_init_node.* = .{
+        .lhs = ty_node,
+        .rtoken = try appendToken(rp.c, .RBrace, "}"),
+        .list_len = 0,
+    };
+    return &filler_init_node.base;
+}
+
 fn transInitListExprArray(
     rp: RestorePoint,
     scope: *Scope,
@@ -2352,6 +2482,10 @@ fn transInitListExprArray(
     const size_ap_int = const_arr_ty.getSize();
     const all_count = size_ap_int.getLimitedValue(math.maxInt(usize));
     const leftover_count = all_count - init_count;
+
+    if (all_count == 0) {
+        return transCreateEmptyArray(rp, loc, child_qt.getTypePtr());
+    }
 
     var init_node: *ast.Node.ArrayInitializer = undefined;
     var cat_tok: ast.TokenIndex = undefined;
@@ -2927,6 +3061,21 @@ fn transPredefinedExpr(rp: RestorePoint, scope: *Scope, expr: *const clang.Prede
     return transStringLiteral(rp, scope, expr.getFunctionName(), used);
 }
 
+fn transCreateCharLitNode(c: *Context, narrow: bool, val: u32) TransError!*ast.Node {
+    const node = try c.arena.create(ast.Node.OneToken);
+    node.* = .{
+        .base = .{ .tag = .CharLiteral },
+        .token = undefined,
+    };
+    if (narrow) {
+        const val_array = [_]u8{@intCast(u8, val)};
+        node.token = try appendTokenFmt(c, .CharLiteral, "'{}'", .{std.zig.fmtEscapes(&val_array)});
+    } else {
+        node.token = try appendTokenFmt(c, .CharLiteral, "'\\u{{{x}}}'", .{val});
+    }
+    return &node.base;
+}
+
 fn transCharLiteral(
     rp: RestorePoint,
     scope: *Scope,
@@ -2935,31 +3084,15 @@ fn transCharLiteral(
     suppress_as: SuppressCast,
 ) TransError!*ast.Node {
     const kind = stmt.getKind();
-    const int_lit_node = switch (kind) {
-        .Ascii, .UTF8 => blk: {
-            const val = stmt.getValue();
-            if (kind == .Ascii) {
-                // C has a somewhat obscure feature called multi-character character
-                // constant
-                if (val > 255)
-                    break :blk try transCreateNodeInt(rp.c, val);
-            }
-            const token = try appendTokenFmt(rp.c, .CharLiteral, "'{Z}'", .{@intCast(u8, val)});
-            const node = try rp.c.arena.create(ast.Node.OneToken);
-            node.* = .{
-                .base = .{ .tag = .CharLiteral },
-                .token = token,
-            };
-            break :blk &node.base;
-        },
-        .UTF16, .UTF32, .Wide => return revertAndWarn(
-            rp,
-            error.UnsupportedTranslation,
-            @ptrCast(*const clang.Stmt, stmt).getBeginLoc(),
-            "TODO: support character literal kind {}",
-            .{kind},
-        ),
-    };
+    const val = stmt.getValue();
+    const narrow = kind == .Ascii or kind == .UTF8;
+    // C has a somewhat obscure feature called multi-character character constant
+    // e.g. 'abcd'
+    const int_lit_node = if (kind == .Ascii and val > 255)
+        try transCreateNodeInt(rp.c, val)
+    else
+        try transCreateCharLitNode(rp.c, narrow, val);
+
     if (suppress_as == .no_as) {
         return maybeSuppressResult(rp, scope, result_used, int_lit_node);
     }
@@ -3112,7 +3245,29 @@ fn transCallExpr(rp: RestorePoint, scope: *Scope, stmt: *const clang.CallExpr, r
         if (i != 0) {
             _ = try appendToken(rp.c, .Comma, ",");
         }
-        call_params[i] = try transExpr(rp, scope, args[i], .used, .r_value);
+        var call_param = try transExpr(rp, scope, args[i], .used, .r_value);
+
+        // In C the result type of a boolean expression is int. If this result is passed as
+        // an argument to a function whose parameter is also int, there is no cast. Therefore
+        // in Zig we'll need to cast it from bool to u1 (which will safely coerce to c_int).
+        if (fn_ty) |ty| {
+            switch (ty) {
+                .Proto => |fn_proto| {
+                    const param_count = fn_proto.getNumParams();
+                    if (i < param_count) {
+                        const param_qt = fn_proto.getParamType(@intCast(c_uint, i));
+                        if (isBoolRes(call_param) and cIsNativeInt(param_qt)) {
+                            const builtin_node = try rp.c.createBuiltinCall("@boolToInt", 1);
+                            builtin_node.params()[0] = call_param;
+                            builtin_node.rparen_token = try appendToken(rp.c, .RParen, ")");
+                            call_param = &builtin_node.base;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+        call_params[i] = call_param;
     }
     node.rtoken = try appendToken(rp.c, .RParen, ")");
 
@@ -3859,6 +4014,38 @@ fn addTopLevelDecl(c: *Context, name: []const u8, decl_node: *ast.Node) !void {
     _ = try c.global_scope.sym_table.put(name, decl_node);
 }
 
+/// Translate a qual type for a variable with an initializer. The initializer
+/// only matters for incomplete arrays, since the size of the array is determined
+/// by the size of the initializer
+fn transQualTypeInitialized(
+    rp: RestorePoint,
+    qt: clang.QualType,
+    decl_init: *const clang.Expr,
+    source_loc: clang.SourceLocation,
+) TypeError!*ast.Node {
+    const ty = qt.getTypePtr();
+    if (ty.getTypeClass() == .IncompleteArray) {
+        const incomplete_array_ty = @ptrCast(*const clang.IncompleteArrayType, ty);
+        const elem_ty = incomplete_array_ty.getElementType().getTypePtr();
+
+        switch (decl_init.getStmtClass()) {
+            .StringLiteralClass => {
+                const string_lit = @ptrCast(*const clang.StringLiteral, decl_init);
+                const string_lit_size = string_lit.getLength() + 1; // +1 for null terminator
+                const array_size = @intCast(usize, string_lit_size);
+                return transCreateNodeArrayType(rp, source_loc, elem_ty, array_size);
+            },
+            .InitListExprClass => {
+                const init_expr = @ptrCast(*const clang.InitListExpr, decl_init);
+                const size = init_expr.getNumInits();
+                return transCreateNodeArrayType(rp, source_loc, elem_ty, size);
+            },
+            else => {},
+        }
+    }
+    return transQualType(rp, qt, source_loc);
+}
+
 fn transQualType(rp: RestorePoint, qt: clang.QualType, source_loc: clang.SourceLocation) TypeError!*ast.Node {
     return transType(rp, qt.getTypePtr(), source_loc);
 }
@@ -4122,6 +4309,13 @@ fn cIsSignedInteger(qt: clang.QualType) bool {
         => true,
         else => false,
     };
+}
+
+fn cIsNativeInt(qt: clang.QualType) bool {
+    const c_type = qualTypeCanon(qt);
+    if (c_type.getTypeClass() != .Builtin) return false;
+    const builtin_ty = @ptrCast(*const clang.BuiltinType, c_type);
+    return builtin_ty.getKind() == .Int;
 }
 
 fn cIsFloating(qt: clang.QualType) bool {
@@ -5268,7 +5462,7 @@ fn appendTokenFmt(c: *Context, token_id: Token.Id, comptime format: []const u8, 
     try c.token_locs.ensureCapacity(c.gpa, c.token_locs.items.len + 1);
 
     const start_index = c.source_buffer.items.len;
-    try c.source_buffer.outStream().print(format ++ " ", args);
+    try c.source_buffer.writer().print(format ++ " ", args);
 
     c.token_ids.appendAssumeCapacity(token_id);
     c.token_locs.appendAssumeCapacity(.{
@@ -5315,7 +5509,7 @@ fn isZigPrimitiveType(name: []const u8) bool {
 }
 
 fn appendIdentifier(c: *Context, name: []const u8) !ast.TokenIndex {
-    return appendTokenFmt(c, .Identifier, "{z}", .{name});
+    return appendTokenFmt(c, .Identifier, "{}", .{std.zig.fmtId(name)});
 }
 
 fn transCreateNodeIdentifier(c: *Context, name: []const u8) !*ast.Node {
