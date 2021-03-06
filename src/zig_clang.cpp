@@ -2244,6 +2244,11 @@ unsigned ZigClangAPSInt_getNumWords(const ZigClangAPSInt *self) {
     return casted->getNumWords();
 }
 
+bool ZigClangAPSInt_lessThanEqual(const ZigClangAPSInt *self, uint64_t rhs) {
+    auto casted = reinterpret_cast<const llvm::APSInt *>(self);
+    return casted->ule(rhs);
+}
+
 uint64_t ZigClangAPInt_getLimitedValue(const ZigClangAPInt *self, uint64_t limit) {
     auto casted = reinterpret_cast<const llvm::APInt *>(self);
     return casted->getLimitedValue(limit);
@@ -2594,6 +2599,56 @@ struct ZigClangQualType ZigClangMacroQualifiedType_getModifiedType(const struct 
     return bitcast(casted->getModifiedType());
 }
 
+struct ZigClangQualType ZigClangTypeOfType_getUnderlyingType(const struct ZigClangTypeOfType *self) {
+    auto casted = reinterpret_cast<const clang::TypeOfType *>(self);
+    return bitcast(casted->getUnderlyingType());
+}
+
+const struct ZigClangExpr *ZigClangTypeOfExprType_getUnderlyingExpr(const struct ZigClangTypeOfExprType *self) {
+    auto casted = reinterpret_cast<const clang::TypeOfExprType *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getUnderlyingExpr());
+}
+
+enum ZigClangOffsetOfNode_Kind ZigClangOffsetOfNode_getKind(const struct ZigClangOffsetOfNode *self) {
+    auto casted = reinterpret_cast<const clang::OffsetOfNode *>(self);
+    return (ZigClangOffsetOfNode_Kind)casted->getKind();
+}
+
+unsigned ZigClangOffsetOfNode_getArrayExprIndex(const struct ZigClangOffsetOfNode *self) {
+    auto casted = reinterpret_cast<const clang::OffsetOfNode *>(self);
+    return casted->getArrayExprIndex();
+}
+
+struct ZigClangFieldDecl *ZigClangOffsetOfNode_getField(const struct ZigClangOffsetOfNode *self) {
+    auto casted = reinterpret_cast<const clang::OffsetOfNode *>(self);
+    return reinterpret_cast<ZigClangFieldDecl *>(casted->getField());
+}
+
+unsigned ZigClangOffsetOfExpr_getNumComponents(const struct ZigClangOffsetOfExpr *self) {
+    auto casted = reinterpret_cast<const clang::OffsetOfExpr *>(self);
+    return casted->getNumComponents();
+}
+
+unsigned ZigClangOffsetOfExpr_getNumExpressions(const struct ZigClangOffsetOfExpr *self) {
+    auto casted = reinterpret_cast<const clang::OffsetOfExpr *>(self);
+    return casted->getNumExpressions();
+}
+
+const struct ZigClangExpr *ZigClangOffsetOfExpr_getIndexExpr(const struct ZigClangOffsetOfExpr *self, unsigned idx) {
+    auto casted = reinterpret_cast<const clang::OffsetOfExpr *>(self);
+    return reinterpret_cast<const struct ZigClangExpr *>(casted->getIndexExpr(idx));
+}
+
+const struct ZigClangOffsetOfNode *ZigClangOffsetOfExpr_getComponent(const struct ZigClangOffsetOfExpr *self, unsigned idx) {
+    auto casted = reinterpret_cast<const clang::OffsetOfExpr *>(self);
+    return reinterpret_cast<const struct ZigClangOffsetOfNode *>(&casted->getComponent(idx));
+}
+
+ZigClangSourceLocation ZigClangOffsetOfExpr_getBeginLoc(const ZigClangOffsetOfExpr *self) {
+    auto casted = reinterpret_cast<const clang::OffsetOfExpr *>(self);
+    return bitcast(casted->getBeginLoc());
+}
+
 struct ZigClangQualType ZigClangElaboratedType_getNamedType(const struct ZigClangElaboratedType *self) {
     auto casted = reinterpret_cast<const clang::ElaboratedType *>(self);
     return bitcast(casted->getNamedType());
@@ -2771,6 +2826,11 @@ const struct ZigClangExpr *ZigClangUnaryOperator_getSubExpr(const struct ZigClan
 struct ZigClangSourceLocation ZigClangUnaryOperator_getBeginLoc(const struct ZigClangUnaryOperator *self) {
     auto casted = reinterpret_cast<const clang::UnaryOperator *>(self);
     return bitcast(casted->getBeginLoc());
+}
+
+struct ZigClangQualType ZigClangValueDecl_getType(const struct ZigClangValueDecl *self) {
+    auto casted = reinterpret_cast<const clang::ValueDecl *>(self);
+    return bitcast(casted->getType());
 }
 
 const struct ZigClangExpr *ZigClangWhileStmt_getCond(const struct ZigClangWhileStmt *self) {
@@ -2986,6 +3046,11 @@ bool ZigClangFieldDecl_isAnonymousStructOrUnion(const ZigClangFieldDecl *field_d
 ZigClangSourceLocation ZigClangFieldDecl_getLocation(const struct ZigClangFieldDecl *self) {
     auto casted = reinterpret_cast<const clang::FieldDecl *>(self);
     return bitcast(casted->getLocation());
+}
+
+const struct ZigClangRecordDecl *ZigClangFieldDecl_getParent(const struct ZigClangFieldDecl *self) {
+    auto casted = reinterpret_cast<const clang::FieldDecl *>(self);
+    return reinterpret_cast<const ZigClangRecordDecl *>(casted->getParent());
 }
 
 ZigClangQualType ZigClangFieldDecl_getType(const struct ZigClangFieldDecl *self) {

@@ -310,7 +310,7 @@ pub fn main() !void {
       <p>
         The two arguments passed to the <code>stdout.print()</code> function, <code>"Hello, {s}!\n"</code>
         and <code>.{"world"}</code>, are evaluated at {#link|compile-time|comptime#}. The code sample is
-        purposely written to show how to perform {#link|string|String Literals and Character Literals#}
+        purposely written to show how to perform {#link|string|String Literals and Unicode Code Point Literals#}
         substitution in the <code>print</code> function. The curly-braces inside of the first argument
         are substituted with the compile-time known value inside of the second argument
         (known as an {#link|anonymous struct literal|Anonymous Struct Literals#}). The <code>\n</code>
@@ -682,18 +682,31 @@ pub fn main() void {
       </div>
       {#see_also|Optionals|undefined#}
       {#header_close#}
-      {#header_open|String Literals and Character Literals#}
+      {#header_open|String Literals and Unicode Code Point Literals#}
       <p>
-      String literals are single-item constant {#link|Pointers#} to null-terminated UTF-8 encoded byte arrays.
+      String literals are single-item constant {#link|Pointers#} to null-terminated byte arrays.
       The type of string literals encodes both the length, and the fact that they are null-terminated,
       and thus they can be {#link|coerced|Type Coercion#} to both {#link|Slices#} and
       {#link|Null-Terminated Pointers|Sentinel-Terminated Pointers#}.
       Dereferencing string literals converts them to {#link|Arrays#}.
       </p>
       <p>
-      Character literals have type {#syntax#}comptime_int{#endsyntax#}, the same as
+      The encoding of a string in Zig is de-facto assumed to be UTF-8.
+      Because Zig source code is {#link|UTF-8 encoded|Source Encoding#}, any non-ASCII bytes appearing within a string literal
+      in source code carry their UTF-8 meaning into the content of the string in the Zig program;
+      the bytes are not modified by the compiler.
+      However, it is possible to embbed non-UTF-8 bytes into a string literal using <code>\xNN</code> notation.
+      </p>
+      <p>
+      Unicode code point literals have type {#syntax#}comptime_int{#endsyntax#}, the same as
       {#link|Integer Literals#}. All {#link|Escape Sequences#} are valid in both string literals
-      and character literals.
+      and Unicode code point literals.
+      </p>
+      <p>
+      In many other programming languages, a Unicode code point literal is called a "character literal".
+      However, there is <a href="https://unicode.org/glossary">no precise technical definition of a "character"</a>
+      in recent versions of the Unicode specification (as of Unicode 13.0).
+      In Zig, a Unicode code point literal corresponds to the Unicode definition of a code point.
       </p>
       {#code_begin|test#}
 const expect = @import("std").testing.expect;
@@ -709,6 +722,7 @@ test "string literals" {
     expect('\u{1f4a9}' == 128169);
     expect('💯' == 128175);
     expect(mem.eql(u8, "hello", "h\x65llo"));
+    expect("\xff"[0] == 0xff); // non-UTF-8 strings are possible with \xNN notation.
 }
       {#code_end#}
       {#see_also|Arrays|Zig Test|Source Encoding#}
@@ -749,11 +763,11 @@ test "string literals" {
         </tr>
         <tr>
             <td><code>\xNN</code></td>
-          <td>hexadecimal 8-bit character code (2 digits)</td>
+          <td>hexadecimal 8-bit byte value (2 digits)</td>
         </tr>
         <tr>
             <td><code>\u{NNNNNN}</code></td>
-          <td>hexadecimal Unicode character code UTF-8 encoded (1 or more digits)</td>
+          <td>hexadecimal Unicode code point UTF-8 encoded (1 or more digits)</td>
         </tr>
       </table>
       </div>
@@ -919,8 +933,8 @@ const assert = std.debug.assert;
 threadlocal var x: i32 = 1234;
 
 test "thread local storage" {
-    const thread1 = try std.Thread.spawn({}, testTls);
-    const thread2 = try std.Thread.spawn({}, testTls);
+    const thread1 = try std.Thread.spawn(testTls, {});
+    const thread2 = try std.Thread.spawn(testTls, {});
     testTls({});
     thread1.wait();
     thread2.wait();
@@ -4240,9 +4254,9 @@ fn _start() callconv(.Naked) noreturn {
     abort();
 }
 
-// The inline specifier forces a function to be inlined at all call sites.
+// The inline calling convention forces a function to be inlined at all call sites.
 // If the function cannot be inlined, it is a compile-time error.
-inline fn shiftLeftOne(a: u32) u32 {
+fn shiftLeftOne(a: u32) callconv(.Inline) u32 {
     return a << 1;
 }
 
@@ -7414,7 +7428,7 @@ test "main" {
       This function returns a compile time constant pointer to null-terminated,
       fixed-size array with length equal to the byte count of the file given by
       {#syntax#}path{#endsyntax#}. The contents of the array are the contents of the file.
-      This is equivalent to a {#link|string literal|String Literals and Character Literals#}
+      This is equivalent to a {#link|string literal|String Literals and Unicode Code Point Literals#}
       with the file contents.
       </p>
       <p>
@@ -10433,13 +10447,40 @@ fn readU32Be() u32 {}
       {#header_close#}
       {#header_open|Source Encoding#}
       <p>Zig source code is encoded in UTF-8. An invalid UTF-8 byte sequence results in a compile error.</p>
-      <p>Throughout all zig source code (including in comments), some codepoints are never allowed:</p>
+      <p>Throughout all zig source code (including in comments), some code points are never allowed:</p>
       <ul>
-        <li>Ascii control characters, except for U+000a (LF): U+0000 - U+0009, U+000b - U+0001f, U+007f. (Note that Windows line endings (CRLF) are not allowed, and hard tabs are not allowed.)</li>
+        <li>Ascii control characters, except for U+000a (LF), U+000d (CR), and U+0009 (HT): U+0000 - U+0008, U+000b - U+000c, U+000e - U+0001f, U+007f.</li>
         <li>Non-Ascii Unicode line endings: U+0085 (NEL), U+2028 (LS), U+2029 (PS).</li>
       </ul>
-      <p>The codepoint U+000a (LF) (which is encoded as the single-byte value 0x0a) is the line terminator character. This character always terminates a line of zig source code (except possibly the last line of the file).</p>
-      <p>For some discussion on the rationale behind these design decisions, see <a href="https://github.com/ziglang/zig/issues/663">issue #663</a></p>
+      <p>
+      LF (byte value 0x0a, code point U+000a, {#syntax#}'\n'{#endsyntax#}) is the line terminator in Zig source code.
+      This byte value terminates every line of zig source code except the last line of the file.
+      It is recommended that non-empty source files end with an empty line, which means the last byte would be 0x0a (LF).
+      </p>
+      <p>
+      Each LF may be immediately preceded by a single CR (byte value 0x0d, code point U+000d, {#syntax#}'\r'{#endsyntax#})
+      to form a Windows style line ending, but this is discouraged.
+      A CR in any other context is not allowed.
+      </p>
+      <p>
+      HT hard tabs (byte value 0x09, code point U+0009, {#syntax#}'\t'{#endsyntax#}) are interchangeable with
+      SP spaces (byte value 0x20, code point U+0020, {#syntax#}' '{#endsyntax#}) as a token separator,
+      but use of hard tabs is discouraged. See {#link|Grammar#}.
+      </p>
+      <p>
+      Note that running <code>zig fmt</code> on a source file will implement all recommendations mentioned here.
+      Note also that the stage1 compiler does <a href="https://github.com/ziglang/zig/wiki/FAQ#why-does-zig-force-me-to-use-spaces-instead-of-tabs">not yet support CR or HT</a> control characters.
+      </p>
+      <p>
+      Note that a tool reading Zig source code can make assumptions if the source code is assumed to be correct Zig code.
+      For example, when identifying the ends of lines, a tool can use a naive search such as <code>/\n/</code>,
+      or an <a href="https://msdn.microsoft.com/en-us/library/dd409797.aspx">advanced</a>
+      search such as <code>/\r\n?|[\n\u0085\u2028\u2029]/</code>, and in either case line endings will be correctly identified.
+      For another example, when identifying the whitespace before the first token on a line,
+      a tool can either use a naive search such as <code>/[ \t]/</code>,
+      or an <a href="https://tc39.es/ecma262/#sec-characterclassescape">advanced</a> search such as <code>/\s/</code>,
+      and in either case whitespace will be correctly identified.
+      </p>
       {#header_close#}
 
       {#header_open|Keyword Reference#}
@@ -11359,6 +11400,7 @@ ExprList &lt;- (Expr COMMA)* Expr?
 
 # *** Tokens ***
 eof &lt;- !.
+eol &lt;- ('\r'? '\n') | eof
 hex &lt;- [0-9a-fA-F]
 hex_ &lt;- ('_'/hex)
 dec &lt;- [0-9]
@@ -11368,39 +11410,39 @@ dec_int &lt;- dec (dec_* dec)?
 hex_int &lt;- hex (hex_* dec)?
 
 char_escape
-    &lt;- &quot;\\x&quot; hex hex
-     / &quot;\\u{&quot; hex+ &quot;}&quot;
-     / &quot;\\&quot; [nr\\t'&quot;]
+    &lt;- '\\x' hex hex
+     / '\\u{' hex+ '}'
+     / '\\' [nr\\t'&quot;]
 char_char
     &lt;- char_escape
-     / [^\\'\n]
+     / [^\\'\r\n]
 string_char
     &lt;- char_escape
-     / [^\\&quot;\n]
+     / [^\\&quot;\r\n]
 
-line_comment &lt;- '//'[^\n]*
-line_string &lt;- (&quot;\\\\&quot; [^\n]* [ \n]*)+
-skip &lt;- ([ \n] / line_comment)*
+line_comment &lt;- '//'[^\r\n]* eol
+line_string &lt;- ('\\\\' [^\r\n]* eol skip)+
+skip &lt;- ([ \t] / eol / line_comment)*
 
 CHAR_LITERAL &lt;- &quot;'&quot; char_char &quot;'&quot; skip
 FLOAT
-    &lt;- &quot;0x&quot; hex_* hex &quot;.&quot; hex_int ([pP] [-+]? hex_int)? skip
-     /      dec_int   &quot;.&quot; dec_int ([eE] [-+]? dec_int)? skip
-     / &quot;0x&quot; hex_* hex &quot;.&quot;? [pP] [-+]? hex_int skip
-     /      dec_int   &quot;.&quot;? [eE] [-+]? dec_int skip
+    &lt;- '0x' hex_* hex '.' hex_int ([pP] [-+]? hex_int)? skip
+     /      dec_int   '.' dec_int ([eE] [-+]? dec_int)? skip
+     / '0x' hex_* hex '.'? [pP] [-+]? hex_int skip
+     /      dec_int   '.'? [eE] [-+]? dec_int skip
 INTEGER
-    &lt;- &quot;0b&quot; [_01]*  [01]  skip
-     / &quot;0o&quot; [_0-7]* [0-7] skip
-     / &quot;0x&quot; hex_* hex skip
+    &lt;- '0b' [_01]*  [01]  skip
+     / '0o' [_0-7]* [0-7] skip
+     / '0x' hex_* hex skip
      /      dec_int   skip
-STRINGLITERALSINGLE &lt;- &quot;\&quot;&quot; string_char* &quot;\&quot;&quot; skip
+STRINGLITERALSINGLE &lt;- '&quot;' string_char* '&quot;' skip
 STRINGLITERAL
     &lt;- STRINGLITERALSINGLE
-     / line_string                 skip
+     / line_string skip
 IDENTIFIER
     &lt;- !keyword [A-Za-z_] [A-Za-z0-9_]* skip
-     / &quot;@\&quot;&quot; string_char* &quot;\&quot;&quot;                            skip
-BUILTINIDENTIFIER &lt;- &quot;@&quot;[A-Za-z_][A-Za-z0-9_]* skip
+     / '@&quot;' string_char* '&quot;' skip
+BUILTINIDENTIFIER &lt;- '@'[A-Za-z_][A-Za-z0-9_]* skip
 
 
 AMPERSAND            &lt;- '&amp;'      ![=]      skip

@@ -32,6 +32,7 @@ const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
 pub const darwin = @import("os/darwin.zig");
 pub const dragonfly = @import("os/dragonfly.zig");
 pub const freebsd = @import("os/freebsd.zig");
+pub const haiku = @import("os/haiku.zig");
 pub const netbsd = @import("os/netbsd.zig");
 pub const openbsd = @import("os/openbsd.zig");
 pub const linux = @import("os/linux.zig");
@@ -52,6 +53,7 @@ test {
     _ = uefi;
     _ = wasi;
     _ = windows;
+    _ = haiku;
 
     _ = @import("os/test.zig");
 }
@@ -66,6 +68,7 @@ else if (builtin.link_libc)
 else switch (builtin.os.tag) {
     .macos, .ios, .watchos, .tvos => darwin,
     .freebsd => freebsd,
+    .haiku => haiku,
     .linux => linux,
     .netbsd => netbsd,
     .openbsd => openbsd,
@@ -599,7 +602,7 @@ pub fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
 /// On these systems, the read races with concurrent writes to the same file descriptor.
 pub fn preadv(fd: fd_t, iov: []const iovec, offset: u64) PReadError!usize {
     const have_pread_but_not_preadv = switch (std.Target.current.os.tag) {
-        .windows, .macos, .ios, .watchos, .tvos => true,
+        .windows, .macos, .ios, .watchos, .tvos, .haiku => true,
         else => false,
     };
     if (have_pread_but_not_preadv) {
@@ -932,7 +935,7 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
 /// If `iov.len` is larger than will fit in a `u31`, a partial write will occur.
 pub fn pwritev(fd: fd_t, iov: []const iovec_const, offset: u64) PWriteError!usize {
     const have_pwrite_but_not_pwritev = switch (std.Target.current.os.tag) {
-        .windows, .macos, .ios, .watchos, .tvos => true,
+        .windows, .macos, .ios, .watchos, .tvos, .haiku => true,
         else => false,
     };
 
@@ -1632,6 +1635,92 @@ pub fn symlinkatZ(target_path: [*:0]const u8, newdirfd: fd_t, sym_link_path: [*:
         EROFS => return error.ReadOnlyFileSystem,
         else => |err| return unexpectedErrno(err),
     }
+}
+
+pub const LinkError = UnexpectedError || error{
+    AccessDenied,
+    DiskQuota,
+    PathAlreadyExists,
+    FileSystem,
+    SymLinkLoop,
+    LinkQuotaExceeded,
+    NameTooLong,
+    FileNotFound,
+    SystemResources,
+    NoSpaceLeft,
+    ReadOnlyFileSystem,
+    NotSameFileSystem,
+};
+
+pub fn linkZ(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: i32) LinkError!void {
+    switch (errno(system.link(oldpath, newpath, flags))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EDQUOT => return error.DiskQuota,
+        EEXIST => return error.PathAlreadyExists,
+        EFAULT => unreachable,
+        EIO => return error.FileSystem,
+        ELOOP => return error.SymLinkLoop,
+        EMLINK => return error.LinkQuotaExceeded,
+        ENAMETOOLONG => return error.NameTooLong,
+        ENOENT => return error.FileNotFound,
+        ENOMEM => return error.SystemResources,
+        ENOSPC => return error.NoSpaceLeft,
+        EPERM => return error.AccessDenied,
+        EROFS => return error.ReadOnlyFileSystem,
+        EXDEV => return error.NotSameFileSystem,
+        EINVAL => unreachable,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn link(oldpath: []const u8, newpath: []const u8, flags: i32) LinkError!void {
+    const old = try toPosixPath(oldpath);
+    const new = try toPosixPath(newpath);
+    return try linkZ(&old, &new, flags);
+}
+
+pub const LinkatError = LinkError || error{NotDir};
+
+pub fn linkatZ(
+    olddir: fd_t,
+    oldpath: [*:0]const u8,
+    newdir: fd_t,
+    newpath: [*:0]const u8,
+    flags: i32,
+) LinkatError!void {
+    switch (errno(system.linkat(olddir, oldpath, newdir, newpath, flags))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EDQUOT => return error.DiskQuota,
+        EEXIST => return error.PathAlreadyExists,
+        EFAULT => unreachable,
+        EIO => return error.FileSystem,
+        ELOOP => return error.SymLinkLoop,
+        EMLINK => return error.LinkQuotaExceeded,
+        ENAMETOOLONG => return error.NameTooLong,
+        ENOENT => return error.FileNotFound,
+        ENOMEM => return error.SystemResources,
+        ENOSPC => return error.NoSpaceLeft,
+        ENOTDIR => return error.NotDir,
+        EPERM => return error.AccessDenied,
+        EROFS => return error.ReadOnlyFileSystem,
+        EXDEV => return error.NotSameFileSystem,
+        EINVAL => unreachable,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn linkat(
+    olddir: fd_t,
+    oldpath: []const u8,
+    newdir: fd_t,
+    newpath: []const u8,
+    flags: i32,
+) LinkatError!void {
+    const old = try toPosixPath(oldpath);
+    const new = try toPosixPath(newpath);
+    return try linkatZ(olddir, &old, newdir, &new, flags);
 }
 
 pub const UnlinkError = error{
@@ -3177,8 +3266,9 @@ pub fn connect(sock: socket_t, sock_addr: *const sockaddr, len: socklen_t) Conne
             .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
             .WSAECONNREFUSED => return error.ConnectionRefused,
             .WSAETIMEDOUT => return error.ConnectionTimedOut,
-            .WSAEHOSTUNREACH // TODO: should we return NetworkUnreachable in this case as well?
-            , .WSAENETUNREACH => return error.NetworkUnreachable,
+            .WSAEHOSTUNREACH, // TODO: should we return NetworkUnreachable in this case as well?
+            .WSAENETUNREACH,
+            => return error.NetworkUnreachable,
             .WSAEFAULT => unreachable,
             .WSAEINVAL => unreachable,
             .WSAEISCONN => unreachable,
@@ -3834,7 +3924,10 @@ pub fn sysctl(
     newlen: usize,
 ) SysCtlError!void {
     if (builtin.os.tag == .wasi) {
-        @panic("unsupported");
+        @panic("unsupported"); // TODO should be compile error, not panic
+    }
+    if (builtin.os.tag == .haiku) {
+        @panic("unsupported"); // TODO should be compile error, not panic
     }
 
     const name_len = math.cast(c_uint, name.len) catch return error.NameTooLong;
@@ -3858,7 +3951,10 @@ pub fn sysctlbynameZ(
     newlen: usize,
 ) SysCtlError!void {
     if (builtin.os.tag == .wasi) {
-        @panic("unsupported");
+        @panic("unsupported"); // TODO should be compile error, not panic
+    }
+    if (builtin.os.tag == .haiku) {
+        @panic("unsupported"); // TODO should be compile error, not panic
     }
 
     switch (errno(system.sysctlbyname(name, oldp, oldlenp, newp, newlen))) {
@@ -4744,7 +4840,7 @@ pub const SendError = error{
     NetworkSubsystemFailed,
 } || UnexpectedError;
 
-pub const SendToError = SendError || error{
+pub const SendMsgError = SendError || error{
     /// The passed address didn't have the correct address family in its sa_family field.
     AddressFamilyNotSupported,
 
@@ -4762,6 +4858,79 @@ pub const SendToError = SendError || error{
     SocketNotConnected,
     AddressNotAvailable,
 };
+
+pub fn sendmsg(
+    /// The file descriptor of the sending socket.
+    sockfd: socket_t,
+    /// Message header and iovecs
+    msg: msghdr_const,
+    flags: u32,
+) SendMsgError!usize {
+    while (true) {
+        const rc = system.sendmsg(sockfd, &msg, flags);
+        if (builtin.os.tag == .windows) {
+            if (rc == windows.ws2_32.SOCKET_ERROR) {
+                switch (windows.ws2_32.WSAGetLastError()) {
+                    .WSAEACCES => return error.AccessDenied,
+                    .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
+                    .WSAECONNRESET => return error.ConnectionResetByPeer,
+                    .WSAEMSGSIZE => return error.MessageTooBig,
+                    .WSAENOBUFS => return error.SystemResources,
+                    .WSAENOTSOCK => return error.FileDescriptorNotASocket,
+                    .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                    .WSAEDESTADDRREQ => unreachable, // A destination address is required.
+                    .WSAEFAULT => unreachable, // The lpBuffers, lpTo, lpOverlapped, lpNumberOfBytesSent, or lpCompletionRoutine parameters are not part of the user address space, or the lpTo parameter is too small.
+                    .WSAEHOSTUNREACH => return error.NetworkUnreachable,
+                    // TODO: WSAEINPROGRESS, WSAEINTR
+                    .WSAEINVAL => unreachable,
+                    .WSAENETDOWN => return error.NetworkSubsystemFailed,
+                    .WSAENETRESET => return error.ConnectionResetByPeer,
+                    .WSAENETUNREACH => return error.NetworkUnreachable,
+                    .WSAENOTCONN => return error.SocketNotConnected,
+                    .WSAESHUTDOWN => unreachable, // The socket has been shut down; it is not possible to WSASendTo on a socket after shutdown has been invoked with how set to SD_SEND or SD_BOTH.
+                    .WSAEWOULDBLOCK => return error.WouldBlock,
+                    .WSANOTINITIALISED => unreachable, // A successful WSAStartup call must occur before using this function.
+                    else => |err| return windows.unexpectedWSAError(err),
+                }
+            } else {
+                return @intCast(usize, rc);
+            }
+        } else {
+            switch (errno(rc)) {
+                0 => return @intCast(usize, rc),
+
+                EACCES => return error.AccessDenied,
+                EAGAIN => return error.WouldBlock,
+                EALREADY => return error.FastOpenAlreadyInProgress,
+                EBADF => unreachable, // always a race condition
+                ECONNRESET => return error.ConnectionResetByPeer,
+                EDESTADDRREQ => unreachable, // The socket is not connection-mode, and no peer address is set.
+                EFAULT => unreachable, // An invalid user space address was specified for an argument.
+                EINTR => continue,
+                EINVAL => unreachable, // Invalid argument passed.
+                EISCONN => unreachable, // connection-mode socket was connected already but a recipient was specified
+                EMSGSIZE => return error.MessageTooBig,
+                ENOBUFS => return error.SystemResources,
+                ENOMEM => return error.SystemResources,
+                ENOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
+                EOPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
+                EPIPE => return error.BrokenPipe,
+                EAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                ELOOP => return error.SymLinkLoop,
+                ENAMETOOLONG => return error.NameTooLong,
+                ENOENT => return error.FileNotFound,
+                ENOTDIR => return error.NotDir,
+                EHOSTUNREACH => return error.NetworkUnreachable,
+                ENETUNREACH => return error.NetworkUnreachable,
+                ENOTCONN => return error.SocketNotConnected,
+                ENETDOWN => return error.NetworkSubsystemFailed,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+    }
+}
+
+pub const SendToError = SendMsgError;
 
 /// Transmit a message to another socket.
 ///

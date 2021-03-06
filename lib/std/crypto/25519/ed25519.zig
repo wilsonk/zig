@@ -207,21 +207,21 @@ pub const Ed25519 = struct {
 
 test "ed25519 key pair creation" {
     var seed: [32]u8 = undefined;
-    try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
+    _ = try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
     const key_pair = try Ed25519.KeyPair.create(seed);
     var buf: [256]u8 = undefined;
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{key_pair.secret_key}), "8052030376D47112BE7F73ED7A019293DD12AD910B654455798B4667D73DE1662D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{key_pair.public_key}), "2D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
+    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&key_pair.secret_key)}), "8052030376D47112BE7F73ED7A019293DD12AD910B654455798B4667D73DE1662D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
+    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&key_pair.public_key)}), "2D6F7455D97B4A3A10D7293909D1A4F2058CB9A370E43FA8154BB280DB839083");
 }
 
 test "ed25519 signature" {
     var seed: [32]u8 = undefined;
-    try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
+    _ = try fmt.hexToBytes(seed[0..], "8052030376d47112be7f73ed7a019293dd12ad910b654455798b4667d73de166");
     const key_pair = try Ed25519.KeyPair.create(seed);
 
     const sig = try Ed25519.sign("test", key_pair, null);
     var buf: [128]u8 = undefined;
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{sig}), "10A442B4A80CC4225B154F43BEF28D2472CA80221951262EB8E0DF9091575E2687CC486E77263C3418C757522D54F84B0359236ABBBD4ACD20DC297FDCA66808");
+    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&sig)}), "10A442B4A80CC4225B154F43BEF28D2472CA80221951262EB8E0DF9091575E2687CC486E77263C3418C757522D54F84B0359236ABBBD4ACD20DC297FDCA66808");
     try Ed25519.verify(sig, "test", key_pair.public_key);
     std.testing.expectError(error.InvalidSignature, Ed25519.verify(sig, "TEST", key_pair.public_key));
 }
@@ -339,11 +339,11 @@ test "ed25519 test vectors" {
     };
     for (entries) |entry, i| {
         var msg: [entry.msg_hex.len / 2]u8 = undefined;
-        try fmt.hexToBytes(&msg, entry.msg_hex);
+        _ = try fmt.hexToBytes(&msg, entry.msg_hex);
         var public_key: [32]u8 = undefined;
-        try fmt.hexToBytes(&public_key, entry.public_key_hex);
+        _ = try fmt.hexToBytes(&public_key, entry.public_key_hex);
         var sig: [64]u8 = undefined;
-        try fmt.hexToBytes(&sig, entry.sig_hex);
+        _ = try fmt.hexToBytes(&sig, entry.sig_hex);
         if (entry.expected) |error_type| {
             std.testing.expectError(error_type, Ed25519.verify(sig, &msg, public_key));
         } else {

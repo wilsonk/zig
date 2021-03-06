@@ -928,6 +928,13 @@ enum ZigClangUnaryExprOrTypeTrait_Kind {
     ZigClangUnaryExprOrTypeTrait_KindPreferredAlignOf,
 };
 
+enum ZigClangOffsetOfNode_Kind {
+    ZigClangOffsetOfNode_KindArray,
+    ZigClangOffsetOfNode_KindField,
+    ZigClangOffsetOfNode_KindIdentifier,
+    ZigClangOffsetOfNode_KindBase,
+};
+
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangSourceManager_getSpellingLoc(const struct ZigClangSourceManager *,
         struct ZigClangSourceLocation Loc);
 ZIG_EXTERN_C const char *ZigClangSourceManager_getFilename(const struct ZigClangSourceManager *,
@@ -1097,6 +1104,7 @@ ZIG_EXTERN_C const struct ZigClangAPSInt *ZigClangAPSInt_negate(const struct Zig
 ZIG_EXTERN_C void ZigClangAPSInt_free(const struct ZigClangAPSInt *self);
 ZIG_EXTERN_C const uint64_t *ZigClangAPSInt_getRawData(const struct ZigClangAPSInt *self);
 ZIG_EXTERN_C unsigned ZigClangAPSInt_getNumWords(const struct ZigClangAPSInt *self);
+ZIG_EXTERN_C bool ZigClangAPSInt_lessThanEqual(const struct ZigClangAPSInt *self, uint64_t rhs);
 
 ZIG_EXTERN_C uint64_t ZigClangAPInt_getLimitedValue(const struct ZigClangAPInt *self, uint64_t limit);
 
@@ -1156,6 +1164,20 @@ ZIG_EXTERN_C struct ZigClangQualType ZigClangAttributedType_getEquivalentType(co
 
 ZIG_EXTERN_C struct ZigClangQualType ZigClangMacroQualifiedType_getModifiedType(const struct ZigClangMacroQualifiedType *);
 
+ZIG_EXTERN_C struct ZigClangQualType ZigClangTypeOfType_getUnderlyingType(const struct ZigClangTypeOfType *);
+
+ZIG_EXTERN_C const struct ZigClangExpr *ZigClangTypeOfExprType_getUnderlyingExpr(const struct ZigClangTypeOfExprType *);
+
+ZIG_EXTERN_C enum ZigClangOffsetOfNode_Kind ZigClangOffsetOfNode_getKind(const struct ZigClangOffsetOfNode *);
+ZIG_EXTERN_C unsigned ZigClangOffsetOfNode_getArrayExprIndex(const struct ZigClangOffsetOfNode *);
+ZIG_EXTERN_C struct ZigClangFieldDecl * ZigClangOffsetOfNode_getField(const struct ZigClangOffsetOfNode *);
+
+ZIG_EXTERN_C unsigned ZigClangOffsetOfExpr_getNumComponents(const struct ZigClangOffsetOfExpr *);
+ZIG_EXTERN_C unsigned ZigClangOffsetOfExpr_getNumExpressions(const struct ZigClangOffsetOfExpr *);
+ZIG_EXTERN_C const struct ZigClangExpr *ZigClangOffsetOfExpr_getIndexExpr(const struct ZigClangOffsetOfExpr *, unsigned idx);
+ZIG_EXTERN_C const struct ZigClangOffsetOfNode *ZigClangOffsetOfExpr_getComponent(const struct ZigClangOffsetOfExpr *, unsigned idx);
+ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangOffsetOfExpr_getBeginLoc(const struct ZigClangOffsetOfExpr *);
+
 ZIG_EXTERN_C struct ZigClangQualType ZigClangElaboratedType_getNamedType(const struct ZigClangElaboratedType *);
 ZIG_EXTERN_C enum ZigClangElaboratedTypeKeyword ZigClangElaboratedType_getKeyword(const struct ZigClangElaboratedType *);
 
@@ -1199,6 +1221,8 @@ ZIG_EXTERN_C enum ZigClangUO ZigClangUnaryOperator_getOpcode(const struct ZigCla
 ZIG_EXTERN_C struct ZigClangQualType ZigClangUnaryOperator_getType(const struct ZigClangUnaryOperator *);
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangUnaryOperator_getSubExpr(const struct ZigClangUnaryOperator *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangUnaryOperator_getBeginLoc(const struct ZigClangUnaryOperator *);
+
+ZIG_EXTERN_C struct ZigClangQualType ZigClangValueDecl_getType(const struct ZigClangValueDecl *);
 
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangWhileStmt_getCond(const struct ZigClangWhileStmt *);
 ZIG_EXTERN_C const struct ZigClangStmt *ZigClangWhileStmt_getBody(const struct ZigClangWhileStmt *);
@@ -1254,6 +1278,7 @@ ZIG_EXTERN_C bool ZigClangFieldDecl_isBitField(const struct ZigClangFieldDecl *)
 ZIG_EXTERN_C bool ZigClangFieldDecl_isAnonymousStructOrUnion(const ZigClangFieldDecl *);
 ZIG_EXTERN_C struct ZigClangQualType ZigClangFieldDecl_getType(const struct ZigClangFieldDecl *);
 ZIG_EXTERN_C struct ZigClangSourceLocation ZigClangFieldDecl_getLocation(const struct ZigClangFieldDecl *);
+ZIG_EXTERN_C const struct ZigClangRecordDecl *ZigClangFieldDecl_getParent(const struct ZigClangFieldDecl *);
 
 ZIG_EXTERN_C const struct ZigClangExpr *ZigClangEnumConstantDecl_getInitExpr(const struct ZigClangEnumConstantDecl *);
 ZIG_EXTERN_C const struct ZigClangAPSInt *ZigClangEnumConstantDecl_getInitVal(const struct ZigClangEnumConstantDecl *);

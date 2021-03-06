@@ -360,14 +360,24 @@ pub const StackIterator = struct {
         };
     }
 
-    // Negative offset of the saved BP wrt the frame pointer.
+    // Offset of the saved BP wrt the frame pointer.
     const fp_offset = if (builtin.arch.isRISCV())
         // On RISC-V the frame pointer points to the top of the saved register
         // area, on pretty much every other architecture it points to the stack
         // slot where the previous frame pointer is saved.
         2 * @sizeOf(usize)
+    else if (builtin.arch.isSPARC())
+        // On SPARC the previous frame pointer is stored at 14 slots past %fp+BIAS.
+        14 * @sizeOf(usize)
     else
         0;
+
+    const fp_bias = if (builtin.arch.isSPARC())
+        // On SPARC frame pointers are biased by a constant.
+        2047
+    else
+        0;
+
     // Positive offset of the saved PC wrt the frame pointer.
     const pc_offset = if (builtin.arch == .powerpc64le)
         2 * @sizeOf(usize)
@@ -388,13 +398,17 @@ pub const StackIterator = struct {
     }
 
     fn next_internal(self: *StackIterator) ?usize {
-        const fp = math.sub(usize, self.fp, fp_offset) catch return null;
+        const fp = if (builtin.arch.isSPARC())
+            // On SPARC the offset is positive. (!)
+            math.add(usize, self.fp, fp_offset) catch return null
+        else
+            math.sub(usize, self.fp, fp_offset) catch return null;
 
         // Sanity check.
         if (fp == 0 or !mem.isAligned(fp, @alignOf(usize)))
             return null;
 
-        const new_fp = @intToPtr(*const usize, fp).*;
+        const new_fp = math.add(usize, @intToPtr(*const usize, fp).*, fp_bias) catch return null;
 
         // Sanity check: the stack grows down thus all the parent frames must be
         // be at addresses that are greater (or equal) than the previous one.
@@ -1125,12 +1139,15 @@ pub const DebugInfo = struct {
     }
 
     pub fn getModuleForAddress(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
-        if (comptime std.Target.current.isDarwin())
-            return self.lookupModuleDyld(address)
-        else if (builtin.os.tag == .windows)
-            return self.lookupModuleWin32(address)
-        else
+        if (comptime std.Target.current.isDarwin()) {
+            return self.lookupModuleDyld(address);
+        } else if (builtin.os.tag == .windows) {
+            return self.lookupModuleWin32(address);
+        } else if (builtin.os.tag == .haiku) {
+            return self.lookupModuleHaiku(address);
+        } else {
             return self.lookupModuleDl(address);
+        }
     }
 
     fn lookupModuleDyld(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
@@ -1335,6 +1352,10 @@ pub const DebugInfo = struct {
         try self.address_map.putNoClobber(ctx.base_address, obj_di);
 
         return obj_di;
+    }
+
+    fn lookupModuleHaiku(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
+        @panic("TODO implement lookup module for Haiku");
     }
 };
 

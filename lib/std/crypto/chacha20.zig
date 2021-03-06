@@ -35,7 +35,7 @@ const ChaCha20VecImpl = struct {
         };
     }
 
-    inline fn chacha20Core(x: *BlockVec, input: BlockVec) void {
+    fn chacha20Core(x: *BlockVec, input: BlockVec) callconv(.Inline) void {
         x.* = input;
 
         var r: usize = 0;
@@ -80,7 +80,7 @@ const ChaCha20VecImpl = struct {
         }
     }
 
-    inline fn hashToBytes(out: *[64]u8, x: BlockVec) void {
+    fn hashToBytes(out: *[64]u8, x: BlockVec) callconv(.Inline) void {
         var i: usize = 0;
         while (i < 4) : (i += 1) {
             mem.writeIntLittle(u32, out[16 * i + 0 ..][0..4], x[i][0]);
@@ -90,7 +90,7 @@ const ChaCha20VecImpl = struct {
         }
     }
 
-    inline fn contextFeedback(x: *BlockVec, ctx: BlockVec) void {
+    fn contextFeedback(x: *BlockVec, ctx: BlockVec) callconv(.Inline) void {
         x[0] +%= ctx[0];
         x[1] +%= ctx[1];
         x[2] +%= ctx[2];
@@ -190,7 +190,7 @@ const ChaCha20NonVecImpl = struct {
         };
     }
 
-    inline fn chacha20Core(x: *BlockVec, input: BlockVec) void {
+    fn chacha20Core(x: *BlockVec, input: BlockVec) callconv(.Inline) void {
         x.* = input;
 
         const rounds = comptime [_]QuarterRound{
@@ -219,7 +219,7 @@ const ChaCha20NonVecImpl = struct {
         }
     }
 
-    inline fn hashToBytes(out: *[64]u8, x: BlockVec) void {
+    fn hashToBytes(out: *[64]u8, x: BlockVec) callconv(.Inline) void {
         var i: usize = 0;
         while (i < 4) : (i += 1) {
             mem.writeIntLittle(u32, out[16 * i + 0 ..][0..4], x[i * 4 + 0]);
@@ -229,7 +229,7 @@ const ChaCha20NonVecImpl = struct {
         }
     }
 
-    inline fn contextFeedback(x: *BlockVec, ctx: BlockVec) void {
+    fn contextFeedback(x: *BlockVec, ctx: BlockVec) callconv(.Inline) void {
         var i: usize = 0;
         while (i < 16) : (i += 1) {
             x[i] +%= ctx[i];
@@ -876,7 +876,7 @@ test "crypto.xchacha20" {
         var ciphertext: [input.len]u8 = undefined;
         XChaCha20IETF.xor(ciphertext[0..], input[0..], 0, key, nonce);
         var buf: [2 * ciphertext.len]u8 = undefined;
-        testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{ciphertext}), "E0A1BCF939654AFDBDC1746EC49832647C19D891F0D1A81FC0C1703B4514BDEA584B512F6908C2C5E9DD18D5CBC1805DE5803FE3B9CA5F193FB8359E91FAB0C3BB40309A292EB1CF49685C65C4A3ADF4F11DB0CD2B6B67FBC174BC2E860E8F769FD3565BBFAD1C845E05A0FED9BE167C240D");
+        testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&ciphertext)}), "E0A1BCF939654AFDBDC1746EC49832647C19D891F0D1A81FC0C1703B4514BDEA584B512F6908C2C5E9DD18D5CBC1805DE5803FE3B9CA5F193FB8359E91FAB0C3BB40309A292EB1CF49685C65C4A3ADF4F11DB0CD2B6B67FBC174BC2E860E8F769FD3565BBFAD1C845E05A0FED9BE167C240D");
     }
     {
         const data = "Additional data";
@@ -885,7 +885,7 @@ test "crypto.xchacha20" {
         var out: [input.len]u8 = undefined;
         try xchacha20poly1305Open(out[0..], ciphertext[0..], data, key, nonce);
         var buf: [2 * ciphertext.len]u8 = undefined;
-        testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{ciphertext}), "994D2DD32333F48E53650C02C7A2ABB8E018B0836D7175AEC779F52E961780768F815C58F1AA52D211498DB89B9216763F569C9433A6BBFCEFB4D4A49387A4C5207FBB3B5A92B5941294DF30588C6740D39DC16FA1F0E634F7246CF7CDCB978E44347D89381B7A74EB7084F754B90BDE9AAF5A94B8F2A85EFD0B50692AE2D425E234");
+        testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&ciphertext)}), "994D2DD32333F48E53650C02C7A2ABB8E018B0836D7175AEC779F52E961780768F815C58F1AA52D211498DB89B9216763F569C9433A6BBFCEFB4D4A49387A4C5207FBB3B5A92B5941294DF30588C6740D39DC16FA1F0E634F7246CF7CDCB978E44347D89381B7A74EB7084F754B90BDE9AAF5A94B8F2A85EFD0B50692AE2D425E234");
         testing.expectEqualSlices(u8, out[0..], input);
         ciphertext[0] += 1;
         testing.expectError(error.AuthenticationFailed, xchacha20poly1305Open(out[0..], ciphertext[0..], data, key, nonce));
