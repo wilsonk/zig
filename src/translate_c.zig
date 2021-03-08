@@ -671,15 +671,6 @@ fn visitVarDecl(c: *Context, var_decl: *const clang.VarDecl, mangled_name: ?[]co
         break :blk null;
     };
 
-    const alignment = blk: {
-        const alignment = var_decl.getAlignedAttribute(c.clang_context);
-        if (alignment != 0) {
-            // Clang reports the alignment in bits
-            break :blk alignment / 8;
-        }
-        break :blk null;
-    };
-
     const node = try Tag.var_decl.create(c.arena, .{
         .is_pub = is_pub,
         .is_const = is_const,
@@ -687,7 +678,7 @@ fn visitVarDecl(c: *Context, var_decl: *const clang.VarDecl, mangled_name: ?[]co
         .is_export = is_export,
         .is_threadlocal = is_threadlocal,
         .linksection_string = linksection_string,
-        .alignment = alignment,
+        .alignment = zigAlignment(var_decl.getAlignedAttribute(c.clang_context)),
         .name = checked_name,
         .type = type_node,
         .init = init_node,
@@ -833,14 +824,7 @@ fn transRecordDecl(c: *Context, scope: *Scope, record_decl: *const clang.RecordD
                 else => |e| return e,
             };
 
-            const alignment = blk_2: {
-                const alignment = field_decl.getAlignedAttribute(c.clang_context);
-                if (alignment != 0) {
-                    // Clang reports the alignment in bits
-                    break :blk_2 alignment / 8;
-                }
-                break :blk_2 null;
-            };
+            const alignment = zigAlignment(field_decl.getAlignedAttribute(c.clang_context));
 
             if (is_anon) {
                 try c.decl_table.putNoClobber(c.gpa, @ptrToInt(field_decl.getCanonicalDecl()), field_name);
@@ -1127,6 +1111,22 @@ fn transOffsetOfExpr(
     return fail(c, error.UnsupportedTranslation, expr.getBeginLoc(), "TODO: implement complex OffsetOfExpr translation", .{});
 }
 
+/// Cast a signed integer node to a usize, for use in pointer arithmetic. Negative numbers
+/// will become very large positive numbers but that is ok since we only use this in
+/// pointer arithmetic expressions, where wraparound will ensure we get the correct value.
+/// node -> @bitCast(usize, @intCast(isize, node))
+fn usizeCastForWrappingPtrArithmetic(gpa: *mem.Allocator, node: Node) TransError!Node {
+    const intcast_node = try Tag.int_cast.create(gpa, .{
+        .lhs = try Tag.identifier.create(gpa, "isize"),
+        .rhs = node,
+    });
+
+    return Tag.bit_cast.create(gpa, .{
+        .lhs = try Tag.identifier.create(gpa, "usize"),
+        .rhs = intcast_node,
+    });
+}
+
 /// Translate an arithmetic expression with a pointer operand and a signed-integer operand.
 /// Zig requires a usize argument for pointer arithmetic, so we intCast to isize and then
 /// bitcast to usize; pointer wraparound make the math work.
@@ -1149,15 +1149,7 @@ fn transCreatePointerArithmeticSignedOp(
     const lhs_node = try transExpr(c, scope, swizzled_lhs, .used);
     const rhs_node = try transExpr(c, scope, swizzled_rhs, .used);
 
-    const intcast_node = try Tag.int_cast.create(c.arena, .{
-        .lhs = try Tag.identifier.create(c.arena, "isize"),
-        .rhs = rhs_node,
-    });
-
-    const bitcast_node = try Tag.bit_cast.create(c.arena, .{
-        .lhs = try Tag.identifier.create(c.arena, "usize"),
-        .rhs = intcast_node,
-    });
+    const bitcast_node = try usizeCastForWrappingPtrArithmetic(c.arena, rhs_node);
 
     const arith_args = .{ .lhs = lhs_node, .rhs = bitcast_node };
     const arith_node = try if (is_add) Tag.add.create(c.arena, arith_args) else Tag.sub.create(c.arena, arith_args);
@@ -1373,6 +1365,13 @@ fn transCStyleCastExprClass(
     return maybeSuppressResult(c, scope, result_used, cast_node);
 }
 
+/// Clang reports the alignment in bits, we use bytes
+/// Clang uses 0 for "no alignment specified", we use null
+fn zigAlignment(bit_alignment: c_uint) ?c_uint {
+    if (bit_alignment == 0) return null;
+    return bit_alignment / 8;
+}
+
 fn transDeclStmtOne(
     c: *Context,
     scope: *Scope,
@@ -1412,6 +1411,7 @@ fn transDeclStmtOne(
             if (!qualTypeIsBoolean(qual_type) and isBoolRes(init_node)) {
                 init_node = try Tag.bool_to_int.create(c.arena, init_node);
             }
+
             const node = try Tag.var_decl.create(c.arena, .{
                 .is_pub = false,
                 .is_const = is_const,
@@ -1419,7 +1419,7 @@ fn transDeclStmtOne(
                 .is_export = false,
                 .is_threadlocal = false,
                 .linksection_string = null,
-                .alignment = null,
+                .alignment = zigAlignment(var_decl.getAlignedAttribute(c.clang_context)),
                 .name = mangled_name,
                 .type = type_node,
                 .init = init_node,
@@ -1493,7 +1493,8 @@ fn transImplicitCastExpr(
             }
 
             const addr = try Tag.address_of.create(c.arena, try transExpr(c, scope, sub_expr, .used));
-            return maybeSuppressResult(c, scope, result_used, addr);
+            const casted = try transCPtrCast(c, scope, expr.getBeginLoc(), dest_type, src_type, addr);
+            return maybeSuppressResult(c, scope, result_used, casted);
         },
         .NullToPointer => {
             return Tag.null_literal.init();
@@ -3043,6 +3044,7 @@ fn transCreateCompoundAssign(
     const lhs_qt = getExprQualType(c, lhs);
     const rhs_qt = getExprQualType(c, rhs);
     const is_signed = cIsSignedInteger(lhs_qt);
+    const is_ptr_op_signed = qualTypeIsPtr(lhs_qt) and cIsSignedInteger(rhs_qt);
     const requires_int_cast = blk: {
         const are_integers = cIsInteger(lhs_qt) and cIsInteger(rhs_qt);
         const are_same_sign = cIsSignedInteger(lhs_qt) == cIsSignedInteger(rhs_qt);
@@ -3068,6 +3070,10 @@ fn transCreateCompoundAssign(
             try transExprCoercing(c, scope, rhs, .used)
         else
             try transExpr(c, scope, rhs, .used);
+
+        if (is_ptr_op_signed) {
+            rhs_node = try usizeCastForWrappingPtrArithmetic(c.arena, rhs_node);
+        }
 
         if (is_shift or requires_int_cast) {
             // @intCast(rhs)
@@ -3121,6 +3127,9 @@ fn transCreateCompoundAssign(
 
             rhs_node = try Tag.int_cast.create(c.arena, .{ .lhs = cast_to_type, .rhs = rhs_node });
         }
+        if (is_ptr_op_signed) {
+            rhs_node = try usizeCastForWrappingPtrArithmetic(c.arena, rhs_node);
+        }
 
         const assign = try transCreateNodeInfixOp(c, &block_scope.base, op, ref_node, rhs_node, .used);
         try block_scope.statements.append(assign);
@@ -3148,10 +3157,10 @@ fn transCPtrCast(
     const src_child_type = src_ty.getPointeeType();
     const dst_type_node = try transType(c, scope, ty, loc);
 
-    if ((src_child_type.isConstQualified() and
+    if (!src_ty.isArrayType() and ((src_child_type.isConstQualified() and
         !child_type.isConstQualified()) or
         (src_child_type.isVolatileQualified() and
-        !child_type.isVolatileQualified()))
+        !child_type.isVolatileQualified())))
     {
         // Casting away const or volatile requires us to use @intToPtr
         const ptr_to_int = try Tag.ptr_to_int.create(c.arena, expr);
@@ -4111,16 +4120,7 @@ fn finishTransFnProto(
         break :blk null;
     };
 
-    const alignment = blk: {
-        if (fn_decl) |decl| {
-            const alignment = decl.getAlignedAttribute(c.clang_context);
-            if (alignment != 0) {
-                // Clang reports the alignment in bits
-                break :blk alignment / 8;
-            }
-        }
-        break :blk null;
-    };
+    const alignment = if (fn_decl) |decl| zigAlignment(decl.getAlignedAttribute(c.clang_context)) else null;
 
     const explicit_callconv = if ((is_export or is_extern) and cc == .C) null else cc;
 

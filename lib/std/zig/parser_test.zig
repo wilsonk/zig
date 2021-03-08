@@ -852,6 +852,7 @@ test "zig fmt: slices" {
     try testCanonical(
         \\const a = b[0..];
         \\const c = d[0..1];
+        \\const d = f[0.. :0];
         \\const e = f[0..1 :0];
         \\
     );
@@ -861,6 +862,7 @@ test "zig fmt: slices with spaces in bounds" {
     try testCanonical(
         \\const a = b[0 + 0 ..];
         \\const c = d[0 + 0 .. 1];
+        \\const c = d[0 + 0 .. :0];
         \\const e = f[0 .. 1 + 1 :0];
         \\
     );
@@ -4293,6 +4295,18 @@ test "zig fmt: respect extra newline between switch items" {
         \\    .e,
         \\    => f,
         \\};
+        \\
+    );
+}
+
+test "zig fmt: assignment with inline for and inline while" {
+    try testCanonical(
+        \\const tmp = inline for (items) |item| {};
+        \\
+    );
+
+    try testCanonical(
+        \\const tmp2 = inline while (true) {};
         \\
     );
 }
