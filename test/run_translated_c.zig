@@ -3,6 +3,17 @@ const tests = @import("tests.zig");
 const nl = std.cstr.line_sep;
 
 pub fn addCases(cases: *tests.RunTranslatedCContext) void {
+    cases.add("division of floating literals",
+        \\#define _NO_CRT_STDIO_INLINE 1
+        \\#include <stdio.h>
+        \\#define PI 3.14159265358979323846f
+        \\#define DEG2RAD (PI/180.0f)
+        \\int main(void) {
+        \\    printf("DEG2RAD is: %f\n", DEG2RAD);
+        \\    return 0;
+        \\}
+    , "DEG2RAD is: 0.017453" ++ nl);
+
     cases.add("use global scope for record/enum/typedef type transalation if needed",
         \\void bar(void);
         \\void baz(void);
@@ -1184,6 +1195,66 @@ pub fn addCases(cases: *tests.RunTranslatedCContext) void {
         \\    int x = 1, y = 2;
         \\    foo = (struct Foo) {x + y, {'a', 'b'}, 42.0f};
         \\    if (foo.a != x + y || foo.b[0] != 'a' || foo.b[1] != 'b' || foo.c != 42.0f) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Generic selections",
+        \\#include <stdlib.h>
+        \\#include <string.h>
+        \\#include <stdint.h>
+        \\#define my_generic_fn(X) _Generic((X),    \
+        \\              int: abs,                   \
+        \\              char *: strlen,             \
+        \\              size_t: malloc,             \
+        \\              default: free               \
+        \\)(X)
+        \\#define my_generic_val(X) _Generic((X),   \
+        \\              int: 1,                     \
+        \\              const char *: "bar"         \
+        \\)
+        \\int main(void) {
+        \\    if (my_generic_val(100) != 1) abort();
+        \\
+        \\    const char *foo = "foo";
+        \\    const char *bar = my_generic_val(foo);
+        \\    if (strcmp(bar, "bar") != 0) abort();
+        \\
+        \\    if (my_generic_fn(-42) != 42) abort();
+        \\    if (my_generic_fn("hello") != 5) abort();
+        \\
+        \\    size_t size = 8192;
+        \\    uint8_t *mem = my_generic_fn(size);
+        \\    memset(mem, 42, size);
+        \\    if (mem[size - 1] != 42) abort();
+        \\    my_generic_fn(mem);
+        \\
+        \\    return 0;
+        \\}
+    , "");
+
+    // See __builtin_alloca_with_align comment in std.c.builtins
+    cases.add("use of unimplemented builtin in unused function does not prevent compilation",
+        \\#include <stdlib.h>
+        \\void unused() {
+        \\    __builtin_alloca_with_align(1, 8);
+        \\}
+        \\int main(void) {
+        \\    if (__builtin_sqrt(1.0) != 1.0) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("convert single-statement bodies into blocks for if/else/for/while. issue #8159",
+        \\#include <stdlib.h>
+        \\int foo() { return 1; }
+        \\int main(void) {
+        \\    int i = 0;
+        \\    if (i == 0) if (i == 0) if (i != 0) i = 1;
+        \\    if (i != 0) i = 1; else if (i == 0) if (i == 0) i += 1;
+        \\    for (; i < 10;) for (; i < 10;) i++;
+        \\    while (i == 100) while (i == 100) foo();
+        \\    if (0) do do "string"; while(1); while(1);
         \\    return 0;
         \\}
     , "");
