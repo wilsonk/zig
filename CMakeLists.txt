@@ -25,8 +25,8 @@ project(zig C CXX)
 set(CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 
 set(ZIG_VERSION_MAJOR 0)
-set(ZIG_VERSION_MINOR 7)
-set(ZIG_VERSION_PATCH 1)
+set(ZIG_VERSION_MINOR 8)
+set(ZIG_VERSION_PATCH 0)
 set(ZIG_VERSION "" CACHE STRING "Override Zig version string. Default is to find out with git.")
 
 if("${ZIG_VERSION}" STREQUAL "")
@@ -34,18 +34,31 @@ if("${ZIG_VERSION}" STREQUAL "")
     find_program(GIT_EXE NAMES git)
     if(GIT_EXE)
         execute_process(
-            COMMAND ${GIT_EXE} -C ${CMAKE_SOURCE_DIR} name-rev HEAD --tags --name-only --no-undefined --always
+            COMMAND ${GIT_EXE} -C ${CMAKE_SOURCE_DIR} describe --match *.*.* --tags
             RESULT_VARIABLE EXIT_STATUS
-            OUTPUT_VARIABLE ZIG_GIT_REV
+            OUTPUT_VARIABLE GIT_DESCRIBE
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET)
         if(EXIT_STATUS EQUAL "0")
-            if(ZIG_GIT_REV MATCHES "\\^0$")
-                if(NOT("${ZIG_GIT_REV}" STREQUAL "${ZIG_VERSION}^0"))
-                    message("WARNING: Tag does not match configured Zig version")
+            if(GIT_DESCRIBE MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)$")
+                # Tagged release version.
+                set(GIT_TAG ${CMAKE_MATCH_1})
+                if(NOT GIT_TAG VERSION_EQUAL ZIG_VERSION)
+                    message(SEND_ERROR "Zig version (${ZIG_VERSION}) does not match Git tag (${GIT_TAG}).")
                 endif()
+            elseif(GIT_DESCRIBE MATCHES "^v?([0-9]+\\.[0-9]+\\.[0-9]+)-([0-9]+)-g(.+)$")
+                # Untagged pre-release. The Zig version is updated to include the number of commits
+                # since the last tagged version and the commit hash. The version is formatted in
+                # accordance with the https://semver.org specification.
+                set(GIT_TAG ${CMAKE_MATCH_1})
+                set(GIT_COMMITS_AFTER_TAG ${CMAKE_MATCH_2})
+                set(GIT_COMMIT ${CMAKE_MATCH_3})
+                if(NOT ZIG_VERSION VERSION_GREATER GIT_TAG)
+                    message(SEND_ERROR "Zig version (${ZIG_VERSION}) must be greater than tagged ancestor (${GIT_TAG}).")
+                endif()
+                set(ZIG_VERSION "${ZIG_VERSION}-dev.${GIT_COMMITS_AFTER_TAG}+${GIT_COMMIT}")
             else()
-                set(ZIG_VERSION "${ZIG_VERSION}+${ZIG_GIT_REV}")
+                message(WARNING "Failed to parse version from output of `git describe`.")
             endif()
         endif()
     endif()
@@ -74,8 +87,15 @@ option(ZIG_TEST_COVERAGE "Build Zig with test coverage instrumentation" OFF)
 set(ZIG_TARGET_TRIPLE "native" CACHE STRING "arch-os-abi to output binaries for")
 set(ZIG_TARGET_MCPU "baseline" CACHE STRING "-mcpu parameter to output binaries for")
 set(ZIG_EXECUTABLE "" CACHE STRING "(when cross compiling) path to already-built zig binary")
-set(ZIG_PREFER_LLVM_CONFIG off CACHE BOOL "(when cross compiling) use llvm-config to find target llvm dependencies if needed")
 set(ZIG_SINGLE_THREADED off CACHE BOOL "limit the zig compiler to use only 1 thread")
+set(ZIG_OMIT_STAGE2 off CACHE BOOL "omit the stage2 backend from stage1")
+set(ZIG_ENABLE_LOGGING off CACHE BOOL "enable logging")
+
+if("${ZIG_TARGET_TRIPLE}" STREQUAL "native")
+    set(ZIG_USE_LLVM_CONFIG ON CACHE BOOL "use llvm-config to find LLVM libraries")
+else()
+    set(ZIG_USE_LLVM_CONFIG OFF CACHE BOOL "use llvm-config to find LLVM libraries")
+endif()
 
 find_package(llvm)
 find_package(clang)
@@ -320,7 +340,6 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/atomic/int.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/atomic/queue.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/atomic/stack.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/auto_reset_event.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/base64.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/buf_map.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/builtin.zig"
@@ -357,14 +376,14 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/heap.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/heap/arena_allocator.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/io/auto_indenting_stream.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/buffered_atomic_file.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/buffered_writer.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/change_detection_stream.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/io/counting_writer.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/counting_reader.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/io/find_byte_out_stream.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/io/counting_writer.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/io/find_byte_writer.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/fixed_buffer_stream.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/io/limited_reader.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/reader.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/seekable_stream.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/io/writer.zig"
@@ -394,7 +413,7 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/meta.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/meta/trailer_flags.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/meta/trait.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/mutex.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/multi_array_list.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/bits.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/bits/linux.zig"
@@ -411,8 +430,6 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/os/windows/ntstatus.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/os/windows/win32error.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/Progress.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/ResetEvent.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/StaticResetEvent.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/pdb.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/process.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/rand.zig"
@@ -479,7 +496,6 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/udivmodti4.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/udivti3.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/special/compiler_rt/umodti3.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/spinlock.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/start.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/std.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target.zig"
@@ -498,7 +514,11 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/lib/std/target/systemz.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target/wasm.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/target/x86.zig"
-    "${CMAKE_SOURCE_DIR}/lib/std/thread.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/AutoResetEvent.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/Mutex.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/ResetEvent.zig"
+    "${CMAKE_SOURCE_DIR}/lib/std/Thread/StaticResetEvent.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/time.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/unicode.zig"
     "${CMAKE_SOURCE_DIR}/lib/std/zig.zig"
@@ -519,7 +539,7 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/ThreadPool.zig"
     "${CMAKE_SOURCE_DIR}/src/TypedValue.zig"
     "${CMAKE_SOURCE_DIR}/src/WaitGroup.zig"
-    "${CMAKE_SOURCE_DIR}/src/astgen.zig"
+    "${CMAKE_SOURCE_DIR}/src/AstGen.zig"
     "${CMAKE_SOURCE_DIR}/src/clang.zig"
     "${CMAKE_SOURCE_DIR}/src/clang_options.zig"
     "${CMAKE_SOURCE_DIR}/src/clang_options_data.zig"
@@ -528,6 +548,7 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/codegen/arm.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/c.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/llvm.zig"
+    "${CMAKE_SOURCE_DIR}/src/codegen/llvm/bindings.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/riscv64.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/spu-mk2.zig"
     "${CMAKE_SOURCE_DIR}/src/codegen/wasm.zig"
@@ -544,12 +565,18 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/link/Coff.zig"
     "${CMAKE_SOURCE_DIR}/src/link/Elf.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/Archive.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/CodeSignature.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/DebugSymbols.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/Object.zig"
     "${CMAKE_SOURCE_DIR}/src/link/MachO/Trie.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/Zld.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/bind.zig"
+    "${CMAKE_SOURCE_DIR}/src/link/MachO/commands.zig"
     "${CMAKE_SOURCE_DIR}/src/link/Wasm.zig"
-    "${CMAKE_SOURCE_DIR}/src/link/cbe.h"
+    "${CMAKE_SOURCE_DIR}/src/link/C/zig.h"
     "${CMAKE_SOURCE_DIR}/src/link/msdos-stub.bin"
     "${CMAKE_SOURCE_DIR}/src/liveness.zig"
-    "${CMAKE_SOURCE_DIR}/src/llvm.zig"
     "${CMAKE_SOURCE_DIR}/src/main.zig"
     "${CMAKE_SOURCE_DIR}/src/mingw.zig"
     "${CMAKE_SOURCE_DIR}/src/musl.zig"
@@ -559,11 +586,12 @@ set(ZIG_STAGE2_SOURCES
     "${CMAKE_SOURCE_DIR}/src/target.zig"
     "${CMAKE_SOURCE_DIR}/src/tracy.zig"
     "${CMAKE_SOURCE_DIR}/src/translate_c.zig"
+    "${CMAKE_SOURCE_DIR}/src/translate_c/ast.zig"
     "${CMAKE_SOURCE_DIR}/src/type.zig"
     "${CMAKE_SOURCE_DIR}/src/value.zig"
     "${CMAKE_SOURCE_DIR}/src/windows_sdk.zig"
     "${CMAKE_SOURCE_DIR}/src/zir.zig"
-    "${CMAKE_SOURCE_DIR}/src/zir_sema.zig"
+    "${CMAKE_SOURCE_DIR}/src/Sema.zig"
 )
 
 if(MSVC)
@@ -572,6 +600,18 @@ if(MSVC)
         set(ZIG_DIA_GUIDS_LIB "${MSVC_DIA_SDK_DIR}/lib/amd64/diaguids.lib")
         string(REGEX REPLACE "\\\\" "\\\\\\\\" ZIG_DIA_GUIDS_LIB_ESCAPED "${ZIG_DIA_GUIDS_LIB}")
     endif()
+endif()
+
+if(ZIG_OMIT_STAGE2)
+  set(ZIG_OMIT_STAGE2_BOOL "true")
+else()
+  set(ZIG_OMIT_STAGE2_BOOL "false")
+endif()
+
+if(ZIG_ENABLE_LOGGING)
+  set(ZIG_ENABLE_LOGGING_BOOL "true")
+else()
+  set(ZIG_ENABLE_LOGGING_BOOL "false")
 endif()
 
 configure_file (
@@ -702,12 +742,14 @@ if(MSVC OR MINGW)
     target_link_libraries(zigstage1 LINK_PUBLIC version)
 endif()
 
-add_executable(zig0 ${ZIG0_SOURCES})
-set_target_properties(zig0 PROPERTIES
-    COMPILE_FLAGS ${EXE_CFLAGS}
-    LINK_FLAGS ${EXE_LDFLAGS}
-)
-target_link_libraries(zig0 zigstage1)
+if("${ZIG_EXECUTABLE}" STREQUAL "")
+  add_executable(zig0 ${ZIG0_SOURCES})
+  set_target_properties(zig0 PROPERTIES
+      COMPILE_FLAGS ${EXE_CFLAGS}
+      LINK_FLAGS ${EXE_LDFLAGS}
+  )
+  target_link_libraries(zig0 zigstage1)
+endif()
 
 if(MSVC)
     set(ZIG1_OBJECT "${CMAKE_BINARY_DIR}/zig1.obj")
@@ -756,7 +798,6 @@ if("${ZIG_EXECUTABLE}" STREQUAL "")
 else()
   add_custom_command(
       OUTPUT "${ZIG1_OBJECT}"
-      BYPRODUCTS "${ZIG1_OBJECT}"
       COMMAND "${ZIG_EXECUTABLE}" "build-obj" ${BUILD_ZIG1_ARGS}
       DEPENDS ${ZIG_STAGE2_SOURCES}
       COMMENT STATUS "Building self-hosted component ${ZIG1_OBJECT}"
@@ -780,31 +821,32 @@ endif()
 
 install(TARGETS zig DESTINATION bin)
 
-set(ZIG_INSTALL_ARGS "build"
-    --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
-    "-Dlib-files-only"
-    --prefix "${CMAKE_INSTALL_PREFIX}"
-    "-Dconfig_h=${ZIG_CONFIG_H_OUT}"
-    install
-)
+set(ZIG_SKIP_INSTALL_LIB_FILES off CACHE BOOL
+    "Disable copying lib/ files to install prefix during the build phase")
 
-# CODE has no effect with Visual Studio build system generator, therefore
-# when using Visual Studio build system generator we resort to running
-# `zig build install` during the build phase.
-if(MSVC)
-    set(ZIG_SKIP_INSTALL_LIB_FILES off CACHE BOOL
-        "Windows-only: Disable copying lib/ files to install prefix during the build phase")
-    if(NOT ZIG_SKIP_INSTALL_LIB_FILES)
+if(NOT ZIG_SKIP_INSTALL_LIB_FILES)
+    set(ZIG_INSTALL_ARGS "build"
+        --override-lib-dir "${CMAKE_SOURCE_DIR}/lib"
+        "-Dlib-files-only"
+        --prefix "${CMAKE_INSTALL_PREFIX}"
+        "-Dconfig_h=${ZIG_CONFIG_H_OUT}"
+        install
+    )
+
+    # CODE has no effect with Visual Studio build system generator, therefore
+    # when using Visual Studio build system generator we resort to running
+    # `zig build install` during the build phase.
+    if(MSVC)
         add_custom_target(zig_install_lib_files ALL
             COMMAND zig ${ZIG_INSTALL_ARGS}
             DEPENDS zig
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         )
+    else()
+        get_target_property(zig_BINARY_DIR zig BINARY_DIR)
+        install(CODE "set(zig_EXE \"${ZIG_EXECUTABLE}\")")
+        install(CODE "set(ZIG_INSTALL_ARGS \"${ZIG_INSTALL_ARGS}\")")
+        install(CODE "set(CMAKE_SOURCE_DIR \"${CMAKE_SOURCE_DIR}\")")
+        install(SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/install.cmake)
     endif()
-else()
-    get_target_property(zig_BINARY_DIR zig BINARY_DIR)
-    install(CODE "set(zig_EXE \"${ZIG_EXECUTABLE}\")")
-    install(CODE "set(ZIG_INSTALL_ARGS \"${ZIG_INSTALL_ARGS}\")")
-    install(CODE "set(CMAKE_SOURCE_DIR \"${CMAKE_SOURCE_DIR}\")")
-    install(SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/cmake/install.cmake)
 endif()

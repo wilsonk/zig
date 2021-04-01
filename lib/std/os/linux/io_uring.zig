@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -28,7 +28,7 @@ pub const IO_Uring = struct {
     /// call on how many entries the submission and completion queues will ultimately have,
     /// see https://github.com/torvalds/linux/blob/v5.8/fs/io_uring.c#L8027-L8050.
     /// Matches the interface of io_uring_queue_init() in liburing.
-    pub fn init(entries: u12, flags: u32) !IO_Uring {
+    pub fn init(entries: u13, flags: u32) !IO_Uring {
         var params = mem.zeroInit(io_uring_params, .{
             .flags = flags,
             .sq_thread_idle = 1000,
@@ -39,17 +39,15 @@ pub const IO_Uring = struct {
     /// A powerful way to setup an io_uring, if you want to tweak io_uring_params such as submission
     /// queue thread cpu affinity or thread idle timeout (the kernel and our default is 1 second).
     /// `params` is passed by reference because the kernel needs to modify the parameters.
-    /// You may only set the `flags`, `sq_thread_cpu` and `sq_thread_idle` parameters.
-    /// Every other parameter belongs to the kernel and must be zeroed.
     /// Matches the interface of io_uring_queue_init_params() in liburing.
-    pub fn init_params(entries: u12, p: *io_uring_params) !IO_Uring {
+    pub fn init_params(entries: u13, p: *io_uring_params) !IO_Uring {
         if (entries == 0) return error.EntriesZero;
         if (!std.math.isPowerOfTwo(entries)) return error.EntriesNotPowerOfTwo;
 
         assert(p.sq_entries == 0);
-        assert(p.cq_entries == 0);
+        assert(p.cq_entries == 0 or p.flags & linux.IORING_SETUP_CQSIZE != 0);
         assert(p.features == 0);
-        assert(p.wq_fd == 0);
+        assert(p.wq_fd == 0 or p.flags & linux.IORING_SETUP_ATTACH_WQ != 0);
         assert(p.resv[0] == 0);
         assert(p.resv[1] == 0);
         assert(p.resv[2] == 0);
@@ -165,9 +163,9 @@ pub const IO_Uring = struct {
     /// Returns the number of SQEs submitted.
     /// Matches the implementation of io_uring_submit_and_wait() in liburing.
     pub fn submit_and_wait(self: *IO_Uring, wait_nr: u32) !u32 {
-        var submitted = self.flush_sq();
+        const submitted = self.flush_sq();
         var flags: u32 = 0;
-        if (self.sq_ring_needs_enter(submitted, &flags) or wait_nr > 0) {
+        if (self.sq_ring_needs_enter(&flags) or wait_nr > 0) {
             if (wait_nr > 0 or (self.flags & linux.IORING_SETUP_IOPOLL) != 0) {
                 flags |= linux.IORING_ENTER_GETEVENTS;
             }
@@ -238,9 +236,9 @@ pub const IO_Uring = struct {
     /// or if IORING_SQ_NEED_WAKEUP is set and the SQ thread must be explicitly awakened.
     /// For the latter case, we set the SQ thread wakeup flag.
     /// Matches the implementation of sq_ring_needs_enter() in liburing.
-    pub fn sq_ring_needs_enter(self: *IO_Uring, submitted: u32, flags: *u32) bool {
+    pub fn sq_ring_needs_enter(self: *IO_Uring, flags: *u32) bool {
         assert(flags.* == 0);
-        if ((self.flags & linux.IORING_SETUP_SQPOLL) == 0 and submitted > 0) return true;
+        if ((self.flags & linux.IORING_SETUP_SQPOLL) == 0) return true;
         if ((@atomicLoad(u32, self.sq.flags, .Unordered) & linux.IORING_SQ_NEED_WAKEUP) != 0) {
             flags.* |= linux.IORING_ENTER_SQ_WAKEUP;
             return true;
@@ -528,7 +526,7 @@ pub const IO_Uring = struct {
     pub fn timeout(
         self: *IO_Uring,
         user_data: u64,
-        ts: *const os.timespec,
+        ts: *const os.__kernel_timespec,
         count: u32,
         flags: u32,
     ) !*io_uring_sqe {
@@ -554,6 +552,22 @@ pub const IO_Uring = struct {
     ) !*io_uring_sqe {
         const sqe = try self.get_sqe();
         io_uring_prep_timeout_remove(sqe, timeout_user_data, flags);
+        sqe.user_data = user_data;
+        return sqe;
+    }
+
+    /// Queues (but does not submit) an SQE to perform an `fallocate(2)`.
+    /// Returns a pointer to the SQE.
+    pub fn fallocate(
+        self: *IO_Uring,
+        user_data: u64,
+        fd: os.fd_t,
+        mode: i32,
+        offset: u64,
+        len: u64,
+    ) !*io_uring_sqe {
+        const sqe = try self.get_sqe();
+        io_uring_prep_fallocate(sqe, fd, mode, offset, len);
         sqe.user_data = user_data;
         return sqe;
     }
@@ -870,7 +884,7 @@ pub fn io_uring_prep_close(sqe: *io_uring_sqe, fd: os.fd_t) void {
 
 pub fn io_uring_prep_timeout(
     sqe: *io_uring_sqe,
-    ts: *const os.timespec,
+    ts: *const os.__kernel_timespec,
     count: u32,
     flags: u32,
 ) void {
@@ -888,6 +902,30 @@ pub fn io_uring_prep_timeout_remove(sqe: *io_uring_sqe, timeout_user_data: u64, 
         .addr = timeout_user_data,
         .len = 0,
         .rw_flags = flags,
+        .user_data = 0,
+        .buf_index = 0,
+        .personality = 0,
+        .splice_fd_in = 0,
+        .__pad2 = [2]u64{ 0, 0 },
+    };
+}
+
+pub fn io_uring_prep_fallocate(
+    sqe: *io_uring_sqe,
+    fd: os.fd_t,
+    mode: i32,
+    offset: u64,
+    len: u64,
+) void {
+    sqe.* = .{
+        .opcode = .FALLOCATE,
+        .flags = 0,
+        .ioprio = 0,
+        .fd = fd,
+        .off = offset,
+        .addr = len,
+        .len = @intCast(u32, mode),
+        .rw_flags = 0,
         .user_data = 0,
         .buf_index = 0,
         .personality = 0,
@@ -1301,7 +1339,7 @@ test "timeout (after a relative time)" {
 
     const ms = 10;
     const margin = 5;
-    const ts = os.timespec{ .tv_sec = 0, .tv_nsec = ms * 1000000 };
+    const ts = os.__kernel_timespec{ .tv_sec = 0, .tv_nsec = ms * 1000000 };
 
     const started = std.time.milliTimestamp();
     const sqe = try ring.timeout(0x55555555, &ts, 0, 0);
@@ -1315,7 +1353,7 @@ test "timeout (after a relative time)" {
         .res = -linux.ETIME,
         .flags = 0,
     }, cqe);
-    testing.expectWithinMargin(@intToFloat(f64, ms), @intToFloat(f64, stopped - started), margin);
+    testing.expectApproxEqAbs(@intToFloat(f64, ms), @intToFloat(f64, stopped - started), margin);
 }
 
 test "timeout (after a number of completions)" {
@@ -1328,7 +1366,7 @@ test "timeout (after a number of completions)" {
     };
     defer ring.deinit();
 
-    const ts = os.timespec{ .tv_sec = 3, .tv_nsec = 0 };
+    const ts = os.__kernel_timespec{ .tv_sec = 3, .tv_nsec = 0 };
     const count_completions: u64 = 1;
     const sqe_timeout = try ring.timeout(0x66666666, &ts, count_completions, 0);
     testing.expectEqual(linux.IORING_OP.TIMEOUT, sqe_timeout.opcode);
@@ -1361,7 +1399,7 @@ test "timeout_remove" {
     };
     defer ring.deinit();
 
-    const ts = os.timespec{ .tv_sec = 3, .tv_nsec = 0 };
+    const ts = os.__kernel_timespec{ .tv_sec = 3, .tv_nsec = 0 };
     const sqe_timeout = try ring.timeout(0x88888888, &ts, 0, 0);
     testing.expectEqual(linux.IORING_OP.TIMEOUT, sqe_timeout.opcode);
     testing.expectEqual(@as(u64, 0x88888888), sqe_timeout.user_data);
@@ -1396,4 +1434,48 @@ test "timeout_remove" {
         .res = 0,
         .flags = 0,
     }, cqe_timeout_remove);
+}
+
+test "fallocate" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    var ring = IO_Uring.init(1, 0) catch |err| switch (err) {
+        error.SystemOutdated => return error.SkipZigTest,
+        error.PermissionDenied => return error.SkipZigTest,
+        else => return err,
+    };
+    defer ring.deinit();
+
+    const path = "test_io_uring_fallocate";
+    const file = try std.fs.cwd().createFile(path, .{ .truncate = true, .mode = 0o666 });
+    defer file.close();
+    defer std.fs.cwd().deleteFile(path) catch {};
+
+    testing.expectEqual(@as(u64, 0), (try file.stat()).size);
+
+    const len: u64 = 65536;
+    const sqe = try ring.fallocate(0xaaaaaaaa, file.handle, 0, 0, len);
+    testing.expectEqual(linux.IORING_OP.FALLOCATE, sqe.opcode);
+    testing.expectEqual(file.handle, sqe.fd);
+    testing.expectEqual(@as(u32, 1), try ring.submit());
+
+    const cqe = try ring.copy_cqe();
+    switch (-cqe.res) {
+        0 => {},
+        // This kernel's io_uring does not yet implement fallocate():
+        linux.EINVAL => return error.SkipZigTest,
+        // This kernel does not implement fallocate():
+        linux.ENOSYS => return error.SkipZigTest,
+        // The filesystem containing the file referred to by fd does not support this operation;
+        // or the mode is not supported by the filesystem containing the file referred to by fd:
+        linux.EOPNOTSUPP => return error.SkipZigTest,
+        else => |errno| std.debug.panic("unhandled errno: {}", .{errno}),
+    }
+    testing.expectEqual(linux.io_uring_cqe{
+        .user_data = 0xaaaaaaaa,
+        .res = 0,
+        .flags = 0,
+    }, cqe);
+
+    testing.expectEqual(len, (try file.stat()).size);
 }

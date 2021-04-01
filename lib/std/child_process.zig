@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -186,6 +186,58 @@ pub const ChildProcess = struct {
 
     pub const exec2 = @compileError("deprecated: exec2 is renamed to exec");
 
+    fn collectOutputPosix(
+        child: *const ChildProcess,
+        stdout: *std.ArrayList(u8),
+        stderr: *std.ArrayList(u8),
+        max_output_bytes: usize,
+    ) !void {
+        var poll_fds = [_]os.pollfd{
+            .{ .fd = child.stdout.?.handle, .events = os.POLLIN, .revents = undefined },
+            .{ .fd = child.stderr.?.handle, .events = os.POLLIN, .revents = undefined },
+        };
+
+        var dead_fds: usize = 0;
+        // We ask for ensureCapacity with this much extra space. This has more of an
+        // effect on small reads because once the reads start to get larger the amount
+        // of space an ArrayList will allocate grows exponentially.
+        const bump_amt = 512;
+
+        while (dead_fds < poll_fds.len) {
+            const events = try os.poll(&poll_fds, std.math.maxInt(i32));
+            if (events == 0) continue;
+
+            // Try reading whatever is available before checking the error
+            // conditions.
+            if (poll_fds[0].revents & os.POLLIN != 0) {
+                // stdout is ready.
+                const new_capacity = std.math.min(stdout.items.len + bump_amt, max_output_bytes);
+                try stdout.ensureCapacity(new_capacity);
+                const buf = stdout.unusedCapacitySlice();
+                if (buf.len == 0) return error.StdoutStreamTooLong;
+                stdout.items.len += try os.read(poll_fds[0].fd, buf);
+            }
+            if (poll_fds[1].revents & os.POLLIN != 0) {
+                // stderr is ready.
+                const new_capacity = std.math.min(stderr.items.len + bump_amt, max_output_bytes);
+                try stderr.ensureCapacity(new_capacity);
+                const buf = stderr.unusedCapacitySlice();
+                if (buf.len == 0) return error.StderrStreamTooLong;
+                stderr.items.len += try os.read(poll_fds[1].fd, buf);
+            }
+
+            // Exclude the fds that signaled an error.
+            if (poll_fds[0].revents & (os.POLLERR | os.POLLNVAL | os.POLLHUP) != 0) {
+                poll_fds[0].fd = -1;
+                dead_fds += 1;
+            }
+            if (poll_fds[1].revents & (os.POLLERR | os.POLLNVAL | os.POLLHUP) != 0) {
+                poll_fds[1].fd = -1;
+                dead_fds += 1;
+            }
+        }
+    }
+
     /// Spawns a child process, waits for it, collecting stdout and stderr, and then returns.
     /// If it succeeds, the caller owns result.stdout and result.stderr memory.
     pub fn exec(args: struct {
@@ -210,19 +262,33 @@ pub const ChildProcess = struct {
 
         try child.spawn();
 
-        const stdout_in = child.stdout.?.reader();
-        const stderr_in = child.stderr.?.reader();
+        // TODO collect output in a deadlock-avoiding way on Windows.
+        // https://github.com/ziglang/zig/issues/6343
+        if (builtin.os.tag == .windows) {
+            const stdout_in = child.stdout.?.reader();
+            const stderr_in = child.stderr.?.reader();
 
-        // TODO https://github.com/ziglang/zig/issues/6343
-        const stdout = try stdout_in.readAllAlloc(args.allocator, args.max_output_bytes);
-        errdefer args.allocator.free(stdout);
-        const stderr = try stderr_in.readAllAlloc(args.allocator, args.max_output_bytes);
-        errdefer args.allocator.free(stderr);
+            const stdout = try stdout_in.readAllAlloc(args.allocator, args.max_output_bytes);
+            errdefer args.allocator.free(stdout);
+            const stderr = try stderr_in.readAllAlloc(args.allocator, args.max_output_bytes);
+            errdefer args.allocator.free(stderr);
+
+            return ExecResult{
+                .term = try child.wait(),
+                .stdout = stdout,
+                .stderr = stderr,
+            };
+        }
+
+        var stdout = std.ArrayList(u8).init(args.allocator);
+        var stderr = std.ArrayList(u8).init(args.allocator);
+
+        try collectOutputPosix(child, &stdout, &stderr, args.max_output_bytes);
 
         return ExecResult{
             .term = try child.wait(),
-            .stdout = stdout,
-            .stderr = stderr,
+            .stdout = stdout.toOwnedSlice(),
+            .stderr = stderr.toOwnedSlice(),
         };
     }
 
@@ -390,15 +456,8 @@ pub const ChildProcess = struct {
         // can fail between fork() and execve().
         // Therefore, we do all the allocation for the execve() before the fork().
         // This means we must do the null-termination of argv and env vars here.
-        const argv_buf = try arena.alloc(?[*:0]u8, self.argv.len + 1);
-        for (self.argv) |arg, i| {
-            const arg_buf = try arena.alloc(u8, arg.len + 1);
-            @memcpy(arg_buf.ptr, arg.ptr, arg.len);
-            arg_buf[arg.len] = 0;
-            argv_buf[i] = arg_buf[0..arg.len :0].ptr;
-        }
-        argv_buf[self.argv.len] = null;
-        const argv_ptr = argv_buf[0..self.argv.len :null].ptr;
+        const argv_buf = try arena.allocSentinel(?[*:0]u8, self.argv.len, null);
+        for (self.argv) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
 
         const envp = m: {
             if (self.env_map) |env_map| {
@@ -465,8 +524,8 @@ pub const ChildProcess = struct {
             }
 
             const err = switch (self.expand_arg0) {
-                .expand => os.execvpeZ_expandArg0(.expand, argv_buf.ptr[0].?, argv_ptr, envp),
-                .no_expand => os.execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_ptr, envp),
+                .expand => os.execvpeZ_expandArg0(.expand, argv_buf.ptr[0].?, argv_buf.ptr, envp),
+                .no_expand => os.execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_buf.ptr, envp),
             };
             forkChildErrReport(err_pipe[1], err);
         }
@@ -863,7 +922,7 @@ fn writeIntFd(fd: i32, value: ErrInt) !void {
         .capable_io_mode = .blocking,
         .intended_io_mode = .blocking,
     };
-    file.outStream().writeIntNative(u64, @intCast(u64, value)) catch return error.SystemResources;
+    file.writer().writeIntNative(u64, @intCast(u64, value)) catch return error.SystemResources;
 }
 
 fn readIntFd(fd: i32) !ErrInt {
@@ -914,21 +973,51 @@ pub fn createWindowsEnvBlock(allocator: *mem.Allocator, env_map: *const BufMap) 
 
 pub fn createNullDelimitedEnvMap(arena: *mem.Allocator, env_map: *const std.BufMap) ![:null]?[*:0]u8 {
     const envp_count = env_map.count();
-    const envp_buf = try arena.alloc(?[*:0]u8, envp_count + 1);
-    mem.set(?[*:0]u8, envp_buf, null);
+    const envp_buf = try arena.allocSentinel(?[*:0]u8, envp_count, null);
     {
         var it = env_map.iterator();
         var i: usize = 0;
         while (it.next()) |pair| : (i += 1) {
-            const env_buf = try arena.alloc(u8, pair.key.len + pair.value.len + 2);
-            @memcpy(env_buf.ptr, pair.key.ptr, pair.key.len);
+            const env_buf = try arena.allocSentinel(u8, pair.key.len + pair.value.len + 1, 0);
+            mem.copy(u8, env_buf, pair.key);
             env_buf[pair.key.len] = '=';
-            @memcpy(env_buf.ptr + pair.key.len + 1, pair.value.ptr, pair.value.len);
-            const len = env_buf.len - 1;
-            env_buf[len] = 0;
-            envp_buf[i] = env_buf[0..len :0].ptr;
+            mem.copy(u8, env_buf[pair.key.len + 1 ..], pair.value);
+            envp_buf[i] = env_buf.ptr;
         }
         assert(i == envp_count);
     }
-    return envp_buf[0..envp_count :null];
+    return envp_buf;
+}
+
+test "createNullDelimitedEnvMap" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var envmap = BufMap.init(allocator);
+    defer envmap.deinit();
+
+    try envmap.set("HOME", "/home/ifreund");
+    try envmap.set("WAYLAND_DISPLAY", "wayland-1");
+    try envmap.set("DISPLAY", ":1");
+    try envmap.set("DEBUGINFOD_URLS", " ");
+    try envmap.set("XCURSOR_SIZE", "24");
+
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const environ = try createNullDelimitedEnvMap(&arena.allocator, &envmap);
+
+    testing.expectEqual(@as(usize, 5), environ.len);
+
+    inline for (.{
+        "HOME=/home/ifreund",
+        "WAYLAND_DISPLAY=wayland-1",
+        "DISPLAY=:1",
+        "DEBUGINFOD_URLS= ",
+        "XCURSOR_SIZE=24",
+    }) |target| {
+        for (environ) |variable| {
+            if (mem.eql(u8, mem.span(variable orelse continue), target)) break;
+        } else {
+            testing.expect(false); // Environment variable not found
+        }
+    }
 }

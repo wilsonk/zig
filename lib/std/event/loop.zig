@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -29,7 +29,7 @@ pub const Loop = struct {
     fs_thread: *Thread,
     fs_queue: std.atomic.Queue(Request),
     fs_end_request: Request.Node,
-    fs_thread_wakeup: std.ResetEvent,
+    fs_thread_wakeup: std.Thread.ResetEvent,
 
     /// For resources that have the same lifetime as the `Loop`.
     /// This is only used by `Loop` for the thread pool and associated resources.
@@ -185,7 +185,7 @@ pub const Loop = struct {
         errdefer self.deinitOsData();
 
         if (!builtin.single_threaded) {
-            self.fs_thread = try Thread.spawn(self, posixFsRun);
+            self.fs_thread = try Thread.spawn(posixFsRun, self);
         }
         errdefer if (!builtin.single_threaded) {
             self.posixFsRequest(&self.fs_end_request);
@@ -264,7 +264,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             .macos, .freebsd, .netbsd, .dragonfly, .openbsd => {
@@ -329,7 +329,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             .windows => {
@@ -378,7 +378,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             else => {},
@@ -440,13 +440,11 @@ pub const Loop = struct {
                 .overlapped = ResumeNode.overlapped_init,
             },
         };
-        var need_to_delete = false;
+        var need_to_delete = true;
         defer if (need_to_delete) self.linuxRemoveFd(fd);
 
         suspend {
-            if (self.linuxAddFd(fd, &resume_node.base, flags)) |_| {
-                need_to_delete = true;
-            } else |err| switch (err) {
+            self.linuxAddFd(fd, &resume_node.base, flags) catch |err| switch (err) {
                 error.FileDescriptorNotRegistered => unreachable,
                 error.OperationCausesCircularLoop => unreachable,
                 error.FileDescriptorIncompatibleWithEpoll => unreachable,
@@ -456,6 +454,7 @@ pub const Loop = struct {
                 error.UserResourceLimitReached,
                 error.Unexpected,
                 => {
+                    need_to_delete = false;
                     // Fall back to a blocking poll(). Ideally this codepath is never hit, since
                     // epoll should be just fine. But this is better than incorrect behavior.
                     var poll_flags: i16 = 0;
@@ -479,7 +478,7 @@ pub const Loop = struct {
                     };
                     resume @frame();
                 },
-            }
+            };
         }
     }
 
@@ -785,7 +784,7 @@ pub const Loop = struct {
         timer: std.time.Timer,
         waiters: Waiters,
         thread: *std.Thread,
-        event: std.AutoResetEvent,
+        event: std.Thread.AutoResetEvent,
         is_running: bool,
 
         /// Initialize the delay queue by spawning the timer thread
@@ -796,9 +795,10 @@ pub const Loop = struct {
                 .waiters = DelayQueue.Waiters{
                     .entries = std.atomic.Queue(anyframe).init(),
                 },
-                .thread = try std.Thread.spawn(self, DelayQueue.run),
-                .event = std.AutoResetEvent{},
+                .event = std.Thread.AutoResetEvent{},
                 .is_running = true,
+                // Must be last so that it can read the other state, such as `is_running`.
+                .thread = try std.Thread.spawn(DelayQueue.run, self),
             };
         }
 
@@ -1262,7 +1262,7 @@ pub const Loop = struct {
         flags: u32,
         dest_addr: ?*const os.sockaddr,
         addrlen: os.socklen_t,
-    ) os.SendError!usize {
+    ) os.SendToError!usize {
         while (true) {
             return os.sendto(sockfd, buf, flags, dest_addr, addrlen) catch |err| switch (err) {
                 error.WouldBlock => {

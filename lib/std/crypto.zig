@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -16,11 +16,20 @@ pub const aead = struct {
         pub const Aes256Gcm = @import("crypto/aes_gcm.zig").Aes256Gcm;
     };
 
+    pub const aes_ocb = struct {
+        pub const Aes128Ocb = @import("crypto/aes_ocb.zig").Aes128Ocb;
+        pub const Aes256Ocb = @import("crypto/aes_ocb.zig").Aes256Ocb;
+    };
+
     pub const Gimli = @import("crypto/gimli.zig").Aead;
 
     pub const chacha_poly = struct {
-        pub const ChaCha20Poly1305 = @import("crypto/chacha20.zig").Chacha20Poly1305;
-        pub const XChaCha20Poly1305 = @import("crypto/chacha20.zig").XChacha20Poly1305;
+        pub const ChaCha20Poly1305 = @import("crypto/chacha20.zig").ChaCha20Poly1305;
+        pub const ChaCha12Poly1305 = @import("crypto/chacha20.zig").ChaCha12Poly1305;
+        pub const ChaCha8Poly1305 = @import("crypto/chacha20.zig").ChaCha8Poly1305;
+        pub const XChaCha20Poly1305 = @import("crypto/chacha20.zig").XChaCha20Poly1305;
+        pub const XChaCha12Poly1305 = @import("crypto/chacha20.zig").XChaCha12Poly1305;
+        pub const XChaCha8Poly1305 = @import("crypto/chacha20.zig").XChaCha8Poly1305;
     };
 
     pub const isap = @import("crypto/isap.zig");
@@ -114,8 +123,14 @@ pub const sign = struct {
 pub const stream = struct {
     pub const chacha = struct {
         pub const ChaCha20IETF = @import("crypto/chacha20.zig").ChaCha20IETF;
+        pub const ChaCha12IETF = @import("crypto/chacha20.zig").ChaCha12IETF;
+        pub const ChaCha8IETF = @import("crypto/chacha20.zig").ChaCha8IETF;
         pub const ChaCha20With64BitNonce = @import("crypto/chacha20.zig").ChaCha20With64BitNonce;
+        pub const ChaCha12With64BitNonce = @import("crypto/chacha20.zig").ChaCha12With64BitNonce;
+        pub const ChaCha8With64BitNonce = @import("crypto/chacha20.zig").ChaCha8With64BitNonce;
         pub const XChaCha20IETF = @import("crypto/chacha20.zig").XChaCha20IETF;
+        pub const XChaCha12IETF = @import("crypto/chacha20.zig").XChaCha12IETF;
+        pub const XChaCha8IETF = @import("crypto/chacha20.zig").XChaCha8IETF;
     };
 
     pub const salsa = struct {
@@ -139,11 +154,18 @@ pub const random = &@import("crypto/tlcsprng.zig").interface;
 
 const std = @import("std.zig");
 
+pub const Error = @import("crypto/error.zig").Error;
+
 test "crypto" {
+    const please_windows_dont_oom = std.Target.current.os.tag == .windows;
+    if (please_windows_dont_oom) return error.SkipZigTest;
+
     inline for (std.meta.declarations(@This())) |decl| {
         switch (decl.data) {
             .Type => |t| {
-                std.testing.refAllDecls(t);
+                if (@typeInfo(t) != .ErrorSet) {
+                    std.testing.refAllDecls(t);
+                }
             },
             .Var => |v| {
                 _ = v;
@@ -154,30 +176,11 @@ test "crypto" {
         }
     }
 
-    _ = @import("crypto/aes.zig");
-    _ = @import("crypto/bcrypt.zig");
+    _ = @import("crypto/aegis.zig");
+    _ = @import("crypto/aes_gcm.zig");
+    _ = @import("crypto/aes_ocb.zig");
     _ = @import("crypto/blake2.zig");
-    _ = @import("crypto/blake3.zig");
     _ = @import("crypto/chacha20.zig");
-    _ = @import("crypto/gimli.zig");
-    _ = @import("crypto/hmac.zig");
-    _ = @import("crypto/isap.zig");
-    _ = @import("crypto/md5.zig");
-    _ = @import("crypto/modes.zig");
-    _ = @import("crypto/pbkdf2.zig");
-    _ = @import("crypto/poly1305.zig");
-    _ = @import("crypto/sha1.zig");
-    _ = @import("crypto/sha2.zig");
-    _ = @import("crypto/sha3.zig");
-    _ = @import("crypto/salsa20.zig");
-    _ = @import("crypto/siphash.zig");
-    _ = @import("crypto/25519/curve25519.zig");
-    _ = @import("crypto/25519/ed25519.zig");
-    _ = @import("crypto/25519/edwards25519.zig");
-    _ = @import("crypto/25519/field.zig");
-    _ = @import("crypto/25519/scalar.zig");
-    _ = @import("crypto/25519/x25519.zig");
-    _ = @import("crypto/25519/ristretto255.zig");
 }
 
 test "CSPRNG" {

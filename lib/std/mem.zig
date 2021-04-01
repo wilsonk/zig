@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -24,6 +24,14 @@ pub const page_size = switch (builtin.arch) {
     .sparcv9 => 8 * 1024,
     else => 4 * 1024,
 };
+
+/// The standard library currently thoroughly depends on byte size
+/// being 8 bits.  (see the use of u8 throughout allocation code as
+/// the "byte" type.)  Code which depends on this can reference this
+/// declaration.  If we ever try to port the standard library to a
+/// non-8-bit-byte platform, this will allow us to search for things
+/// which need to be updated.
+pub const byte_size_in_bits = 8;
 
 pub const Allocator = @import("mem/Allocator.zig");
 
@@ -639,7 +647,10 @@ pub fn len(value: anytype) usize {
                 indexOfSentinel(info.child, sentinel, value)
             else
                 @compileError("length of pointer with no sentinel"),
-            .C => indexOfSentinel(info.child, 0, value),
+            .C => {
+                assert(value != null);
+                return indexOfSentinel(info.child, 0, value);
+            },
             .Slice => value.len,
         },
         .Struct => |info| if (info.is_tuple) {
@@ -700,7 +711,10 @@ pub fn lenZ(ptr: anytype) usize {
                 indexOfSentinel(info.child, sentinel, ptr)
             else
                 @compileError("length of pointer with no sentinel"),
-            .C => indexOfSentinel(info.child, 0, ptr),
+            .C => {
+                assert(ptr != null);
+                return indexOfSentinel(info.child, 0, ptr);
+            },
             .Slice => if (info.sentinel) |sentinel|
                 indexOfSentinel(info.child, sentinel, ptr.ptr)
             else
@@ -989,6 +1003,40 @@ test "mem.count" {
     testing.expect(count(u8, "foofoofoo", "foo") == 3);
     testing.expect(count(u8, "fffffff", "ff") == 3);
     testing.expect(count(u8, "owowowu", "owowu") == 1);
+}
+
+/// Returns true if the haystack contains expected_count or more needles
+/// needle.len must be > 0
+/// does not count overlapping needles
+pub fn containsAtLeast(comptime T: type, haystack: []const T, expected_count: usize, needle: []const T) bool {
+    assert(needle.len > 0);
+    if (expected_count == 0) return true;
+
+    var i: usize = 0;
+    var found: usize = 0;
+
+    while (indexOfPos(T, haystack, i, needle)) |idx| {
+        i = idx + needle.len;
+        found += 1;
+        if (found == expected_count) return true;
+    }
+    return false;
+}
+
+test "mem.containsAtLeast" {
+    testing.expect(containsAtLeast(u8, "aa", 0, "a"));
+    testing.expect(containsAtLeast(u8, "aa", 1, "a"));
+    testing.expect(containsAtLeast(u8, "aa", 2, "a"));
+    testing.expect(!containsAtLeast(u8, "aa", 3, "a"));
+
+    testing.expect(containsAtLeast(u8, "radaradar", 1, "radar"));
+    testing.expect(!containsAtLeast(u8, "radaradar", 2, "radar"));
+
+    testing.expect(containsAtLeast(u8, "radarradaradarradar", 3, "radar"));
+    testing.expect(!containsAtLeast(u8, "radarradaradarradar", 4, "radar"));
+
+    testing.expect(containsAtLeast(u8, "   radar      radar   ", 2, "radar"));
+    testing.expect(!containsAtLeast(u8, "   radar      radar   ", 3, "radar"));
 }
 
 /// Reads an integer from memory with size equal to bytes.len.
@@ -1325,6 +1373,20 @@ test "mem.tokenize (multibyte)" {
     testing.expect(it.next() == null);
 }
 
+test "mem.tokenize (reset)" {
+    var it = tokenize("   abc def   ghi  ", " ");
+    testing.expect(eql(u8, it.next().?, "abc"));
+    testing.expect(eql(u8, it.next().?, "def"));
+    testing.expect(eql(u8, it.next().?, "ghi"));
+
+    it.reset();
+
+    testing.expect(eql(u8, it.next().?, "abc"));
+    testing.expect(eql(u8, it.next().?, "def"));
+    testing.expect(eql(u8, it.next().?, "ghi"));
+    testing.expect(it.next() == null);
+}
+
 /// Returns an iterator that iterates over the slices of `buffer` that
 /// are separated by bytes in `delimiter`.
 /// split("abc|def||ghi", "|")
@@ -1423,6 +1485,11 @@ pub const TokenIterator = struct {
         return self.buffer[index..];
     }
 
+    /// Resets the iterator to the initial token.
+    pub fn reset(self: *TokenIterator) void {
+        self.index = 0;
+    }
+
     fn isSplitByte(self: TokenIterator, byte: u8) bool {
         for (self.delimiter_bytes) |delimiter_byte| {
             if (byte == delimiter_byte) {
@@ -1473,7 +1540,7 @@ pub fn joinZ(allocator: *Allocator, separator: []const u8, slices: []const []con
 }
 
 fn joinMaybeZ(allocator: *Allocator, separator: []const u8, slices: []const []const u8, zero: bool) ![]u8 {
-    if (slices.len == 0) return &[0]u8{};
+    if (slices.len == 0) return if (zero) try allocator.dupe(u8, &[1]u8{0}) else &[0]u8{};
 
     const total_len = blk: {
         var sum: usize = separator.len * (slices.len - 1);
@@ -1502,6 +1569,11 @@ fn joinMaybeZ(allocator: *Allocator, separator: []const u8, slices: []const []co
 
 test "mem.join" {
     {
+        const str = try join(testing.allocator, ",", &[_][]const u8{});
+        defer testing.allocator.free(str);
+        testing.expect(eql(u8, str, ""));
+    }
+    {
         const str = try join(testing.allocator, ",", &[_][]const u8{ "a", "b", "c" });
         defer testing.allocator.free(str);
         testing.expect(eql(u8, str, "a,b,c"));
@@ -1519,6 +1591,12 @@ test "mem.join" {
 }
 
 test "mem.joinZ" {
+    {
+        const str = try joinZ(testing.allocator, ",", &[_][]const u8{});
+        defer testing.allocator.free(str);
+        testing.expect(eql(u8, str, ""));
+        testing.expectEqual(str[str.len], 0);
+    }
     {
         const str = try joinZ(testing.allocator, ",", &[_][]const u8{ "a", "b", "c" });
         defer testing.allocator.free(str);
@@ -2401,4 +2479,47 @@ test "isAligned" {
 test "freeing empty string with null-terminated sentinel" {
     const empty_string = try dupeZ(testing.allocator, u8, "");
     testing.allocator.free(empty_string);
+}
+
+/// Returns a slice with the given new alignment,
+/// all other pointer attributes copied from `AttributeSource`.
+fn AlignedSlice(comptime AttributeSource: type, comptime new_alignment: u29) type {
+    const info = @typeInfo(AttributeSource).Pointer;
+    return @Type(.{
+        .Pointer = .{
+            .size = .Slice,
+            .is_const = info.is_const,
+            .is_volatile = info.is_volatile,
+            .is_allowzero = info.is_allowzero,
+            .alignment = new_alignment,
+            .child = info.child,
+            .sentinel = null,
+        },
+    });
+}
+
+/// Returns the largest slice in the given bytes that conforms to the new alignment,
+/// or `null` if the given bytes contain no conforming address.
+pub fn alignInBytes(bytes: []u8, comptime new_alignment: usize) ?[]align(new_alignment) u8 {
+    const begin_address = @ptrToInt(bytes.ptr);
+    const end_address = begin_address + bytes.len;
+
+    const begin_address_aligned = mem.alignForward(begin_address, new_alignment);
+    const new_length = std.math.sub(usize, end_address, begin_address_aligned) catch |e| switch (e) {
+        error.Overflow => return null,
+    };
+    const alignment_offset = begin_address_aligned - begin_address;
+    return @alignCast(new_alignment, bytes[alignment_offset .. alignment_offset + new_length]);
+}
+
+/// Returns the largest sub-slice within the given slice that conforms to the new alignment,
+/// or `null` if the given slice contains no conforming address.
+pub fn alignInSlice(slice: anytype, comptime new_alignment: usize) ?AlignedSlice(@TypeOf(slice), new_alignment) {
+    const bytes = sliceAsBytes(slice);
+    const aligned_bytes = alignInBytes(bytes, new_alignment) orelse return null;
+
+    const Element = @TypeOf(slice[0]);
+    const slice_length_bytes = aligned_bytes.len - (aligned_bytes.len % @sizeOf(Element));
+    const aligned_slice = bytesAsSlice(Element, aligned_bytes[0..slice_length_bytes]);
+    return @alignCast(new_alignment, aligned_slice);
 }

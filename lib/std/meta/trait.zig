@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -298,6 +298,20 @@ pub fn isNumber(comptime T: type) bool {
     };
 }
 
+pub fn isIntegerNumber(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .Int, .ComptimeInt => true,
+        else => false,
+    };
+}
+
+pub fn isFloatingNumber(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .Float, .ComptimeFloat => true,
+        else => false,
+    };
+}
+
 test "std.meta.trait.isNumber" {
     const NotANumber = struct {
         number: u8,
@@ -394,6 +408,84 @@ test "std.meta.trait.isTuple" {
     testing.expect(isTuple(@TypeOf(t3)));
 }
 
+/// Returns true if the passed type will coerce to []const u8.
+/// Any of the following are considered strings:
+/// ```
+/// []const u8, [:S]const u8, *const [N]u8, *const [N:S]u8,
+/// []u8, [:S]u8, *[:S]u8, *[N:S]u8.
+/// ```
+/// These types are not considered strings:
+/// ```
+/// u8, [N]u8, [*]const u8, [*:0]const u8,
+/// [*]const [N]u8, []const u16, []const i8,
+/// *const u8, ?[]const u8, ?*const [N]u8.
+/// ```
+pub fn isZigString(comptime T: type) bool {
+    comptime {
+        // Only pointer types can be strings, no optionals
+        const info = @typeInfo(T);
+        if (info != .Pointer) return false;
+
+        const ptr = &info.Pointer;
+        // Check for CV qualifiers that would prevent coerction to []const u8
+        if (ptr.is_volatile or ptr.is_allowzero) return false;
+
+        // If it's already a slice, simple check.
+        if (ptr.size == .Slice) {
+            return ptr.child == u8;
+        }
+
+        // Otherwise check if it's an array type that coerces to slice.
+        if (ptr.size == .One) {
+            const child = @typeInfo(ptr.child);
+            if (child == .Array) {
+                const arr = &child.Array;
+                return arr.child == u8;
+            }
+        }
+
+        return false;
+    }
+}
+
+test "std.meta.trait.isZigString" {
+    testing.expect(isZigString([]const u8));
+    testing.expect(isZigString([]u8));
+    testing.expect(isZigString([:0]const u8));
+    testing.expect(isZigString([:0]u8));
+    testing.expect(isZigString([:5]const u8));
+    testing.expect(isZigString([:5]u8));
+    testing.expect(isZigString(*const [0]u8));
+    testing.expect(isZigString(*[0]u8));
+    testing.expect(isZigString(*const [0:0]u8));
+    testing.expect(isZigString(*[0:0]u8));
+    testing.expect(isZigString(*const [0:5]u8));
+    testing.expect(isZigString(*[0:5]u8));
+    testing.expect(isZigString(*const [10]u8));
+    testing.expect(isZigString(*[10]u8));
+    testing.expect(isZigString(*const [10:0]u8));
+    testing.expect(isZigString(*[10:0]u8));
+    testing.expect(isZigString(*const [10:5]u8));
+    testing.expect(isZigString(*[10:5]u8));
+
+    testing.expect(!isZigString(u8));
+    testing.expect(!isZigString([4]u8));
+    testing.expect(!isZigString([4:0]u8));
+    testing.expect(!isZigString([*]const u8));
+    testing.expect(!isZigString([*]const [4]u8));
+    testing.expect(!isZigString([*c]const u8));
+    testing.expect(!isZigString([*c]const [4]u8));
+    testing.expect(!isZigString([*:0]const u8));
+    testing.expect(!isZigString([*:0]const u8));
+    testing.expect(!isZigString(*[]const u8));
+    testing.expect(!isZigString(?[]const u8));
+    testing.expect(!isZigString(?*const [4]u8));
+    testing.expect(!isZigString([]allowzero u8));
+    testing.expect(!isZigString([]volatile u8));
+    testing.expect(!isZigString(*allowzero [4]u8));
+    testing.expect(!isZigString(*volatile [4]u8));
+}
+
 pub fn hasDecls(comptime T: type, comptime names: anytype) bool {
     inline for (names) |name| {
         if (!@hasDecl(T, name))
@@ -480,7 +572,6 @@ pub fn hasUniqueRepresentation(comptime T: type) bool {
         .Enum,
         .ErrorSet,
         .Fn,
-        .Pointer,
         => return true,
 
         .Bool => return false,
@@ -488,6 +579,8 @@ pub fn hasUniqueRepresentation(comptime T: type) bool {
         // The padding bits are undefined.
         .Int => |info| return (info.bits % 8) == 0 and
             (info.bits == 0 or std.math.isPowerOfTwo(info.bits)),
+
+        .Pointer => |info| return info.size != .Slice,
 
         .Array => |info| return comptime hasUniqueRepresentation(info.child),
 
@@ -529,10 +622,49 @@ test "std.meta.trait.hasUniqueRepresentation" {
 
     testing.expect(hasUniqueRepresentation(TestStruct3));
 
+    const TestStruct4 = struct { a: []const u8 };
+
+    testing.expect(!hasUniqueRepresentation(TestStruct4));
+
+    const TestStruct5 = struct { a: TestStruct4 };
+
+    testing.expect(!hasUniqueRepresentation(TestStruct5));
+
+    const TestUnion1 = packed union {
+        a: u32,
+        b: u16,
+    };
+
+    testing.expect(!hasUniqueRepresentation(TestUnion1));
+
+    const TestUnion2 = extern union {
+        a: u32,
+        b: u16,
+    };
+
+    testing.expect(!hasUniqueRepresentation(TestUnion2));
+
+    const TestUnion3 = union {
+        a: u32,
+        b: u16,
+    };
+
+    testing.expect(!hasUniqueRepresentation(TestUnion3));
+
+    const TestUnion4 = union(enum) {
+        a: u32,
+        b: u16,
+    };
+
+    testing.expect(!hasUniqueRepresentation(TestUnion4));
+
     inline for ([_]type{ i0, u8, i16, u32, i64 }) |T| {
         testing.expect(hasUniqueRepresentation(T));
     }
     inline for ([_]type{ i1, u9, i17, u33, i24 }) |T| {
         testing.expect(!hasUniqueRepresentation(T));
     }
+
+    testing.expect(!hasUniqueRepresentation([]u8));
+    testing.expect(!hasUniqueRepresentation([]const u8));
 }

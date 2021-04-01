@@ -19,6 +19,7 @@
 #include "stage2.h"
 #include "dump_analysis.hpp"
 #include "softfloat.hpp"
+#include "zigendian.h"
 
 #include <stdio.h>
 #include <errno.h>
@@ -158,6 +159,7 @@ static const char *get_mangled_name(CodeGen *g, const char *original_name) {
 static ZigLLVM_CallingConv get_llvm_cc(CodeGen *g, CallingConvention cc) {
     switch (cc) {
         case CallingConventionUnspecified:
+        case CallingConventionInline:
             return ZigLLVM_Fast;
         case CallingConventionC:
             return ZigLLVM_C;
@@ -349,6 +351,7 @@ static bool cc_want_sret_attr(CallingConvention cc) {
             return true;
         case CallingConventionAsync:
         case CallingConventionUnspecified:
+        case CallingConventionInline:
             return false;
     }
     zig_unreachable();
@@ -451,20 +454,11 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
         }
     }
 
-    switch (fn->fn_inline) {
-        case FnInlineAlways:
-            addLLVMFnAttr(llvm_fn, "alwaysinline");
-            g->inline_fns.append(fn);
-            break;
-        case FnInlineNever:
-            addLLVMFnAttr(llvm_fn, "noinline");
-            break;
-        case FnInlineAuto:
-            if (fn->alignstack_value != 0) {
-                addLLVMFnAttr(llvm_fn, "noinline");
-            }
-            break;
-    }
+    if (cc == CallingConventionInline)
+        addLLVMFnAttr(llvm_fn, "alwaysinline");
+
+    if (fn->is_noinline || (cc != CallingConventionInline && fn->alignstack_value != 0))
+        addLLVMFnAttr(llvm_fn, "noinline");
 
     if (cc == CallingConventionNaked) {
         addLLVMFnAttr(llvm_fn, "naked");
@@ -493,6 +487,53 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
         addLLVMFnAttr(llvm_fn, "noreturn");
     }
 
+    if (!calling_convention_allows_zig_types(cc)) {
+        // A simplistic and desperate attempt at making the compiler respect the
+        // target ABI for return types.
+        // This is just enough to avoid miscompiling the test suite, it will be
+        // better in stage2.
+        ZigType *int_type = return_type->id == ZigTypeIdInt ? return_type :
+                return_type->id == ZigTypeIdEnum ? return_type->data.enumeration.tag_int_type :
+                nullptr;
+
+        if (int_type != nullptr) {
+            const bool is_signed = int_type->data.integral.is_signed;
+            const uint32_t bit_width = int_type->data.integral.bit_count;
+            bool should_extend = false;
+
+            // Rough equivalent of Clang's isPromotableIntegerType.
+            switch (bit_width) {
+                case 1: // bool
+                case 8: // {un,}signed char
+                case 16: // {un,}signed short
+                    should_extend = true;
+                    break;
+                default:
+                    break;
+            }
+
+            switch (g->zig_target->arch) {
+                case ZigLLVM_sparcv9:
+                case ZigLLVM_riscv64:
+                case ZigLLVM_ppc64:
+                case ZigLLVM_ppc64le:
+                    // Always extend to the register width.
+                    should_extend = bit_width < 64;
+                    break;
+                default:
+                    break;
+            }
+
+            // {zero,sign}-extend the result.
+            if (should_extend) {
+                if (is_signed)
+                    addLLVMAttr(llvm_fn, 0, "signext");
+                else
+                    addLLVMAttr(llvm_fn, 0, "zeroext");
+            }
+        }
+    }
+
     if (fn->body_node != nullptr) {
         maybe_export_dll(g, llvm_fn, linkage);
 
@@ -514,6 +555,10 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
         maybe_import_dll(g, llvm_fn, linkage);
     }
 
+    if (!g->red_zone) {
+        addLLVMFnAttr(llvm_fn, "noredzone");
+    }
+
     if (fn->alignstack_value != 0) {
         addLLVMFnAttrInt(llvm_fn, "alignstack", fn->alignstack_value);
     }
@@ -527,7 +572,7 @@ static LLVMValueRef make_fn_llvm_value(CodeGen *g, ZigFn *fn) {
     addLLVMFnAttr(llvm_fn, "nounwind");
     add_uwtable_attr(g, llvm_fn);
     addLLVMFnAttr(llvm_fn, "nobuiltin");
-    if (codegen_have_frame_pointer(g) && fn->fn_inline != FnInlineAlways) {
+    if (codegen_have_frame_pointer(g) && cc != CallingConventionInline) {
         ZigLLVMAddFunctionAttr(llvm_fn, "frame-pointer", "all");
     }
     if (fn->section_name) {
@@ -4155,7 +4200,15 @@ static LLVMValueRef gen_frame_size(CodeGen *g, LLVMValueRef fn_val) {
     LLVMValueRef casted_fn_val = LLVMBuildBitCast(g->builder, fn_val, ptr_usize_llvm_type, "");
     LLVMValueRef negative_one = LLVMConstInt(LLVMInt32Type(), -1, true);
     LLVMValueRef prefix_ptr = LLVMBuildInBoundsGEP(g->builder, casted_fn_val, &negative_one, 1, "");
-    return LLVMBuildLoad(g->builder, prefix_ptr, "");
+    LLVMValueRef load_inst = LLVMBuildLoad(g->builder, prefix_ptr, "");
+
+    // Some architectures (e.g SPARCv9) has different alignment requirements between a
+    // function/usize pointer and also require all loads to be aligned.
+    // On those architectures, not explicitly setting the alignment will lead into @frameSize
+    // generating usize-aligned load instruction that could crash if the function pointer
+    // happens to be not usize-aligned.
+    LLVMSetAlignment(load_inst, 1);
+    return load_inst;
 }
 
 static void gen_init_stack_trace(CodeGen *g, LLVMValueRef trace_field_ptr, LLVMValueRef addrs_field_ptr) {
@@ -7417,11 +7470,20 @@ static LLVMValueRef gen_const_val(CodeGen *g, ZigValue *const_val, const char *n
                     return LLVMConstReal(get_llvm_type(g, type_entry), const_val->data.x_f64);
                 case 128:
                     {
-                        // TODO make sure this is correct on big endian targets too
-                        uint8_t buf[16];
-                        memcpy(buf, &const_val->data.x_f128, 16);
-                        LLVMValueRef as_int = LLVMConstIntOfArbitraryPrecision(LLVMInt128Type(), 2,
-                                (uint64_t*)buf);
+                        uint64_t buf[2];
+
+                        // LLVM seems to require that the lower half of the f128 be placed first in the buffer.
+                        #if defined(ZIG_BYTE_ORDER) && ZIG_BYTE_ORDER == ZIG_LITTLE_ENDIAN
+                            buf[0] = const_val->data.x_f128.v[0];
+                            buf[1] = const_val->data.x_f128.v[1];
+                        #elif defined(ZIG_BYTE_ORDER) && ZIG_BYTE_ORDER == ZIG_BIG_ENDIAN
+                            buf[0] = const_val->data.x_f128.v[1];
+                            buf[1] = const_val->data.x_f128.v[0];
+                        #else
+                            #error Unsupported endian
+                        #endif
+
+                        LLVMValueRef as_int = LLVMConstIntOfArbitraryPrecision(LLVMInt128Type(), 2, buf);
                         return LLVMConstBitCast(as_int, get_llvm_type(g, type_entry));
                     }
                 default:
@@ -7855,9 +7917,9 @@ static LLVMValueRef gen_const_val(CodeGen *g, ZigValue *const_val, const char *n
         case ZigTypeIdOpaque:
             zig_unreachable();
         case ZigTypeIdFnFrame:
-            zig_panic("TODO");
+            zig_panic("TODO: gen_const_val ZigTypeIdFnFrame");
         case ZigTypeIdAnyFrame:
-            zig_panic("TODO");
+            zig_panic("TODO: gen_const_val ZigTypeIdAnyFrame");
     }
     zig_unreachable();
 }
@@ -8435,8 +8497,9 @@ static void zig_llvm_emit_output(CodeGen *g) {
     // Unfortunately, LLVM shits the bed when we ask for both binary and assembly. So we call the entire
     // pipeline multiple times if this is requested.
     if (asm_filename != nullptr && bin_filename != nullptr) {
-        if (ZigLLVMTargetMachineEmitToFile(g->target_machine, g->module, &err_msg, g->build_mode == BuildModeDebug,
-            is_small, g->enable_time_report, g->tsan_enabled, nullptr, bin_filename, llvm_ir_filename))
+        if (ZigLLVMTargetMachineEmitToFile(g->target_machine, g->module, &err_msg,
+            g->build_mode == BuildModeDebug, is_small, g->enable_time_report, g->tsan_enabled,
+            g->have_lto, nullptr, bin_filename, llvm_ir_filename))
         {
             fprintf(stderr, "LLVM failed to emit file: %s\n", err_msg);
             exit(1);
@@ -8445,8 +8508,9 @@ static void zig_llvm_emit_output(CodeGen *g) {
         llvm_ir_filename = nullptr;
     }
 
-    if (ZigLLVMTargetMachineEmitToFile(g->target_machine, g->module, &err_msg, g->build_mode == BuildModeDebug,
-        is_small, g->enable_time_report, g->tsan_enabled, asm_filename, bin_filename, llvm_ir_filename))
+    if (ZigLLVMTargetMachineEmitToFile(g->target_machine, g->module, &err_msg,
+        g->build_mode == BuildModeDebug, is_small, g->enable_time_report, g->tsan_enabled,
+        g->have_lto, asm_filename, bin_filename, llvm_ir_filename))
     {
         fprintf(stderr, "LLVM failed to emit file: %s\n", err_msg);
         exit(1);
@@ -8826,7 +8890,6 @@ static void define_builtin_fns(CodeGen *g) {
     create_builtin_fn(g, BuiltinFnIdIntToPtr, "intToPtr", 2);
     create_builtin_fn(g, BuiltinFnIdPtrToInt, "ptrToInt", 1);
     create_builtin_fn(g, BuiltinFnIdTagName, "tagName", 1);
-    create_builtin_fn(g, BuiltinFnIdTagType, "TagType", 1);
     create_builtin_fn(g, BuiltinFnIdFieldParentPtr, "fieldParentPtr", 3);
     create_builtin_fn(g, BuiltinFnIdByteOffsetOf, "byteOffsetOf", 2);
     create_builtin_fn(g, BuiltinFnIdBitOffsetOf, "bitOffsetOf", 2);
@@ -9028,19 +9091,16 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
     static_assert(CallingConventionC == 1, "");
     static_assert(CallingConventionNaked == 2, "");
     static_assert(CallingConventionAsync == 3, "");
-    static_assert(CallingConventionInterrupt == 4, "");
-    static_assert(CallingConventionSignal == 5, "");
-    static_assert(CallingConventionStdcall == 6, "");
-    static_assert(CallingConventionFastcall == 7, "");
-    static_assert(CallingConventionVectorcall == 8, "");
-    static_assert(CallingConventionThiscall == 9, "");
-    static_assert(CallingConventionAPCS == 10, "");
-    static_assert(CallingConventionAAPCS == 11, "");
-    static_assert(CallingConventionAAPCSVFP == 12, "");
-
-    static_assert(FnInlineAuto == 0, "");
-    static_assert(FnInlineAlways == 1, "");
-    static_assert(FnInlineNever == 2, "");
+    static_assert(CallingConventionInline == 4, "");
+    static_assert(CallingConventionInterrupt == 5, "");
+    static_assert(CallingConventionSignal == 6, "");
+    static_assert(CallingConventionStdcall == 7, "");
+    static_assert(CallingConventionFastcall == 8, "");
+    static_assert(CallingConventionVectorcall == 9, "");
+    static_assert(CallingConventionThiscall == 10, "");
+    static_assert(CallingConventionAPCS == 11, "");
+    static_assert(CallingConventionAAPCS == 12, "");
+    static_assert(CallingConventionAAPCSVFP == 13, "");
 
     static_assert(BuiltinPtrSizeOne == 0, "");
     static_assert(BuiltinPtrSizeMany == 1, "");

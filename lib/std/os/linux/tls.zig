@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -300,7 +300,7 @@ fn initTLS() void {
     };
 }
 
-inline fn alignPtrCast(comptime T: type, ptr: [*]u8) *T {
+fn alignPtrCast(comptime T: type, ptr: [*]u8) callconv(.Inline) *T {
     return @ptrCast(*T, @alignCast(@alignOf(*T), ptr));
 }
 

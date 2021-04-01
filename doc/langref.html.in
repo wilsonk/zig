@@ -236,7 +236,7 @@ const std = @import("std");
 
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
-    try stdout.print("Hello, {}!\n", .{"world"});
+    try stdout.print("Hello, {s}!\n", .{"world"});
 }
       {#code_end#}
       <p>
@@ -308,9 +308,9 @@ pub fn main() !void {
         multiple arguments passed to a function, they are separated by commas <code>,</code>.
       </p>
       <p>
-        The two arguments passed to the <code>stdout.print()</code> function, <code>"Hello, {}!\n"</code>
+        The two arguments passed to the <code>stdout.print()</code> function, <code>"Hello, {s}!\n"</code>
         and <code>.{"world"}</code>, are evaluated at {#link|compile-time|comptime#}. The code sample is
-        purposely written to show how to perform {#link|string|String Literals and Character Literals#}
+        purposely written to show how to perform {#link|string|String Literals and Unicode Code Point Literals#}
         substitution in the <code>print</code> function. The curly-braces inside of the first argument
         are substituted with the compile-time known value inside of the second argument
         (known as an {#link|anonymous struct literal|Anonymous Struct Literals#}). The <code>\n</code>
@@ -435,7 +435,7 @@ pub fn main() void {
     var optional_value: ?[]const u8 = null;
     assert(optional_value == null);
 
-    print("\noptional 1\ntype: {}\nvalue: {}\n", .{
+    print("\noptional 1\ntype: {s}\nvalue: {s}\n", .{
         @typeName(@TypeOf(optional_value)),
         optional_value,
     });
@@ -443,7 +443,7 @@ pub fn main() void {
     optional_value = "hi";
     assert(optional_value != null);
 
-    print("\noptional 2\ntype: {}\nvalue: {}\n", .{
+    print("\noptional 2\ntype: {s}\nvalue: {s}\n", .{
         @typeName(@TypeOf(optional_value)),
         optional_value,
     });
@@ -451,14 +451,14 @@ pub fn main() void {
     // error union
     var number_or_error: anyerror!i32 = error.ArgNotFound;
 
-    print("\nerror union 1\ntype: {}\nvalue: {}\n", .{
+    print("\nerror union 1\ntype: {s}\nvalue: {}\n", .{
         @typeName(@TypeOf(number_or_error)),
         number_or_error,
     });
 
     number_or_error = 1234;
 
-    print("\nerror union 2\ntype: {}\nvalue: {}\n", .{
+    print("\nerror union 2\ntype: {s}\nvalue: {}\n", .{
         @typeName(@TypeOf(number_or_error)),
         number_or_error,
     });
@@ -682,18 +682,31 @@ pub fn main() void {
       </div>
       {#see_also|Optionals|undefined#}
       {#header_close#}
-      {#header_open|String Literals and Character Literals#}
+      {#header_open|String Literals and Unicode Code Point Literals#}
       <p>
-      String literals are single-item constant {#link|Pointers#} to null-terminated UTF-8 encoded byte arrays.
+      String literals are constant single-item {#link|Pointers#} to null-terminated byte arrays.
       The type of string literals encodes both the length, and the fact that they are null-terminated,
       and thus they can be {#link|coerced|Type Coercion#} to both {#link|Slices#} and
       {#link|Null-Terminated Pointers|Sentinel-Terminated Pointers#}.
       Dereferencing string literals converts them to {#link|Arrays#}.
       </p>
       <p>
-      Character literals have type {#syntax#}comptime_int{#endsyntax#}, the same as
+      The encoding of a string in Zig is de-facto assumed to be UTF-8.
+      Because Zig source code is {#link|UTF-8 encoded|Source Encoding#}, any non-ASCII bytes appearing within a string literal
+      in source code carry their UTF-8 meaning into the content of the string in the Zig program;
+      the bytes are not modified by the compiler.
+      However, it is possible to embbed non-UTF-8 bytes into a string literal using <code>\xNN</code> notation.
+      </p>
+      <p>
+      Unicode code point literals have type {#syntax#}comptime_int{#endsyntax#}, the same as
       {#link|Integer Literals#}. All {#link|Escape Sequences#} are valid in both string literals
-      and character literals.
+      and Unicode code point literals.
+      </p>
+      <p>
+      In many other programming languages, a Unicode code point literal is called a "character literal".
+      However, there is <a href="https://unicode.org/glossary">no precise technical definition of a "character"</a>
+      in recent versions of the Unicode specification (as of Unicode 13.0).
+      In Zig, a Unicode code point literal corresponds to the Unicode definition of a code point.
       </p>
       {#code_begin|test#}
 const expect = @import("std").testing.expect;
@@ -709,6 +722,7 @@ test "string literals" {
     expect('\u{1f4a9}' == 128169);
     expect('💯' == 128175);
     expect(mem.eql(u8, "hello", "h\x65llo"));
+    expect("\xff"[0] == 0xff); // non-UTF-8 strings are possible with \xNN notation.
 }
       {#code_end#}
       {#see_also|Arrays|Zig Test|Source Encoding#}
@@ -749,11 +763,11 @@ test "string literals" {
         </tr>
         <tr>
             <td><code>\xNN</code></td>
-          <td>hexadecimal 8-bit character code (2 digits)</td>
+          <td>hexadecimal 8-bit byte value (2 digits)</td>
         </tr>
         <tr>
             <td><code>\u{NNNNNN}</code></td>
-          <td>hexadecimal Unicode character code UTF-8 encoded (1 or more digits)</td>
+          <td>hexadecimal Unicode code point UTF-8 encoded (1 or more digits)</td>
         </tr>
       </table>
       </div>
@@ -919,8 +933,8 @@ const assert = std.debug.assert;
 threadlocal var x: i32 = 1234;
 
 test "thread local storage" {
-    const thread1 = try std.Thread.spawn({}, testTls);
-    const thread2 = try std.Thread.spawn({}, testTls);
+    const thread1 = try std.Thread.spawn(testTls, {});
+    const thread2 = try std.Thread.spawn(testTls, {});
     testTls({});
     thread1.wait();
     thread2.wait();
@@ -1769,7 +1783,7 @@ comptime {
     expect(message.len == 5);
 }
 
-// A string literal is a pointer to an array literal.
+// A string literal is a single-item pointer to an array literal.
 const same_message = "hello";
 
 comptime {
@@ -1975,15 +1989,15 @@ test "null terminated array" {
 
       {#header_open|Pointers#}
       <p>
-      Zig has two kinds of pointers:
+      Zig has two kinds of pointers: single-item and many-item.
       </p>
       <ul>
-          <li>{#syntax#}*T{#endsyntax#} - pointer to exactly one item.
+          <li>{#syntax#}*T{#endsyntax#} - single-item pointer to exactly one item.
             <ul>
               <li>Supports deref syntax: {#syntax#}ptr.*{#endsyntax#}</li>
             </ul>
           </li>
-          <li>{#syntax#}[*]T{#endsyntax#} - pointer to unknown number of items.
+          <li>{#syntax#}[*]T{#endsyntax#} - many-item pointer to unknown number of items.
             <ul>
               <li>Supports index syntax: {#syntax#}ptr[i]{#endsyntax#}</li>
               <li>Supports slice syntax: {#syntax#}ptr[start..end]{#endsyntax#}</li>
@@ -1995,7 +2009,7 @@ test "null terminated array" {
       </ul>
       <p>These types are closely related to {#link|Arrays#} and {#link|Slices#}:</p>
         <ul>
-            <li>{#syntax#}*[N]T{#endsyntax#} - pointer to N items, same as single-item pointer to array.
+            <li>{#syntax#}*[N]T{#endsyntax#} - pointer to N items, same as single-item pointer to an array.
             <ul>
                 <li>Supports index syntax: {#syntax#}array_ptr[i]{#endsyntax#}</li>
                 <li>Supports slice syntax: {#syntax#}array_ptr[start..end]{#endsyntax#}</li>
@@ -2024,7 +2038,7 @@ test "address of syntax" {
     // Dereference a pointer:
     expect(x_ptr.* == 1234);
 
-    // When you get the address of a const variable, you get a const pointer to a single item.
+    // When you get the address of a const variable, you get a const single-item pointer.
     expect(@TypeOf(x_ptr) == *const i32);
 
     // If you want to mutate the value, you'd need an address of a mutable variable:
@@ -2037,7 +2051,7 @@ test "address of syntax" {
 
 test "pointer array access" {
     // Taking an address of an individual element gives a
-    // pointer to a single item. This kind of pointer
+    // single-item pointer. This kind of pointer
     // does not support pointer arithmetic.
     var array = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
     const ptr = &array[2];
@@ -2306,8 +2320,8 @@ test "basic slices" {
     expect(&slice[0] == &array[0]);
     expect(slice.len == array.len);
 
-    // Using the address-of operator on a slice gives a pointer to a single
-    // item, while using the `ptr` field gives an unknown length pointer.
+    // Using the address-of operator on a slice gives a single-item pointer,
+    // while using the `ptr` field gives a many-item pointer.
     expect(@TypeOf(slice.ptr) == [*]i32);
     expect(@TypeOf(&slice[0]) == *i32);
     expect(@ptrToInt(slice.ptr) == @ptrToInt(&slice[0]));
@@ -2339,7 +2353,7 @@ test "using slices for strings" {
     // You can use slice syntax on an array to convert an array into a slice.
     const all_together_slice = all_together[0..];
     // String concatenation example.
-    const hello_world = try fmt.bufPrint(all_together_slice, "{} {}", .{ hello, world });
+    const hello_world = try fmt.bufPrint(all_together_slice, "{s} {s}", .{ hello, world });
 
     // Generally, you can use UTF-8 and not worry about whether something is a
     // string. If you don't need to deal with individual characters, no need
@@ -2772,9 +2786,9 @@ const std = @import("std");
 
 pub fn main() void {
     const Foo = struct {};
-    std.debug.print("variable: {}\n", .{@typeName(Foo)});
-    std.debug.print("anonymous: {}\n", .{@typeName(struct {})});
-    std.debug.print("function: {}\n", .{@typeName(List(i32))});
+    std.debug.print("variable: {s}\n", .{@typeName(Foo)});
+    std.debug.print("anonymous: {s}\n", .{@typeName(struct {})});
+    std.debug.print("function: {s}\n", .{@typeName(List(i32))});
 }
 
 fn List(comptime T: type) type {
@@ -2909,15 +2923,15 @@ test "enum variant switch" {
     expect(mem.eql(u8, what_is_it, "this is a number"));
 }
 
-// @TagType can be used to access the integer tag type of an enum.
+// @typeInfo can be used to access the integer tag type of an enum.
 const Small = enum {
     one,
     two,
     three,
     four,
 };
-test "@TagType" {
-    expect(@TagType(Small) == u2);
+test "std.meta.Tag" {
+    expect(@typeInfo(Small).Enum.tag_type == u2);
 }
 
 // @typeInfo tells us the field count and the fields names:
@@ -3092,8 +3106,7 @@ test "simple union" {
       {#header_open|Tagged union#}
       <p>Unions can be declared with an enum tag type.
       This turns the union into a <em>tagged</em> union, which makes it eligible
-      to use with {#link|switch#} expressions. One can use {#link|@TagType#} to
-      obtain the enum type from the union type.
+      to use with {#link|switch#} expressions.
       Tagged unions coerce to their tag type: {#link|Type Coercion: unions and enums#}.
       </p>
       {#code_begin|test#}
@@ -3119,8 +3132,8 @@ test "switch on tagged union" {
     }
 }
 
-test "@TagType" {
-    expect(@TagType(ComplexType) == ComplexTypeTag);
+test "get tag type" {
+    expect(std.meta.Tag(ComplexType) == ComplexTypeTag);
 }
 
 test "coerce to enum" {
@@ -4241,9 +4254,9 @@ fn _start() callconv(.Naked) noreturn {
     abort();
 }
 
-// The inline specifier forces a function to be inlined at all call sites.
+// The inline calling convention forces a function to be inlined at all call sites.
 // If the function cannot be inlined, it is a compile-time error.
-inline fn shiftLeftOne(a: u32) u32 {
+fn shiftLeftOne(a: u32) callconv(.Inline) u32 {
     return a << 1;
 }
 
@@ -5231,8 +5244,7 @@ test "*[N]T to []T" {
     expect(std.mem.eql(f32, x2, &[2]f32{ 1.2, 3.4 }));
 }
 
-// Single-item pointers to arrays can be coerced to
-// unknown length pointers.
+// Single-item pointers to arrays can be coerced to many-item pointers.
 test "*[N]T to [*]T" {
     var buf: [5]u8 = "hello".*;
     const x: [*]u8 = &buf;
@@ -6110,7 +6122,7 @@ const a_number: i32 = 1234;
 const a_string = "foobar";
 
 pub fn main() void {
-    print("here is a string: '{}' here is a number: {}\n", .{a_string, a_number});
+    print("here is a string: '{s}' here is a number: {}\n", .{a_string, a_number});
 }
       {#code_end#}
 
@@ -6120,7 +6132,7 @@ pub fn main() void {
 
       {#code_begin|syntax#}
 /// Calls print and then flushes the buffer.
-pub fn printf(self: *OutStream, comptime format: []const u8, args: anytype) anyerror!void {
+pub fn printf(self: *Writer, comptime format: []const u8, args: anytype) anyerror!void {
     const State = enum {
         start,
         open_brace,
@@ -6192,7 +6204,7 @@ pub fn printf(self: *OutStream, comptime format: []const u8, args: anytype) anye
       and emits a function that actually looks like this:
       </p>
       {#code_begin|syntax#}
-pub fn printf(self: *OutStream, arg0: i32, arg1: []const u8) !void {
+pub fn printf(self: *Writer, arg0: i32, arg1: []const u8) !void {
     try self.write("here is a string: '");
     try self.printValue(arg0);
     try self.write("' here is a number: ");
@@ -6206,7 +6218,7 @@ pub fn printf(self: *OutStream, arg0: i32, arg1: []const u8) !void {
       on the type:
       </p>
       {#code_begin|syntax#}
-pub fn printValue(self: *OutStream, value: anytype) !void {
+pub fn printValue(self: *Writer, value: anytype) !void {
     switch (@typeInfo(@TypeOf(value))) {
         .Int => {
             return self.printInt(T, value);
@@ -6230,7 +6242,7 @@ const a_number: i32 = 1234;
 const a_string = "foobar";
 
 test "printf too many arguments" {
-    print("here is a string: '{}' here is a number: {}\n", .{
+    print("here is a string: '{s}' here is a number: {}\n", .{
         a_string,
         a_number,
         a_number,
@@ -6249,7 +6261,7 @@ const print = @import("std").debug.print;
 
 const a_number: i32 = 1234;
 const a_string = "foobar";
-const fmt = "here is a string: '{}' here is a number: {}\n";
+const fmt = "here is a string: '{s}' here is a number: {}\n";
 
 pub fn main() void {
     print(fmt, .{a_string, a_number});
@@ -6720,8 +6732,8 @@ fn amain() !void {
     const download_text = try await download_frame;
     defer allocator.free(download_text);
 
-    std.debug.print("download_text: {}\n", .{download_text});
-    std.debug.print("file_text: {}\n", .{file_text});
+    std.debug.print("download_text: {s}\n", .{download_text});
+    std.debug.print("file_text: {s}\n", .{file_text});
 }
 
 var global_download_frame: anyframe = undefined;
@@ -6790,8 +6802,8 @@ fn amain() !void {
     const download_text = try await download_frame;
     defer allocator.free(download_text);
 
-    std.debug.print("download_text: {}\n", .{download_text});
-    std.debug.print("file_text: {}\n", .{file_text});
+    std.debug.print("download_text: {s}\n", .{download_text});
+    std.debug.print("file_text: {s}\n", .{file_text});
 }
 
 fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
@@ -7415,7 +7427,7 @@ test "main" {
       This function returns a compile time constant pointer to null-terminated,
       fixed-size array with length equal to the byte count of the file given by
       {#syntax#}path{#endsyntax#}. The contents of the array are the contents of the file.
-      This is equivalent to a {#link|string literal|String Literals and Character Literals#}
+      This is equivalent to a {#link|string literal|String Literals and Unicode Code Point Literals#}
       with the file contents.
       </p>
       <p>
@@ -7534,25 +7546,36 @@ export fn @"A function name that is a complete sentence."() void {}
 
       {#header_open|@field#}
       <pre>{#syntax#}@field(lhs: anytype, comptime field_name: []const u8) (field){#endsyntax#}</pre>
-      <p>Performs field access by a compile-time string.
+      <p>Performs field access by a compile-time string. Works on both fields and declarations.
       </p>
        {#code_begin|test#}
 const std = @import("std");
 
 const Point = struct {
     x: u32,
-    y: u32
+    y: u32,
+
+    pub var z: u32 = 1;
 };
 
 test "field access by string" {
     const expect = std.testing.expect;
-    var p = Point {.x = 0, .y = 0};
+    var p = Point{ .x = 0, .y = 0 };
 
     @field(p, "x") = 4;
     @field(p, "y") = @field(p, "x") + 1;
 
     expect(@field(p, "x") == 4);
     expect(@field(p, "y") == 5);
+}
+
+test "decl access by string" {
+    const expect = std.testing.expect;
+
+    expect(@field(Point, "z") == 1);
+
+    @field(Point, "z") = 2;
+    expect(@field(Point, "z") == 2);
 }
       {#code_end#}
 
@@ -7740,7 +7763,7 @@ test "@hasDecl" {
       {#header_close#}
 
       {#header_open|@intToEnum#}
-      <pre>{#syntax#}@intToEnum(comptime DestType: type, int_value: @TagType(DestType)) DestType{#endsyntax#}</pre>
+      <pre>{#syntax#}@intToEnum(comptime DestType: type, int_value: std.meta.Tag(DestType)) DestType{#endsyntax#}</pre>
       <p>
       Converts an integer into an {#link|enum#} value.
       </p>
@@ -8435,16 +8458,6 @@ fn doTheTest() void {
       </p>
       {#header_close#}
 
-      {#header_open|@TagType#}
-      <pre>{#syntax#}@TagType(T: type) type{#endsyntax#}</pre>
-      <p>
-      For an enum, returns the integer type that is used to store the enumeration value.
-      </p>
-      <p>
-      For a union, returns the enum type that is used to store the tag value.
-      </p>
-      {#header_close#}
-
       {#header_open|@This#}
       <pre>{#syntax#}@This() type{#endsyntax#}</pre>
       <p>
@@ -8848,7 +8861,7 @@ pub fn main() !void {
     var byte: u8 = 255;
 
     byte = if (math.add(u8, byte, 1)) |result| result else |err| {
-        print("unable to add one: {}\n", .{@errorName(err)});
+        print("unable to add one: {s}\n", .{@errorName(err)});
         return err;
     };
 
@@ -9078,7 +9091,7 @@ pub fn main() void {
     if (result) |number| {
         print("got number: {}\n", .{number});
     } else |err| {
-        print("got error: {}\n", .{@errorName(err)});
+        print("got error: {s}\n", .{@errorName(err)});
     }
 }
 
@@ -9135,7 +9148,7 @@ const Foo = enum {
 pub fn main() void {
     var a: u2 = 3;
     var b = @intToEnum(Foo, a);
-    std.debug.print("value: {}\n", .{@tagName(b)});
+    std.debug.print("value: {s}\n", .{@tagName(b)});
 }
       {#code_end#}
       {#header_close#}
@@ -9839,7 +9852,7 @@ const c = @cImport({
       </p>
       <p>
       When importing C header files, it is ambiguous whether pointers should be translated as
-      single-item pointers ({#syntax#}*T{#endsyntax#}) or unknown-length pointers ({#syntax#}[*]T{#endsyntax#}).
+      single-item pointers ({#syntax#}*T{#endsyntax#}) or many-item pointers ({#syntax#}[*]T{#endsyntax#}).
       C pointers are a compromise so that Zig code can utilize translated header files directly.
       </p>
       <p>{#syntax#}[*c]T{#endsyntax#} - C pointer.</p>
@@ -9939,9 +9952,9 @@ export fn decode_base_64(
 ) usize {
     const src = source_ptr[0..source_len];
     const dest = dest_ptr[0..dest_len];
-    const base64_decoder = base64.standard_decoder_unsafe;
-    const decoded_size = base64_decoder.calcSize(src);
-    base64_decoder.decode(dest[0..decoded_size], src);
+    const base64_decoder = base64.standard.Decoder;
+    const decoded_size = base64_decoder.calcSizeForSlice(src) catch unreachable;
+    base64_decoder.decode(dest[0..decoded_size], src) catch unreachable;
     return decoded_size;
 }
       {#code_end#}
@@ -10025,7 +10038,7 @@ pub fn main() !void {
     defer std.process.argsFree(gpa, args);
 
     for (args) |arg, i| {
-        std.debug.print("{}: {}\n", .{ i, arg });
+        std.debug.print("{}: {s}\n", .{ i, arg });
     }
 }
       {#code_end#}
@@ -10433,13 +10446,40 @@ fn readU32Be() u32 {}
       {#header_close#}
       {#header_open|Source Encoding#}
       <p>Zig source code is encoded in UTF-8. An invalid UTF-8 byte sequence results in a compile error.</p>
-      <p>Throughout all zig source code (including in comments), some codepoints are never allowed:</p>
+      <p>Throughout all zig source code (including in comments), some code points are never allowed:</p>
       <ul>
-        <li>Ascii control characters, except for U+000a (LF): U+0000 - U+0009, U+000b - U+0001f, U+007f. (Note that Windows line endings (CRLF) are not allowed, and hard tabs are not allowed.)</li>
+        <li>Ascii control characters, except for U+000a (LF), U+000d (CR), and U+0009 (HT): U+0000 - U+0008, U+000b - U+000c, U+000e - U+0001f, U+007f.</li>
         <li>Non-Ascii Unicode line endings: U+0085 (NEL), U+2028 (LS), U+2029 (PS).</li>
       </ul>
-      <p>The codepoint U+000a (LF) (which is encoded as the single-byte value 0x0a) is the line terminator character. This character always terminates a line of zig source code (except possibly the last line of the file).</p>
-      <p>For some discussion on the rationale behind these design decisions, see <a href="https://github.com/ziglang/zig/issues/663">issue #663</a></p>
+      <p>
+      LF (byte value 0x0a, code point U+000a, {#syntax#}'\n'{#endsyntax#}) is the line terminator in Zig source code.
+      This byte value terminates every line of zig source code except the last line of the file.
+      It is recommended that non-empty source files end with an empty line, which means the last byte would be 0x0a (LF).
+      </p>
+      <p>
+      Each LF may be immediately preceded by a single CR (byte value 0x0d, code point U+000d, {#syntax#}'\r'{#endsyntax#})
+      to form a Windows style line ending, but this is discouraged.
+      A CR in any other context is not allowed.
+      </p>
+      <p>
+      HT hard tabs (byte value 0x09, code point U+0009, {#syntax#}'\t'{#endsyntax#}) are interchangeable with
+      SP spaces (byte value 0x20, code point U+0020, {#syntax#}' '{#endsyntax#}) as a token separator,
+      but use of hard tabs is discouraged. See {#link|Grammar#}.
+      </p>
+      <p>
+      Note that running <code>zig fmt</code> on a source file will implement all recommendations mentioned here.
+      Note also that the stage1 compiler does <a href="https://github.com/ziglang/zig/wiki/FAQ#why-does-zig-force-me-to-use-spaces-instead-of-tabs">not yet support CR or HT</a> control characters.
+      </p>
+      <p>
+      Note that a tool reading Zig source code can make assumptions if the source code is assumed to be correct Zig code.
+      For example, when identifying the ends of lines, a tool can use a naive search such as <code>/\n/</code>,
+      or an <a href="https://msdn.microsoft.com/en-us/library/dd409797.aspx">advanced</a>
+      search such as <code>/\r\n?|[\n\u0085\u2028\u2029]/</code>, and in either case line endings will be correctly identified.
+      For another example, when identifying the whitespace before the first token on a line,
+      a tool can either use a naive search such as <code>/[ \t]/</code>,
+      or an <a href="https://tc39.es/ecma262/#sec-characterclassescape">advanced</a> search such as <code>/\s/</code>,
+      and in either case whitespace will be correctly identified.
+      </p>
       {#header_close#}
 
       {#header_open|Keyword Reference#}
@@ -11359,6 +11399,7 @@ ExprList &lt;- (Expr COMMA)* Expr?
 
 # *** Tokens ***
 eof &lt;- !.
+eol &lt;- ('\r'? '\n') | eof
 hex &lt;- [0-9a-fA-F]
 hex_ &lt;- ('_'/hex)
 dec &lt;- [0-9]
@@ -11368,39 +11409,39 @@ dec_int &lt;- dec (dec_* dec)?
 hex_int &lt;- hex (hex_* dec)?
 
 char_escape
-    &lt;- &quot;\\x&quot; hex hex
-     / &quot;\\u{&quot; hex+ &quot;}&quot;
-     / &quot;\\&quot; [nr\\t'&quot;]
+    &lt;- '\\x' hex hex
+     / '\\u{' hex+ '}'
+     / '\\' [nr\\t'&quot;]
 char_char
     &lt;- char_escape
-     / [^\\'\n]
+     / [^\\'\r\n]
 string_char
     &lt;- char_escape
-     / [^\\&quot;\n]
+     / [^\\&quot;\r\n]
 
-line_comment &lt;- '//'[^\n]*
-line_string &lt;- (&quot;\\\\&quot; [^\n]* [ \n]*)+
-skip &lt;- ([ \n] / line_comment)*
+line_comment &lt;- '//'[^\r\n]* eol
+line_string &lt;- ('\\\\' [^\r\n]* eol skip)+
+skip &lt;- ([ \t] / eol / line_comment)*
 
 CHAR_LITERAL &lt;- &quot;'&quot; char_char &quot;'&quot; skip
 FLOAT
-    &lt;- &quot;0x&quot; hex_* hex &quot;.&quot; hex_int ([pP] [-+]? hex_int)? skip
-     /      dec_int   &quot;.&quot; dec_int ([eE] [-+]? dec_int)? skip
-     / &quot;0x&quot; hex_* hex &quot;.&quot;? [pP] [-+]? hex_int skip
-     /      dec_int   &quot;.&quot;? [eE] [-+]? dec_int skip
+    &lt;- '0x' hex_* hex '.' hex_int ([pP] [-+]? hex_int)? skip
+     /      dec_int   '.' dec_int ([eE] [-+]? dec_int)? skip
+     / '0x' hex_* hex '.'? [pP] [-+]? hex_int skip
+     /      dec_int   '.'? [eE] [-+]? dec_int skip
 INTEGER
-    &lt;- &quot;0b&quot; [_01]*  [01]  skip
-     / &quot;0o&quot; [_0-7]* [0-7] skip
-     / &quot;0x&quot; hex_* hex skip
+    &lt;- '0b' [_01]*  [01]  skip
+     / '0o' [_0-7]* [0-7] skip
+     / '0x' hex_* hex skip
      /      dec_int   skip
-STRINGLITERALSINGLE &lt;- &quot;\&quot;&quot; string_char* &quot;\&quot;&quot; skip
+STRINGLITERALSINGLE &lt;- '&quot;' string_char* '&quot;' skip
 STRINGLITERAL
     &lt;- STRINGLITERALSINGLE
-     / line_string                 skip
+     / line_string skip
 IDENTIFIER
     &lt;- !keyword [A-Za-z_] [A-Za-z0-9_]* skip
-     / &quot;@\&quot;&quot; string_char* &quot;\&quot;&quot;                            skip
-BUILTINIDENTIFIER &lt;- &quot;@&quot;[A-Za-z_][A-Za-z0-9_]* skip
+     / '@&quot;' string_char* '&quot;' skip
+BUILTINIDENTIFIER &lt;- '@'[A-Za-z_][A-Za-z0-9_]* skip
 
 
 AMPERSAND            &lt;- '&amp;'      ![=]      skip

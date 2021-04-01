@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -50,7 +50,7 @@ pub const LineInfo = struct {
     }
 };
 
-var stderr_mutex = std.Mutex{};
+var stderr_mutex = std.Thread.Mutex{};
 
 /// Deprecated. Use `std.log` functions for logging or `std.debug.print` for
 /// "printf debugging".
@@ -65,7 +65,7 @@ pub fn print(comptime fmt: []const u8, args: anytype) void {
     nosuspend stderr.print(fmt, args) catch return;
 }
 
-pub fn getStderrMutex() *std.Mutex {
+pub fn getStderrMutex() *std.Thread.Mutex {
     return &stderr_mutex;
 }
 
@@ -108,11 +108,11 @@ pub fn dumpCurrentStackTrace(start_addr: ?usize) void {
             return;
         }
         const debug_info = getSelfDebugInfo() catch |err| {
-            stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+            stderr.print("Unable to dump stack trace: Unable to open debug info: {s}\n", .{@errorName(err)}) catch return;
             return;
         };
         writeCurrentStackTrace(stderr, debug_info, detectTTYConfig(), start_addr) catch |err| {
-            stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
+            stderr.print("Unable to dump stack trace: {s}\n", .{@errorName(err)}) catch return;
             return;
         };
     }
@@ -129,7 +129,7 @@ pub fn dumpStackTraceFromBase(bp: usize, ip: usize) void {
             return;
         }
         const debug_info = getSelfDebugInfo() catch |err| {
-            stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+            stderr.print("Unable to dump stack trace: Unable to open debug info: {s}\n", .{@errorName(err)}) catch return;
             return;
         };
         const tty_config = detectTTYConfig();
@@ -199,11 +199,11 @@ pub fn dumpStackTrace(stack_trace: builtin.StackTrace) void {
             return;
         }
         const debug_info = getSelfDebugInfo() catch |err| {
-            stderr.print("Unable to dump stack trace: Unable to open debug info: {}\n", .{@errorName(err)}) catch return;
+            stderr.print("Unable to dump stack trace: Unable to open debug info: {s}\n", .{@errorName(err)}) catch return;
             return;
         };
         writeStackTrace(stack_trace, stderr, getDebugInfoAllocator(), debug_info, detectTTYConfig()) catch |err| {
-            stderr.print("Unable to dump stack trace: {}\n", .{@errorName(err)}) catch return;
+            stderr.print("Unable to dump stack trace: {s}\n", .{@errorName(err)}) catch return;
             return;
         };
     }
@@ -235,7 +235,7 @@ pub fn panic(comptime format: []const u8, args: anytype) noreturn {
 var panicking: u8 = 0;
 
 // Locked to avoid interleaving panic messages from multiple threads.
-var panic_mutex = std.Mutex{};
+var panic_mutex = std.Thread.Mutex{};
 
 /// Counts how many times the panic handler is invoked by this thread.
 /// This is used to catch and handle panics triggered by the panic handler.
@@ -262,6 +262,12 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
                 defer held.release();
 
                 const stderr = io.getStdErr().writer();
+                if (builtin.single_threaded) {
+                    stderr.print("panic: ", .{}) catch os.abort();
+                } else {
+                    const current_thread_id = std.Thread.getCurrentThreadId();
+                    stderr.print("thread {d} panic: ", .{current_thread_id}) catch os.abort();
+                }
                 stderr.print(format ++ "\n", args) catch os.abort();
                 if (trace) |t| {
                     dumpStackTrace(t.*);
@@ -274,7 +280,7 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
                 // and call abort()
 
                 // Sleep forever without hammering the CPU
-                var event: std.StaticResetEvent = .{};
+                var event: std.Thread.StaticResetEvent = .{};
                 event.wait();
                 unreachable;
             }
@@ -336,14 +342,24 @@ pub const StackIterator = struct {
         };
     }
 
-    // Negative offset of the saved BP wrt the frame pointer.
+    // Offset of the saved BP wrt the frame pointer.
     const fp_offset = if (builtin.arch.isRISCV())
         // On RISC-V the frame pointer points to the top of the saved register
         // area, on pretty much every other architecture it points to the stack
         // slot where the previous frame pointer is saved.
         2 * @sizeOf(usize)
+    else if (builtin.arch.isSPARC())
+        // On SPARC the previous frame pointer is stored at 14 slots past %fp+BIAS.
+        14 * @sizeOf(usize)
     else
         0;
+
+    const fp_bias = if (builtin.arch.isSPARC())
+        // On SPARC frame pointers are biased by a constant.
+        2047
+    else
+        0;
+
     // Positive offset of the saved PC wrt the frame pointer.
     const pc_offset = if (builtin.arch == .powerpc64le)
         2 * @sizeOf(usize)
@@ -364,13 +380,17 @@ pub const StackIterator = struct {
     }
 
     fn next_internal(self: *StackIterator) ?usize {
-        const fp = math.sub(usize, self.fp, fp_offset) catch return null;
+        const fp = if (builtin.arch.isSPARC())
+            // On SPARC the offset is positive. (!)
+            math.add(usize, self.fp, fp_offset) catch return null
+        else
+            math.sub(usize, self.fp, fp_offset) catch return null;
 
         // Sanity check.
         if (fp == 0 or !mem.isAligned(fp, @alignOf(usize)))
             return null;
 
-        const new_fp = @intToPtr(*const usize, fp).*;
+        const new_fp = math.add(usize, @intToPtr(*const usize, fp).*, fp_bias) catch return null;
 
         // Sanity check: the stack grows down thus all the parent frames must be
         // be at addresses that are greater (or equal) than the previous one.
@@ -511,15 +531,15 @@ fn populateModule(di: *ModuleDebugInfo, mod: *Module) !void {
 
     const modi = di.pdb.getStreamById(mod.mod_info.ModuleSymStream) orelse return error.MissingDebugInfo;
 
-    const signature = try modi.inStream().readIntLittle(u32);
+    const signature = try modi.reader().readIntLittle(u32);
     if (signature != 4)
         return error.InvalidDebugInfo;
 
     mod.symbols = try allocator.alloc(u8, mod.mod_info.SymByteSize - 4);
-    try modi.inStream().readNoEof(mod.symbols);
+    try modi.reader().readNoEof(mod.symbols);
 
     mod.subsect_info = try allocator.alloc(u8, mod.mod_info.C13ByteSize);
-    try modi.inStream().readNoEof(mod.subsect_info);
+    try modi.reader().readNoEof(mod.subsect_info);
 
     var sect_offset: usize = 0;
     var skip_len: usize = undefined;
@@ -605,7 +625,7 @@ fn printLineInfo(
         tty_config.setColor(out_stream, .White);
 
         if (line_info) |*li| {
-            try out_stream.print("{}:{}:{}", .{ li.file_name, li.line, li.column });
+            try out_stream.print("{s}:{d}:{d}", .{ li.file_name, li.line, li.column });
         } else {
             try out_stream.writeAll("???:?:?");
         }
@@ -613,7 +633,7 @@ fn printLineInfo(
         tty_config.setColor(out_stream, .Reset);
         try out_stream.writeAll(": ");
         tty_config.setColor(out_stream, .Dim);
-        try out_stream.print("0x{x} in {} ({})", .{ address, symbol_name, compile_unit_name });
+        try out_stream.print("0x{x} in {s} ({s})", .{ address, symbol_name, compile_unit_name });
         tty_config.setColor(out_stream, .Reset);
         try out_stream.writeAll("\n");
 
@@ -633,6 +653,7 @@ fn printLineInfo(
             } else |err| switch (err) {
                 error.EndOfFile, error.FileNotFound => {},
                 error.BadPathName => {},
+                error.AccessDenied => {},
                 else => return err,
             }
         }
@@ -698,11 +719,11 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         try di.pdb.openFile(di.coff, path);
 
         var pdb_stream = di.pdb.getStream(pdb.StreamType.Pdb) orelse return error.InvalidDebugInfo;
-        const version = try pdb_stream.inStream().readIntLittle(u32);
-        const signature = try pdb_stream.inStream().readIntLittle(u32);
-        const age = try pdb_stream.inStream().readIntLittle(u32);
+        const version = try pdb_stream.reader().readIntLittle(u32);
+        const signature = try pdb_stream.reader().readIntLittle(u32);
+        const age = try pdb_stream.reader().readIntLittle(u32);
         var guid: [16]u8 = undefined;
-        try pdb_stream.inStream().readNoEof(&guid);
+        try pdb_stream.reader().readNoEof(&guid);
         if (version != 20000404) // VC70, only value observed by LLVM team
             return error.UnknownPDBVersion;
         if (!mem.eql(u8, &di.coff.guid, &guid) or di.coff.age != age)
@@ -710,9 +731,9 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         // We validated the executable and pdb match.
 
         const string_table_index = str_tab_index: {
-            const name_bytes_len = try pdb_stream.inStream().readIntLittle(u32);
+            const name_bytes_len = try pdb_stream.reader().readIntLittle(u32);
             const name_bytes = try allocator.alloc(u8, name_bytes_len);
-            try pdb_stream.inStream().readNoEof(name_bytes);
+            try pdb_stream.reader().readNoEof(name_bytes);
 
             const HashTableHeader = packed struct {
                 Size: u32,
@@ -722,17 +743,17 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
                     return cap * 2 / 3 + 1;
                 }
             };
-            const hash_tbl_hdr = try pdb_stream.inStream().readStruct(HashTableHeader);
+            const hash_tbl_hdr = try pdb_stream.reader().readStruct(HashTableHeader);
             if (hash_tbl_hdr.Capacity == 0)
                 return error.InvalidDebugInfo;
 
             if (hash_tbl_hdr.Size > HashTableHeader.maxLoad(hash_tbl_hdr.Capacity))
                 return error.InvalidDebugInfo;
 
-            const present = try readSparseBitVector(&pdb_stream.inStream(), allocator);
+            const present = try readSparseBitVector(&pdb_stream.reader(), allocator);
             if (present.len != hash_tbl_hdr.Size)
                 return error.InvalidDebugInfo;
-            const deleted = try readSparseBitVector(&pdb_stream.inStream(), allocator);
+            const deleted = try readSparseBitVector(&pdb_stream.reader(), allocator);
 
             const Bucket = struct {
                 first: u32,
@@ -740,8 +761,8 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
             };
             const bucket_list = try allocator.alloc(Bucket, present.len);
             for (present) |_| {
-                const name_offset = try pdb_stream.inStream().readIntLittle(u32);
-                const name_index = try pdb_stream.inStream().readIntLittle(u32);
+                const name_offset = try pdb_stream.reader().readIntLittle(u32);
+                const name_index = try pdb_stream.reader().readIntLittle(u32);
                 const name = mem.spanZ(std.meta.assumeSentinel(name_bytes.ptr + name_offset, 0));
                 if (mem.eql(u8, name, "/names")) {
                     break :str_tab_index name_index;
@@ -756,7 +777,7 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         const dbi = di.pdb.dbi;
 
         // Dbi Header
-        const dbi_stream_header = try dbi.inStream().readStruct(pdb.DbiStreamHeader);
+        const dbi_stream_header = try dbi.reader().readStruct(pdb.DbiStreamHeader);
         if (dbi_stream_header.VersionHeader != 19990903) // V70, only value observed by LLVM team
             return error.UnknownPDBVersion;
         if (dbi_stream_header.Age != age)
@@ -770,7 +791,7 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         // Module Info Substream
         var mod_info_offset: usize = 0;
         while (mod_info_offset != mod_info_size) {
-            const mod_info = try dbi.inStream().readStruct(pdb.ModInfo);
+            const mod_info = try dbi.reader().readStruct(pdb.ModInfo);
             var this_record_len: usize = @sizeOf(pdb.ModInfo);
 
             const module_name = try dbi.readNullTermString(allocator);
@@ -808,14 +829,14 @@ fn readCoffDebugInfo(allocator: *mem.Allocator, coff_file: File) !ModuleDebugInf
         var sect_contribs = ArrayList(pdb.SectionContribEntry).init(allocator);
         var sect_cont_offset: usize = 0;
         if (section_contrib_size != 0) {
-            const ver = @intToEnum(pdb.SectionContrSubstreamVersion, try dbi.inStream().readIntLittle(u32));
+            const ver = @intToEnum(pdb.SectionContrSubstreamVersion, try dbi.reader().readIntLittle(u32));
             if (ver != pdb.SectionContrSubstreamVersion.Ver60)
                 return error.InvalidDebugInfo;
             sect_cont_offset += @sizeOf(u32);
         }
         while (sect_cont_offset != section_contrib_size) {
             const entry = try sect_contribs.addOne();
-            entry.* = try dbi.inStream().readStruct(pdb.SectionContribEntry);
+            entry.* = try dbi.reader().readStruct(pdb.SectionContribEntry);
             sect_cont_offset += @sizeOf(pdb.SectionContribEntry);
 
             if (sect_cont_offset > section_contrib_size)
@@ -1100,12 +1121,15 @@ pub const DebugInfo = struct {
     }
 
     pub fn getModuleForAddress(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
-        if (comptime std.Target.current.isDarwin())
-            return self.lookupModuleDyld(address)
-        else if (builtin.os.tag == .windows)
-            return self.lookupModuleWin32(address)
-        else
+        if (comptime std.Target.current.isDarwin()) {
+            return self.lookupModuleDyld(address);
+        } else if (builtin.os.tag == .windows) {
+            return self.lookupModuleWin32(address);
+        } else if (builtin.os.tag == .haiku) {
+            return self.lookupModuleHaiku(address);
+        } else {
             return self.lookupModuleDl(address);
+        }
     }
 
     fn lookupModuleDyld(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
@@ -1310,6 +1334,10 @@ pub const DebugInfo = struct {
         try self.address_map.putNoClobber(ctx.base_address, obj_di);
 
         return obj_di;
+    }
+
+    fn lookupModuleHaiku(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
+        @panic("TODO implement lookup module for Haiku");
     }
 };
 

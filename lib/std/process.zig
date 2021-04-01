@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -517,7 +517,8 @@ test "args iterator" {
     const given_suffix = std.fs.path.basename(prog_name);
 
     testing.expect(mem.eql(u8, expected_suffix, given_suffix));
-    testing.expectEqual(it.next(ga), null);
+    testing.expect(it.skip()); // Skip over zig_exe_path, passed to the test runner
+    testing.expect(it.next(ga) == null);
     testing.expect(!it.skip());
 }
 
@@ -595,7 +596,7 @@ fn testWindowsCmdLine(input_cmd_line: [*]const u16, expected_args: []const []con
     for (expected_args) |expected_arg| {
         const arg = it.next(std.testing.allocator).? catch unreachable;
         defer std.testing.allocator.free(arg);
-        testing.expectEqualSlices(u8, expected_arg, arg);
+        testing.expectEqualStrings(expected_arg, arg);
     }
     testing.expect(it.next(std.testing.allocator) == null);
 }
@@ -608,7 +609,7 @@ pub const UserInfo = struct {
 /// POSIX function which gets a uid from username.
 pub fn getUserInfo(name: []const u8) !UserInfo {
     return switch (builtin.os.tag) {
-        .linux, .macos, .watchos, .tvos, .ios, .freebsd, .netbsd, .openbsd => posixGetUserInfo(name),
+        .linux, .macos, .watchos, .tvos, .ios, .freebsd, .netbsd, .openbsd, .haiku => posixGetUserInfo(name),
         else => @compileError("Unsupported OS"),
     };
 }
@@ -776,6 +777,24 @@ pub fn getSelfExeSharedLibPaths(allocator: *Allocator) error{OutOfMemory}![][:0]
             }
             return paths.toOwnedSlice();
         },
+        // revisit if Haiku implements dl_iterat_phdr (https://dev.haiku-os.org/ticket/15743)
+        .haiku => {
+            var paths = List.init(allocator);
+            errdefer {
+                const slice = paths.toOwnedSlice();
+                for (slice) |item| {
+                    allocator.free(item);
+                }
+                allocator.free(slice);
+            }
+
+            var b = "/boot/system/runtime_loader";
+            const item = try allocator.dupeZ(u8, mem.spanZ(b));
+            errdefer allocator.free(item);
+            try paths.append(item);
+
+            return paths.toOwnedSlice();
+        },
         else => @compileError("getSelfExeSharedLibPaths unimplemented for this target"),
     }
 }
@@ -816,15 +835,8 @@ pub fn execve(
     defer arena_allocator.deinit();
     const arena = &arena_allocator.allocator;
 
-    const argv_buf = try arena.alloc(?[*:0]u8, argv.len + 1);
-    for (argv) |arg, i| {
-        const arg_buf = try arena.alloc(u8, arg.len + 1);
-        @memcpy(arg_buf.ptr, arg.ptr, arg.len);
-        arg_buf[arg.len] = 0;
-        argv_buf[i] = arg_buf[0..arg.len :0].ptr;
-    }
-    argv_buf[argv.len] = null;
-    const argv_ptr = argv_buf[0..argv.len :null].ptr;
+    const argv_buf = try arena.allocSentinel(?[*:0]u8, argv.len, null);
+    for (argv) |arg, i| argv_buf[i] = (try arena.dupeZ(u8, arg)).ptr;
 
     const envp = m: {
         if (env_map) |m| {
@@ -842,5 +854,5 @@ pub fn execve(
         }
     };
 
-    return os.execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_ptr, envp);
+    return os.execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_buf.ptr, envp);
 }

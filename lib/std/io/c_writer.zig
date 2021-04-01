@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -30,11 +30,11 @@ fn cWriterWrite(c_file: *std.c.FILE, bytes: []const u8) std.fs.File.WriteError!u
         os.ENOSPC => return error.NoSpaceLeft,
         os.EPERM => return error.AccessDenied,
         os.EPIPE => return error.BrokenPipe,
-        else => |err| return os.unexpectedErrno(@intCast(usize, err)),
+        else => |err| return os.unexpectedErrno(err),
     }
 }
 
-test "" {
+test {
     if (!builtin.link_libc) return error.SkipZigTest;
 
     const filename = "tmp_io_test_file.txt";

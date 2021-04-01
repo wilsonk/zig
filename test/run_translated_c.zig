@@ -3,6 +3,46 @@ const tests = @import("tests.zig");
 const nl = std.cstr.line_sep;
 
 pub fn addCases(cases: *tests.RunTranslatedCContext) void {
+    cases.add("division of floating literals",
+        \\#define _NO_CRT_STDIO_INLINE 1
+        \\#include <stdio.h>
+        \\#define PI 3.14159265358979323846f
+        \\#define DEG2RAD (PI/180.0f)
+        \\int main(void) {
+        \\    printf("DEG2RAD is: %f\n", DEG2RAD);
+        \\    return 0;
+        \\}
+    , "DEG2RAD is: 0.017453" ++ nl);
+
+    cases.add("use global scope for record/enum/typedef type transalation if needed",
+        \\void bar(void);
+        \\void baz(void);
+        \\struct foo { int x; };
+        \\void bar() {
+        \\	struct foo tmp;
+        \\}
+        \\
+        \\void baz() {
+        \\	struct foo tmp;
+        \\}
+        \\
+        \\int main(void) {
+        \\	bar();
+        \\	baz();
+        \\	return 0;
+        \\}
+    , "");
+
+    cases.add("failed macros are only declared once",
+        \\#define FOO =
+        \\#define FOO =
+        \\#define PtrToPtr64(p) ((void *POINTER_64) p)
+        \\#define STRUC_ALIGNED_STACK_COPY(t,s) ((CONST t *)(s))
+        \\#define bar = 0x
+        \\#define baz = 0b
+        \\int main(void) {}
+    , "");
+
     cases.add("parenthesized string literal",
         \\void foo(const char *s) {}
         \\int main(void) {
@@ -655,6 +695,617 @@ pub fn addCases(cases: *tests.RunTranslatedCContext) void {
         \\    signed char c = foo();
         \\    if (c != 1) abort();
         \\    return 0;
+        \\}
+    , "");
+
+    cases.add("static K&R-style no prototype function declaration (empty parameter list)",
+        \\#include <stdlib.h>
+        \\static int foo() {
+        \\    return 42;
+        \\}
+        \\int main() {
+        \\    if (foo() != 42) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("K&R-style static function prototype for unused function",
+        \\static int foo();
+        \\int main() {
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("K&R-style static function prototype + separate definition",
+        \\#include <stdlib.h>
+        \\static int foo();
+        \\static int foo(int a, int b) {
+        \\    return a + b;
+        \\}
+        \\int main() {
+        \\    if (foo(40, 2) != 42) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("dollar sign in identifiers",
+        \\#include <stdlib.h>
+        \\#define $FOO 2
+        \\#define $foo bar$
+        \\#define $baz($x) ($x + $FOO)
+        \\int $$$(int $x$) { return $x$ + $FOO; }
+        \\int main() {
+        \\    int bar$ = 42;
+        \\    if ($foo != 42) abort();
+        \\    if (bar$ != 42) abort();
+        \\    if ($baz(bar$) != 44) abort();
+        \\    if ($$$(bar$) != 44) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Cast boolean expression result to int",
+        \\#include <stdlib.h>
+        \\char foo(char c) { return c; }
+        \\int  bar(int i)  { return i; }
+        \\long baz(long l) { return l; }
+        \\int main() {
+        \\    if (foo(1 == 2)) abort();
+        \\    if (!foo(1 == 1)) abort();
+        \\    if (bar(1 == 2)) abort();
+        \\    if (!bar(1 == 1)) abort();
+        \\    if (baz(1 == 2)) abort();
+        \\    if (!baz(1 == 1)) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Wide, UTF-16, and UTF-32 character literals",
+        \\#include <wchar.h>
+        \\#include <stdlib.h>
+        \\int main() {
+        \\    wchar_t wc = L'™';
+        \\    int utf16_char = u'™';
+        \\    int utf32_char = U'💯';
+        \\    if (wc != 8482) abort();
+        \\    if (utf16_char != 8482) abort();
+        \\    if (utf32_char != 128175) abort();
+        \\    unsigned char c = wc;
+        \\    if (c != 0x22) abort();
+        \\    c = utf32_char;
+        \\    if (c != 0xaf) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Variadic function call",
+        \\#define _NO_CRT_STDIO_INLINE 1
+        \\#include <stdio.h>
+        \\int main(void) {
+        \\    printf("%d %d\n", 1, 2);
+        \\    return 0;
+        \\}
+    , "1 2" ++ nl);
+
+    cases.add("multi-character character constant",
+        \\#include <stdlib.h>
+        \\int main(void) {
+        \\    int foo = 'abcd';
+        \\    switch (foo) {
+        \\        case 'abcd': break;
+        \\        default: abort();
+        \\    }
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Array initializers (string literals, incomplete arrays)",
+        \\#include <stdlib.h>
+        \\#include <string.h>
+        \\extern int foo[];
+        \\int global_arr[] = {1, 2, 3};
+        \\char global_string[] = "hello";
+        \\int main(int argc, char *argv[]) {
+        \\    if (global_arr[2] != 3) abort();
+        \\    if (strlen(global_string) != 5) abort();
+        \\    const char *const_str = "hello";
+        \\    if (strcmp(const_str, "hello") != 0) abort();
+        \\    char empty_str[] = "";
+        \\    if (strlen(empty_str) != 0) abort();
+        \\    char hello[] = "hello";
+        \\    if (strlen(hello) != 5 || sizeof(hello) != 6) abort();
+        \\    int empty[] = {};
+        \\    if (sizeof(empty) != 0) abort();
+        \\    int bar[] = {42};
+        \\    if (bar[0] != 42) abort();
+        \\    bar[0] = 43;
+        \\    if (bar[0] != 43) abort();
+        \\    int baz[] = {1, [42] = 123, 456};
+        \\    if (baz[42] != 123 || baz[43] != 456) abort();
+        \\    if (sizeof(baz) != sizeof(int) * 44) abort();
+        \\    const char *const names[] = {"first", "second", "third"};
+        \\    if (strcmp(names[2], "third") != 0) abort();
+        \\    char catted_str[] = "abc" "def";
+        \\    if (strlen(catted_str) != 6 || sizeof(catted_str) != 7) abort();
+        \\    char catted_trunc_str[2] = "abc" "def";
+        \\    if (sizeof(catted_trunc_str) != 2 || catted_trunc_str[0] != 'a' || catted_trunc_str[1] != 'b') abort();
+        \\    char big_array_utf8lit[10] = "💯";
+        \\    if (strcmp(big_array_utf8lit, "💯") != 0 || big_array_utf8lit[9] != 0) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Wide, UTF-16, and UTF-32 string literals",
+        \\#include <stdlib.h>
+        \\#include <stdint.h>
+        \\#include <wchar.h>
+        \\int main(void) {
+        \\    const wchar_t *wide_str = L"wide";
+        \\    const wchar_t wide_hello[] = L"hello";
+        \\    if (wcslen(wide_str) != 4) abort();
+        \\    if (wcslen(L"literal") != 7) abort();
+        \\    if (wcscmp(wide_hello, L"hello") != 0) abort();
+        \\
+        \\    const uint16_t *u16_str = u"wide";
+        \\    const uint16_t u16_hello[] = u"hello";
+        \\    if (u16_str[3] != u'e' || u16_str[4] != 0) abort();
+        \\    if (u16_hello[4] != u'o' || u16_hello[5] != 0) abort();
+        \\
+        \\    const uint32_t *u32_str = U"wide";
+        \\    const uint32_t u32_hello[] = U"hello";
+        \\    if (u32_str[3] != U'e' || u32_str[4] != 0) abort();
+        \\    if (u32_hello[4] != U'o' || u32_hello[5] != 0) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Address of function is no-op",
+        \\#include <stdlib.h>
+        \\#include <stdbool.h>
+        \\typedef int (*myfunc)(int);
+        \\int a(int arg) { return arg + 1;}
+        \\int b(int arg) { return arg + 2;}
+        \\int caller(myfunc fn, int arg) {
+        \\    return fn(arg);
+        \\}
+        \\int main() {
+        \\    myfunc arr[3] = {&a, &b, a};
+        \\    myfunc foo = a;
+        \\    myfunc bar = &(a);
+        \\    if (foo != bar) abort();
+        \\    if (arr[0] == arr[1]) abort();
+        \\    if (arr[0] != arr[2]) abort();
+        \\    if (caller(b, 40) != 42) abort();
+        \\    if (caller(&b, 40) != 42) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Obscure ways of calling functions; issue #4124",
+        \\#include <stdlib.h>
+        \\static int add(int a, int b) {
+        \\    return a + b;
+        \\}
+        \\typedef int (*adder)(int, int);
+        \\typedef void (*funcptr)(void);
+        \\int main() {
+        \\    if ((add)(1, 2) != 3) abort();
+        \\    if ((&add)(1, 2) != 3) abort();
+        \\    if (add(3, 1) != 4) abort();
+        \\    if ((*add)(2, 3) != 5) abort();
+        \\    if ((**add)(7, -1) != 6) abort();
+        \\    if ((***add)(-2, 9) != 7) abort();
+        \\
+        \\    int (*ptr)(int a, int b);
+        \\    ptr = add;
+        \\
+        \\    if (ptr(1, 2) != 3) abort();
+        \\    if ((*ptr)(3, 1) != 4) abort();
+        \\    if ((**ptr)(2, 3) != 5) abort();
+        \\    if ((***ptr)(7, -1) != 6) abort();
+        \\    if ((****ptr)(-2, 9) != 7) abort();
+        \\
+        \\    funcptr addr1 = (funcptr)(add);
+        \\    funcptr addr2 = (funcptr)(&add);
+        \\
+        \\    if (addr1 != addr2) abort();
+        \\    if (((int(*)(int, int))addr1)(1, 2) != 3) abort();
+        \\    if (((adder)addr2)(1, 2) != 3) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Return boolean expression as int; issue #6215",
+        \\#include <stdlib.h>
+        \\#include <stdbool.h>
+        \\bool  actual_bool(void)    { return 4 - 1 < 4;}
+        \\char  char_bool_ret(void)  { return 0 || 1; }
+        \\short short_bool_ret(void) { return 0 < 1; }
+        \\int   int_bool_ret(void)   { return 1 && 1; }
+        \\long  long_bool_ret(void)  { return !(0 > 1); }
+        \\static int GLOBAL = 1;
+        \\int nested_scopes(int a, int b) {
+        \\    if (a == 1) {
+        \\        int target = 1;
+        \\        return b == target;
+        \\    } else {
+        \\        int target = 2;
+        \\        if (b == target) {
+        \\            return GLOBAL == 1;
+        \\        }
+        \\        return target == 2;
+        \\    }
+        \\}
+        \\int main(void) {
+        \\    if (!actual_bool()) abort();
+        \\    if (!char_bool_ret()) abort();
+        \\    if (!short_bool_ret()) abort();
+        \\    if (!int_bool_ret()) abort();
+        \\    if (!long_bool_ret()) abort();
+        \\    if (!nested_scopes(1, 1)) abort();
+        \\    if (nested_scopes(1, 2)) abort();
+        \\    if (!nested_scopes(0, 2)) abort();
+        \\    if (!nested_scopes(0, 3)) abort();
+        \\    return 1 != 1;
+        \\}
+    , "");
+
+    cases.add("Comma operator should create new scope; issue #7989",
+        \\#include <stdlib.h>
+        \\#include <stdio.h>
+        \\int main(void) {
+        \\    if (1 || (abort(), 1)) {}
+        \\    if (0 && (1, printf("do not print\n"))) {}
+        \\    int x = 0;
+        \\    x = (x = 3, 4, x + 1);
+        \\    if (x != 4) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Use correct break label for statement expression in nested scope",
+        \\#include <stdlib.h>
+        \\int main(void) {
+        \\    int x = ({1, ({2; 3;});});
+        \\    if (x != 3) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("pointer difference: scalar array w/ size truncation or negative result. Issue #7216",
+        \\#include <stdlib.h>
+        \\#include <stddef.h>
+        \\#define SIZE 10
+        \\int main() {
+        \\    int foo[SIZE];
+        \\    int *start = &foo[0];
+        \\    int *one_past_end = start + SIZE;
+        \\    ptrdiff_t diff = one_past_end - start;
+        \\    char diff_char = one_past_end - start;
+        \\    if (diff != SIZE || diff_char != SIZE) abort();
+        \\    diff = start - one_past_end;
+        \\    if (diff != -SIZE) abort();
+        \\    if (one_past_end - foo != SIZE) abort();
+        \\    if ((one_past_end - 1) - foo != SIZE - 1) abort();
+        \\    if ((start + 1) - foo != 1) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    // C standard: if the expression P points either to an element of an array object or one
+    // past the last element of an array object, and the expression Q points to the last
+    // element of the same array object, the expression ((Q)+1)-(P) has the same value as
+    // ((Q)-(P))+1 and as -((P)-((Q)+1)), and has the value zero if the expression P points
+    // one past the last element of the array object, even though the expression (Q)+1
+    // does not point to an element of the array object
+    cases.add("pointer difference: C standard edge case",
+        \\#include <stdlib.h>
+        \\#include <stddef.h>
+        \\#define SIZE 10
+        \\int main() {
+        \\    int foo[SIZE];
+        \\    int *start = &foo[0];
+        \\    int *P = start + SIZE;
+        \\    int *Q = &foo[SIZE - 1];
+        \\    if ((Q + 1) - P != 0) abort();
+        \\    if ((Q + 1) - P != (Q - P) + 1) abort();
+        \\    if ((Q + 1) - P != -(P - (Q + 1))) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("pointer difference: unary operators",
+        \\#include <stdlib.h>
+        \\int main() {
+        \\    int foo[10];
+        \\    int *x = &foo[1];
+        \\    const int *y = &foo[5];
+        \\    if (y - x++ != 4) abort();
+        \\    if (y - x != 3) abort();
+        \\    if (y - ++x != 2) abort();
+        \\    if (y - x-- != 2) abort();
+        \\    if (y - x != 3) abort();
+        \\    if (y - --x != 4) abort();
+        \\    if (y - &foo[0] != 5) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("pointer difference: struct array with padding",
+        \\#include <stdlib.h>
+        \\#include <stddef.h>
+        \\#define SIZE 10
+        \\typedef struct my_struct {
+        \\    int x;
+        \\    char c;
+        \\    int y;
+        \\} my_struct_t;
+        \\int main() {
+        \\    my_struct_t foo[SIZE];
+        \\    my_struct_t *start = &foo[0];
+        \\    my_struct_t *one_past_end = start + SIZE;
+        \\    ptrdiff_t diff = one_past_end - start;
+        \\    int diff_int = one_past_end - start;
+        \\    if (diff != SIZE || diff_int != SIZE) abort();
+        \\    diff = start - one_past_end;
+        \\    if (diff != -SIZE) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("pointer difference: array of function pointers",
+        \\#include <stdlib.h>
+        \\int a(void) { return 1;}
+        \\int b(void) { return 2;}
+        \\int c(void) { return 3;}
+        \\typedef int (*myfunc)(void);
+        \\int main() {
+        \\    myfunc arr[] = {a, b, c, a, b, c};
+        \\    myfunc *f1 = &arr[1];
+        \\    myfunc *f4 = &arr[4];
+        \\    if (f4 - f1 != 3) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("typeof operator",
+        \\#include <stdlib.h>
+        \\static int FOO = 42;
+        \\typedef typeof(FOO) foo_type;
+        \\typeof(foo_type) myfunc(typeof(FOO) x) { return (typeof(FOO)) x; }
+        \\int main(void) {
+        \\    int x = FOO;
+        \\    typeof(x) y = x;
+        \\    foo_type z = y;
+        \\    if (x != y) abort();
+        \\    if (myfunc(z) != x) abort();
+        \\
+        \\    const char *my_string = "bar";
+        \\    typeof (typeof (my_string)[4]) string_arr = {"a","b","c","d"};
+        \\    if (string_arr[0][0] != 'a' || string_arr[3][0] != 'd') abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("offsetof",
+        \\#include <stddef.h>
+        \\#include <stdlib.h>
+        \\#define container_of(ptr, type, member) ({                      \
+        \\        const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
+        \\        (type *)( (char *)__mptr - offsetof(type,member) );})
+        \\typedef struct {
+        \\    int i;
+        \\    struct { int x; char y; int z; } s;
+        \\    float f;
+        \\} container;
+        \\int main(void) {
+        \\    if (offsetof(container, i) != 0) abort();
+        \\    if (offsetof(container, s) <= offsetof(container, i)) abort();
+        \\    if (offsetof(container, f) <= offsetof(container, s)) abort();
+        \\
+        \\    container my_container;
+        \\    typeof(my_container.s) *inner_member_pointer = &my_container.s;
+        \\    float *float_member_pointer = &my_container.f;
+        \\    int *anon_member_pointer = &my_container.s.z;
+        \\    container *my_container_p;
+        \\
+        \\    my_container_p = container_of(inner_member_pointer, container, s);
+        \\    if (my_container_p != &my_container) abort();
+        \\
+        \\    my_container_p = container_of(float_member_pointer, container, f);
+        \\    if (my_container_p != &my_container) abort();
+        \\
+        \\    if (container_of(anon_member_pointer, typeof(my_container.s), z) != inner_member_pointer) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("handle assert.h",
+        \\#include <assert.h>
+        \\int main() {
+        \\    int x = 1;
+        \\    int *xp = &x;
+        \\    assert(1);
+        \\    assert(x != 0);
+        \\    assert(xp);
+        \\    assert(*xp);
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("NDEBUG disables assert",
+        \\#define NDEBUG
+        \\#include <assert.h>
+        \\int main() {
+        \\    assert(0);
+        \\    assert(NULL);
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("pointer arithmetic with signed operand",
+        \\#include <stdlib.h>
+        \\int main() {
+        \\    int array[10];
+        \\    int *x = &array[5];
+        \\    int *y;
+        \\    int idx = 0;
+        \\    y = x + ++idx;
+        \\    if (y != x + 1 || y != &array[6]) abort();
+        \\    y = idx + x;
+        \\    if (y != x + 1 || y != &array[6]) abort();
+        \\    y = x - idx;
+        \\    if (y != x - 1 || y != &array[4]) abort();
+        \\
+        \\    idx = 0;
+        \\    y = --idx + x;
+        \\    if (y != x - 1 || y != &array[4]) abort();
+        \\    y = idx + x;
+        \\    if (y != x - 1 || y != &array[4]) abort();
+        \\    y = x - idx;
+        \\    if (y != x + 1 || y != &array[6]) abort();
+        \\
+        \\    idx = 1;
+        \\    x += idx;
+        \\    if (x != &array[6]) abort();
+        \\    x -= idx;
+        \\    if (x != &array[5]) abort();
+        \\    y = (x += idx);
+        \\    if (y != x || y != &array[6]) abort();
+        \\    y = (x -= idx);
+        \\    if (y != x || y != &array[5]) abort();
+        \\
+        \\    if (array + idx != &array[1] || array + 1 != &array[1]) abort();
+        \\    idx = -1;
+        \\    if (array - idx != &array[1]) abort();
+        \\
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Compound literals",
+        \\#include <stdlib.h>
+        \\struct Foo {
+        \\    int a;
+        \\    char b[2];
+        \\    float c;
+        \\};
+        \\int main() {
+        \\    struct Foo foo;
+        \\    int x = 1, y = 2;
+        \\    foo = (struct Foo) {x + y, {'a', 'b'}, 42.0f};
+        \\    if (foo.a != x + y || foo.b[0] != 'a' || foo.b[1] != 'b' || foo.c != 42.0f) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("Generic selections",
+        \\#include <stdlib.h>
+        \\#include <string.h>
+        \\#include <stdint.h>
+        \\#define my_generic_fn(X) _Generic((X),    \
+        \\              int: abs,                   \
+        \\              char *: strlen,             \
+        \\              size_t: malloc,             \
+        \\              default: free               \
+        \\)(X)
+        \\#define my_generic_val(X) _Generic((X),   \
+        \\              int: 1,                     \
+        \\              const char *: "bar"         \
+        \\)
+        \\int main(void) {
+        \\    if (my_generic_val(100) != 1) abort();
+        \\
+        \\    const char *foo = "foo";
+        \\    const char *bar = my_generic_val(foo);
+        \\    if (strcmp(bar, "bar") != 0) abort();
+        \\
+        \\    if (my_generic_fn(-42) != 42) abort();
+        \\    if (my_generic_fn("hello") != 5) abort();
+        \\
+        \\    size_t size = 8192;
+        \\    uint8_t *mem = my_generic_fn(size);
+        \\    memset(mem, 42, size);
+        \\    if (mem[size - 1] != 42) abort();
+        \\    my_generic_fn(mem);
+        \\
+        \\    return 0;
+        \\}
+    , "");
+
+    // See __builtin_alloca_with_align comment in std.c.builtins
+    cases.add("use of unimplemented builtin in unused function does not prevent compilation",
+        \\#include <stdlib.h>
+        \\void unused() {
+        \\    __builtin_alloca_with_align(1, 8);
+        \\}
+        \\int main(void) {
+        \\    if (__builtin_sqrt(1.0) != 1.0) abort();
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("convert single-statement bodies into blocks for if/else/for/while. issue #8159",
+        \\#include <stdlib.h>
+        \\int foo() { return 1; }
+        \\int main(void) {
+        \\    int i = 0;
+        \\    if (i == 0) if (i == 0) if (i != 0) i = 1;
+        \\    if (i != 0) i = 1; else if (i == 0) if (i == 0) i += 1;
+        \\    for (; i < 10;) for (; i < 10;) i++;
+        \\    while (i == 100) while (i == 100) foo();
+        \\    if (0) do do "string"; while(1); while(1);
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("cast RHS of compound assignment if necessary, unused result",
+        \\#include <stdlib.h>
+        \\int main(void) {
+        \\   signed short val = -1;
+        \\   val += 1; if (val != 0) abort();
+        \\   val -= 1; if (val != -1) abort();
+        \\   val *= 2; if (val != -2) abort();
+        \\   val /= 2; if (val != -1) abort();
+        \\   val %= 2; if (val != -1) abort();
+        \\   val <<= 1; if (val != -2) abort();
+        \\   val >>= 1; if (val != -1) abort();
+        \\   val += 100000000;       // compile error if @truncate() not inserted
+        \\   unsigned short uval = 1;
+        \\   uval += 1; if (uval != 2) abort();
+        \\   uval -= 1; if (uval != 1) abort();
+        \\   uval *= 2; if (uval != 2) abort();
+        \\   uval /= 2; if (uval != 1) abort();
+        \\   uval %= 2; if (uval != 1) abort();
+        \\   uval <<= 1; if (uval != 2) abort();
+        \\   uval >>= 1; if (uval != 1) abort();
+        \\   uval += 100000000;      // compile error if @truncate() not inserted
+        \\}
+    , "");
+
+    cases.add("cast RHS of compound assignment if necessary, used result",
+        \\#include <stdlib.h>
+        \\int main(void) {
+        \\   signed short foo;
+        \\   signed short val = -1;
+        \\   foo = (val += 1); if (foo != 0) abort();
+        \\   foo = (val -= 1); if (foo != -1) abort();
+        \\   foo = (val *= 2); if (foo != -2) abort();
+        \\   foo = (val /= 2); if (foo != -1) abort();
+        \\   foo = (val %= 2); if (foo != -1) abort();
+        \\   foo = (val <<= 1); if (foo != -2) abort();
+        \\   foo = (val >>= 1); if (foo != -1) abort();
+        \\   foo = (val += 100000000);    // compile error if @truncate() not inserted
+        \\   unsigned short ufoo;
+        \\   unsigned short uval = 1;
+        \\   ufoo = (uval += 1); if (ufoo != 2) abort();
+        \\   ufoo = (uval -= 1); if (ufoo != 1) abort();
+        \\   ufoo = (uval *= 2); if (ufoo != 2) abort();
+        \\   ufoo = (uval /= 2); if (ufoo != 1) abort();
+        \\   ufoo = (uval %= 2); if (ufoo != 1) abort();
+        \\   ufoo = (uval <<= 1); if (ufoo != 2) abort();
+        \\   ufoo = (uval >>= 1); if (ufoo != 1) abort();
+        \\   ufoo = (uval += 100000000);  // compile error if @truncate() not inserted
         \\}
     , "");
 }

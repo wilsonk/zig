@@ -5,9 +5,12 @@ const mem = std.mem;
 const meta = std.meta;
 const macho = std.macho;
 const testing = std.testing;
+const assert = std.debug.assert;
 
 const Allocator = std.mem.Allocator;
-const makeStaticString = @import("../MachO.zig").makeStaticString;
+const MachO = @import("../MachO.zig");
+const makeStaticString = MachO.makeStaticString;
+const padToIdeal = MachO.padToIdeal;
 
 pub const LoadCommand = union(enum) {
     Segment: SegmentCommand,
@@ -19,6 +22,7 @@ pub const LoadCommand = union(enum) {
     Main: macho.entry_point_command,
     VersionMin: macho.version_min_command,
     SourceVersion: macho.source_version_command,
+    Uuid: macho.uuid_command,
     LinkeditData: macho.linkedit_data_command,
     Unknown: GenericCommandWithData(macho.load_command),
 
@@ -58,6 +62,9 @@ pub const LoadCommand = union(enum) {
             macho.LC_SOURCE_VERSION => LoadCommand{
                 .SourceVersion = try stream.reader().readStruct(macho.source_version_command),
             },
+            macho.LC_UUID => LoadCommand{
+                .Uuid = try stream.reader().readStruct(macho.uuid_command),
+            },
             macho.LC_FUNCTION_STARTS, macho.LC_DATA_IN_CODE, macho.LC_CODE_SIGNATURE => LoadCommand{
                 .LinkeditData = try stream.reader().readStruct(macho.linkedit_data_command),
             },
@@ -75,6 +82,7 @@ pub const LoadCommand = union(enum) {
             .Main => |x| writeStruct(x, writer),
             .VersionMin => |x| writeStruct(x, writer),
             .SourceVersion => |x| writeStruct(x, writer),
+            .Uuid => |x| writeStruct(x, writer),
             .LinkeditData => |x| writeStruct(x, writer),
             .Segment => |x| x.write(writer),
             .Dylinker => |x| x.write(writer),
@@ -91,6 +99,7 @@ pub const LoadCommand = union(enum) {
             .Main => |x| x.cmd,
             .VersionMin => |x| x.cmd,
             .SourceVersion => |x| x.cmd,
+            .Uuid => |x| x.cmd,
             .LinkeditData => |x| x.cmd,
             .Segment => |x| x.inner.cmd,
             .Dylinker => |x| x.inner.cmd,
@@ -108,6 +117,7 @@ pub const LoadCommand = union(enum) {
             .VersionMin => |x| x.cmdsize,
             .SourceVersion => |x| x.cmdsize,
             .LinkeditData => |x| x.cmdsize,
+            .Uuid => |x| x.cmdsize,
             .Segment => |x| x.inner.cmdsize,
             .Dylinker => |x| x.inner.cmdsize,
             .Dylib => |x| x.inner.cmdsize,
@@ -130,7 +140,7 @@ pub const LoadCommand = union(enum) {
     }
 
     fn eql(self: LoadCommand, other: LoadCommand) bool {
-        if (@as(@TagType(LoadCommand), self) != @as(@TagType(LoadCommand), other)) return false;
+        if (@as(meta.Tag(LoadCommand), self) != @as(meta.Tag(LoadCommand), other)) return false;
         return switch (self) {
             .DyldInfoOnly => |x| meta.eql(x, other.DyldInfoOnly),
             .Symtab => |x| meta.eql(x, other.Symtab),
@@ -138,6 +148,7 @@ pub const LoadCommand = union(enum) {
             .Main => |x| meta.eql(x, other.Main),
             .VersionMin => |x| meta.eql(x, other.VersionMin),
             .SourceVersion => |x| meta.eql(x, other.SourceVersion),
+            .Uuid => |x| meta.eql(x, other.Uuid),
             .LinkeditData => |x| meta.eql(x, other.LinkeditData),
             .Segment => |x| x.eql(other.Segment),
             .Dylinker => |x| x.eql(other.Dylinker),
@@ -186,6 +197,38 @@ pub const SegmentCommand = struct {
 
     pub fn deinit(self: *SegmentCommand, alloc: *Allocator) void {
         self.sections.deinit(alloc);
+    }
+
+    pub fn allocatedSize(self: SegmentCommand, start: u64) u64 {
+        assert(start > 0);
+        if (start == self.inner.fileoff)
+            return 0;
+        var min_pos: u64 = std.math.maxInt(u64);
+        for (self.sections.items) |section| {
+            if (section.offset <= start) continue;
+            if (section.offset < min_pos) min_pos = section.offset;
+        }
+        return min_pos - start;
+    }
+
+    fn detectAllocCollision(self: SegmentCommand, start: u64, size: u64) ?u64 {
+        const end = start + padToIdeal(size);
+        for (self.sections.items) |section| {
+            const increased_size = padToIdeal(section.size);
+            const test_end = section.offset + increased_size;
+            if (end > section.offset and start < test_end) {
+                return test_end;
+            }
+        }
+        return null;
+    }
+
+    pub fn findFreeSpace(self: SegmentCommand, object_size: u64, min_alignment: u16, start: ?u64) u64 {
+        var st: u64 = if (start) |v| v else self.inner.fileoff;
+        while (self.detectAllocCollision(st, object_size)) |item_end| {
+            st = mem.alignForwardGeneric(u64, item_end, min_alignment);
+        }
+        return st;
     }
 
     fn eql(self: SegmentCommand, other: SegmentCommand) bool {

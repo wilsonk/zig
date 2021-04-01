@@ -8,7 +8,7 @@ const linux_arm = std.zig.CrossTarget{
 
 pub fn addCases(ctx: *TestContext) !void {
     {
-        var case = ctx.exe("hello world", linux_arm);
+        var case = ctx.exe("linux_arm hello world", linux_arm);
         // Regular old hello world
         case.addCompareOutput(
             \\export fn _start() noreturn {
@@ -280,6 +280,143 @@ pub fn addCases(ctx: *TestContext) !void {
             \\}
         ,
             "123456",
+        );
+    }
+
+    {
+        var case = ctx.exe("if statements", linux_arm);
+        // Simple if statement in assert
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    var x: u32 = 123;
+            \\    var y: u32 = 42;
+            \\    assert(x > y);
+            \\    exit();
+            \\}
+            \\
+            \\fn assert(ok: bool) void {
+            \\    if (!ok) unreachable;
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("svc #0"
+            \\        :
+            \\        : [number] "{r7}" (1),
+            \\          [arg1] "{r0}" (0)
+            \\        : "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+    }
+
+    {
+        var case = ctx.exe("while loops", linux_arm);
+        // Simple while loop with assert
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    var x: u32 = 2020;
+            \\    var i: u32 = 0;
+            \\    while (x > 0) {
+            \\        x -= 2;
+            \\        i += 1;
+            \\    }
+            \\    assert(i == 1010);
+            \\    exit();
+            \\}
+            \\
+            \\fn assert(ok: bool) void {
+            \\    if (!ok) unreachable;
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("svc #0"
+            \\        :
+            \\        : [number] "{r7}" (1),
+            \\          [arg1] "{r0}" (0)
+            \\        : "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+    }
+
+    {
+        var case = ctx.exe("integer multiplication", linux_arm);
+        // Simple u32 integer multiplication
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    assert(mul(1, 1) == 1);
+            \\    assert(mul(42, 1) == 42);
+            \\    assert(mul(1, 42) == 42);
+            \\    assert(mul(123, 42) == 5166);
+            \\    exit();
+            \\}
+            \\
+            \\fn mul(x: u32, y: u32) u32 {
+            \\    return x * y;
+            \\}
+            \\
+            \\fn assert(ok: bool) void {
+            \\    if (!ok) unreachable;
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("svc #0"
+            \\        :
+            \\        : [number] "{r7}" (1),
+            \\          [arg1] "{r0}" (0)
+            \\        : "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+    }
+
+    {
+        var case = ctx.exe("save function return values in callee preserved register", linux_arm);
+        // Here, it is necessary to save the result of bar() into a
+        // callee preserved register, otherwise it will be overwritten
+        // by the first parameter to baz.
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    assert(foo() == 43);
+            \\    exit();
+            \\}
+            \\
+            \\fn foo() u32 {
+            \\    return bar() + baz(42);
+            \\}
+            \\
+            \\fn bar() u32 {
+            \\    return 1;
+            \\}
+            \\
+            \\fn baz(x: u32) u32 {
+            \\    return x;
+            \\}
+            \\
+            \\fn assert(ok: bool) void {
+            \\    if (!ok) unreachable;
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("svc #0"
+            \\        :
+            \\        : [number] "{r7}" (1),
+            \\          [arg1] "{r0}" (0)
+            \\        : "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
         );
     }
 }

@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
 const std = @import("std");
+const Error = std.crypto.Error;
 
 /// Group operations over Curve25519.
 pub const Curve25519 = struct {
@@ -15,12 +16,12 @@ pub const Curve25519 = struct {
     x: Fe,
 
     /// Decode a Curve25519 point from its compressed (X) coordinates.
-    pub inline fn fromBytes(s: [32]u8) Curve25519 {
+    pub fn fromBytes(s: [32]u8) callconv(.Inline) Curve25519 {
         return .{ .x = Fe.fromBytes(s) };
     }
 
     /// Encode a Curve25519 point.
-    pub inline fn toBytes(p: Curve25519) [32]u8 {
+    pub fn toBytes(p: Curve25519) callconv(.Inline) [32]u8 {
         return p.x.toBytes();
     }
 
@@ -28,12 +29,12 @@ pub const Curve25519 = struct {
     pub const basePoint = Curve25519{ .x = Fe.curve25519BasePoint };
 
     /// Check that the encoding of a Curve25519 point is canonical.
-    pub fn rejectNonCanonical(s: [32]u8) !void {
+    pub fn rejectNonCanonical(s: [32]u8) Error!void {
         return Fe.rejectNonCanonical(s, false);
     }
 
     /// Reject the neutral element.
-    pub fn rejectIdentity(p: Curve25519) !void {
+    pub fn rejectIdentity(p: Curve25519) Error!void {
         if (p.x.isZero()) {
             return error.IdentityElement;
         }
@@ -44,7 +45,7 @@ pub const Curve25519 = struct {
         return p.dbl().dbl().dbl();
     }
 
-    fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) !Curve25519 {
+    fn ladder(p: Curve25519, s: [32]u8, comptime bits: usize) Error!Curve25519 {
         var x1 = p.x;
         var x2 = Fe.one;
         var z2 = Fe.zero;
@@ -85,7 +86,7 @@ pub const Curve25519 = struct {
     /// way to use Curve25519 for a DH operation.
     /// Return error.IdentityElement if the resulting point is
     /// the identity element.
-    pub fn clampedMul(p: Curve25519, s: [32]u8) !Curve25519 {
+    pub fn clampedMul(p: Curve25519, s: [32]u8) Error!Curve25519 {
         var t: [32]u8 = s;
         scalar.clamp(&t);
         return try ladder(p, t, 255);
@@ -95,14 +96,14 @@ pub const Curve25519 = struct {
     /// Return error.IdentityElement if the resulting point is
     /// the identity element or error.WeakPublicKey if the public
     /// key is a low-order point.
-    pub fn mul(p: Curve25519, s: [32]u8) !Curve25519 {
+    pub fn mul(p: Curve25519, s: [32]u8) Error!Curve25519 {
         const cofactor = [_]u8{8} ++ [_]u8{0} ** 31;
         _ = ladder(p, cofactor, 4) catch |_| return error.WeakPublicKey;
         return try ladder(p, s, 256);
     }
 
     /// Compute the Curve25519 equivalent to an Edwards25519 point.
-    pub fn fromEdwards25519(p: std.crypto.ecc.Edwards25519) !Curve25519 {
+    pub fn fromEdwards25519(p: std.crypto.ecc.Edwards25519) Error!Curve25519 {
         try p.clearCofactor().rejectIdentity();
         const one = std.crypto.ecc.Edwards25519.Fe.one;
         const x = one.add(p.y).mul(one.sub(p.y).invert()); // xMont=(1+yEd)/(1-yEd)
@@ -115,9 +116,9 @@ test "curve25519" {
     const p = try Curve25519.basePoint.clampedMul(s);
     try p.rejectIdentity();
     var buf: [128]u8 = undefined;
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{p.toBytes()}), "E6F2A4D1C28EE5C7AD0329268255A468AD407D2672824C0C0EB30EA6EF450145");
+    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&p.toBytes())}), "E6F2A4D1C28EE5C7AD0329268255A468AD407D2672824C0C0EB30EA6EF450145");
     const q = try p.clampedMul(s);
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{q.toBytes()}), "3614E119FFE55EC55B87D6B19971A9F4CBC78EFE80BEC55B96392BABCC712537");
+    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&q.toBytes())}), "3614E119FFE55EC55B87D6B19971A9F4CBC78EFE80BEC55B96392BABCC712537");
 
     try Curve25519.rejectNonCanonical(s);
     s[31] |= 0x80;

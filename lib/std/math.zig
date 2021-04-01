@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -278,7 +278,7 @@ pub const Complex = complex.Complex;
 
 pub const big = @import("math/big.zig");
 
-test "" {
+test {
     std.testing.refAllDecls(@This());
 }
 
@@ -415,6 +415,7 @@ pub fn mul(comptime T: type, a: T, b: T) (error{Overflow}!T) {
 }
 
 pub fn add(comptime T: type, a: T, b: T) (error{Overflow}!T) {
+    if (T == comptime_int) return a + b;
     var answer: T = undefined;
     return if (@addWithOverflow(T, a, b, &answer)) error.Overflow else answer;
 }
@@ -1070,14 +1071,50 @@ test "std.math.log2_int_ceil" {
     testing.expect(log2_int_ceil(u32, 10) == 4);
 }
 
+///Cast a value to a different type. If the value doesn't fit in, or can't be perfectly represented by,
+///the new type, it will be converted to the closest possible representation.
 pub fn lossyCast(comptime T: type, value: anytype) T {
-    switch (@typeInfo(@TypeOf(value))) {
-        .Int => return @intToFloat(T, value),
-        .Float => return @floatCast(T, value),
-        .ComptimeInt => return @as(T, value),
-        .ComptimeFloat => return @as(T, value),
-        else => @compileError("bad type"),
+    switch (@typeInfo(T)) {
+        .Float => {
+            switch (@typeInfo(@TypeOf(value))) {
+                .Int => return @intToFloat(T, value),
+                .Float => return @floatCast(T, value),
+                .ComptimeInt => return @as(T, value),
+                .ComptimeFloat => return @as(T, value),
+                else => @compileError("bad type"),
+            }
+        },
+        .Int => {
+            switch (@typeInfo(@TypeOf(value))) {
+                .Int, .ComptimeInt => {
+                    if (value > maxInt(T)) {
+                        return @as(T, maxInt(T));
+                    } else if (value < minInt(T)) {
+                        return @as(T, minInt(T));
+                    } else {
+                        return @intCast(T, value);
+                    }
+                },
+                .Float, .ComptimeFloat => {
+                    if (value > maxInt(T)) {
+                        return @as(T, maxInt(T));
+                    } else if (value < minInt(T)) {
+                        return @as(T, minInt(T));
+                    } else {
+                        return @floatToInt(T, value);
+                    }
+                },
+                else => @compileError("bad type"),
+            }
+        },
+        else => @compileError("bad result type"),
     }
+}
+
+test "math.lossyCast" {
+    testing.expect(lossyCast(i16, 70000.0) == @as(i16, 32767));
+    testing.expect(lossyCast(u32, @as(i16, -255)) == @as(u32, 0));
+    testing.expect(lossyCast(i9, @as(u32, 200)) == @as(i9, 200));
 }
 
 test "math.f64_min" {
@@ -1292,4 +1329,60 @@ test "order.compare" {
 test "math.comptime" {
     comptime const v = sin(@as(f32, 1)) + ln(@as(f32, 5));
     testing.expect(v == sin(@as(f32, 1)) + ln(@as(f32, 5)));
+}
+
+/// Returns a mask of all ones if value is true,
+/// and a mask of all zeroes if value is false.
+/// Compiles to one instruction for register sized integers.
+pub fn boolMask(comptime MaskInt: type, value: bool) callconv(.Inline) MaskInt {
+    if (@typeInfo(MaskInt) != .Int)
+        @compileError("boolMask requires an integer mask type.");
+
+    if (MaskInt == u0 or MaskInt == i0)
+        @compileError("boolMask cannot convert to u0 or i0, they are too small.");
+
+    // The u1 and i1 cases tend to overflow,
+    // so we special case them here.
+    if (MaskInt == u1) return @boolToInt(value);
+    if (MaskInt == i1) {
+        // The @as here is a workaround for #7950
+        return @bitCast(i1, @as(u1, @boolToInt(value)));
+    }
+
+    // At comptime, -% is disallowed on unsigned values.
+    // So we need to jump through some hoops in that case.
+    // This is a workaround for #7951
+    if (@typeInfo(@TypeOf(.{value})).Struct.fields[0].is_comptime) {
+        // Since it's comptime, we don't need this to generate nice code.
+        // We can just do a branch here.
+        return if (value) ~@as(MaskInt, 0) else 0;
+    }
+
+    return -%@intCast(MaskInt, @boolToInt(value));
+}
+
+test "boolMask" {
+    const runTest = struct {
+        fn runTest() void {
+            testing.expectEqual(@as(u1, 0), boolMask(u1, false));
+            testing.expectEqual(@as(u1, 1), boolMask(u1, true));
+
+            testing.expectEqual(@as(i1, 0), boolMask(i1, false));
+            testing.expectEqual(@as(i1, -1), boolMask(i1, true));
+
+            testing.expectEqual(@as(u13, 0), boolMask(u13, false));
+            testing.expectEqual(@as(u13, 0x1FFF), boolMask(u13, true));
+
+            testing.expectEqual(@as(i13, 0), boolMask(i13, false));
+            testing.expectEqual(@as(i13, -1), boolMask(i13, true));
+
+            testing.expectEqual(@as(u32, 0), boolMask(u32, false));
+            testing.expectEqual(@as(u32, 0xFFFF_FFFF), boolMask(u32, true));
+
+            testing.expectEqual(@as(i32, 0), boolMask(i32, false));
+            testing.expectEqual(@as(i32, -1), boolMask(i32, true));
+        }
+    }.runTest;
+    runTest();
+    comptime runTest();
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -21,14 +21,18 @@ pub var base_allocator_instance = std.heap.FixedBufferAllocator.init("");
 /// TODO https://github.com/ziglang/zig/issues/5738
 pub var log_level = std.log.Level.warn;
 
+/// This is available to any test that wants to execute Zig in a child process.
+/// It will be the same executable that is running `zig test`.
+pub var zig_exe_path: []const u8 = undefined;
+
 /// This function is intended to be used only in tests. It prints diagnostics to stderr
 /// and then aborts when actual_error_union is not expected_error.
 pub fn expectError(expected_error: anyerror, actual_error_union: anytype) void {
     if (actual_error_union) |actual_payload| {
-        std.debug.panic("expected error.{}, found {}", .{ @errorName(expected_error), actual_payload });
+        std.debug.panic("expected error.{s}, found {any}", .{ @errorName(expected_error), actual_payload });
     } else |actual_error| {
         if (expected_error != actual_error) {
-            std.debug.panic("expected error.{}, found error.{}", .{
+            std.debug.panic("expected error.{s}, found error.{s}", .{
                 @errorName(expected_error),
                 @errorName(actual_error),
             });
@@ -56,7 +60,7 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
 
         .Type => {
             if (actual != expected) {
-                std.debug.panic("expected type {}, found type {}", .{ @typeName(expected), @typeName(actual) });
+                std.debug.panic("expected type {s}, found type {s}", .{ @typeName(expected), @typeName(actual) });
             }
         },
 
@@ -84,7 +88,7 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 },
                 .Slice => {
                     if (actual.ptr != expected.ptr) {
-                        std.debug.panic("expected slice ptr {}, found {}", .{ expected.ptr, actual.ptr });
+                        std.debug.panic("expected slice ptr {*}, found {*}", .{ expected.ptr, actual.ptr });
                     }
                     if (actual.len != expected.len) {
                         std.debug.panic("expected slice len {}, found {}", .{ expected.len, actual.len });
@@ -115,10 +119,10 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 @compileError("Unable to compare untagged union values");
             }
 
-            const TagType = @TagType(@TypeOf(expected));
+            const Tag = std.meta.Tag(@TypeOf(expected));
 
-            const expectedTag = @as(TagType, expected);
-            const actualTag = @as(TagType, actual);
+            const expectedTag = @as(Tag, expected);
+            const actualTag = @as(Tag, actual);
 
             expectEqual(expectedTag, actualTag);
 
@@ -141,11 +145,11 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 if (actual) |actual_payload| {
                     expectEqual(expected_payload, actual_payload);
                 } else {
-                    std.debug.panic("expected {}, found null", .{expected_payload});
+                    std.debug.panic("expected {any}, found null", .{expected_payload});
                 }
             } else {
                 if (actual) |actual_payload| {
-                    std.debug.panic("expected null, found {}", .{actual_payload});
+                    std.debug.panic("expected null, found {any}", .{actual_payload});
                 }
             }
         },
@@ -155,11 +159,11 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 if (actual) |actual_payload| {
                     expectEqual(expected_payload, actual_payload);
                 } else |actual_err| {
-                    std.debug.panic("expected {}, found {}", .{ expected_payload, actual_err });
+                    std.debug.panic("expected {any}, found {}", .{ expected_payload, actual_err });
                 }
             } else |expected_err| {
                 if (actual) |actual_payload| {
-                    std.debug.panic("expected {}, found {}", .{ expected_err, actual_payload });
+                    std.debug.panic("expected {}, found {any}", .{ expected_err, actual_payload });
                 } else |actual_err| {
                     expectEqual(expected_err, actual_err);
                 }
@@ -180,67 +184,85 @@ test "expectEqual.union(enum)" {
     expectEqual(a10, a10);
 }
 
-/// This function is intended to be used only in tests. When the actual value is not
-/// within the margin of the expected value,
-/// prints diagnostics to stderr to show exactly how they are not equal, then aborts.
-/// The types must be floating point
-pub fn expectWithinMargin(expected: anytype, actual: @TypeOf(expected), margin: @TypeOf(expected)) void {
-    std.debug.assert(margin >= 0.0);
+/// This function is intended to be used only in tests. When the formatted result of the template
+/// and its arguments does not equal the expected text, it prints diagnostics to stderr to show how
+/// they are not equal, then returns an error.
+pub fn expectFmt(expected: []const u8, comptime template: []const u8, args: anytype) !void {
+    const result = try std.fmt.allocPrint(allocator, template, args);
+    defer allocator.free(result);
+    if (std.mem.eql(u8, result, expected)) return;
 
-    switch (@typeInfo(@TypeOf(actual))) {
-        .Float,
-        .ComptimeFloat,
-        => {
-            if (@fabs(expected - actual) > margin) {
-                std.debug.panic("actual {}, not within margin {} of expected {}", .{ actual, margin, expected });
-            }
-        },
+    print("\n====== expected this output: =========\n", .{});
+    print("{s}", .{expected});
+    print("\n======== instead found this: =========\n", .{});
+    print("{s}", .{result});
+    print("\n======================================\n", .{});
+    return error.TestFailed;
+}
+
+pub const expectWithinMargin = @compileError("expectWithinMargin is deprecated, use expectApproxEqAbs or expectApproxEqRel");
+pub const expectWithinEpsilon = @compileError("expectWithinEpsilon is deprecated, use expectApproxEqAbs or expectApproxEqRel");
+
+/// This function is intended to be used only in tests. When the actual value is
+/// not approximately equal to the expected value, prints diagnostics to stderr
+/// to show exactly how they are not equal, then aborts.
+/// See `math.approxEqAbs` for more informations on the tolerance parameter.
+/// The types must be floating point
+pub fn expectApproxEqAbs(expected: anytype, actual: @TypeOf(expected), tolerance: @TypeOf(expected)) void {
+    const T = @TypeOf(expected);
+
+    switch (@typeInfo(T)) {
+        .Float => if (!math.approxEqAbs(T, expected, actual, tolerance))
+            std.debug.panic("actual {}, not within absolute tolerance {} of expected {}", .{ actual, tolerance, expected }),
+
+        .ComptimeFloat => @compileError("Cannot approximately compare two comptime_float values"),
+
         else => @compileError("Unable to compare non floating point values"),
     }
 }
 
-test "expectWithinMargin" {
+test "expectApproxEqAbs" {
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
         const pos_x: T = 12.0;
         const pos_y: T = 12.06;
         const neg_x: T = -12.0;
         const neg_y: T = -12.06;
 
-        expectWithinMargin(pos_x, pos_y, 0.1);
-        expectWithinMargin(neg_x, neg_y, 0.1);
+        expectApproxEqAbs(pos_x, pos_y, 0.1);
+        expectApproxEqAbs(neg_x, neg_y, 0.1);
     }
 }
 
-/// This function is intended to be used only in tests. When the actual value is not
-/// within the epsilon of the expected value,
-/// prints diagnostics to stderr to show exactly how they are not equal, then aborts.
+/// This function is intended to be used only in tests. When the actual value is
+/// not approximately equal to the expected value, prints diagnostics to stderr
+/// to show exactly how they are not equal, then aborts.
+/// See `math.approxEqRel` for more informations on the tolerance parameter.
 /// The types must be floating point
-pub fn expectWithinEpsilon(expected: anytype, actual: @TypeOf(expected), epsilon: @TypeOf(expected)) void {
-    std.debug.assert(epsilon >= 0.0 and epsilon <= 1.0);
+pub fn expectApproxEqRel(expected: anytype, actual: @TypeOf(expected), tolerance: @TypeOf(expected)) void {
+    const T = @TypeOf(expected);
 
-    // Relative epsilon test.
-    const margin = math.max(math.fabs(expected), math.fabs(actual)) * epsilon;
-    switch (@typeInfo(@TypeOf(actual))) {
-        .Float,
-        .ComptimeFloat,
-        => {
-            if (@fabs(expected - actual) > margin) {
-                std.debug.panic("actual {}, not within epsilon {}, of expected {}", .{ actual, epsilon, expected });
-            }
-        },
+    switch (@typeInfo(T)) {
+        .Float => if (!math.approxEqRel(T, expected, actual, tolerance))
+            std.debug.panic("actual {}, not within relative tolerance {} of expected {}", .{ actual, tolerance, expected }),
+
+        .ComptimeFloat => @compileError("Cannot approximately compare two comptime_float values"),
+
         else => @compileError("Unable to compare non floating point values"),
     }
 }
 
-test "expectWithinEpsilon" {
+test "expectApproxEqRel" {
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
-        const pos_x: T = 12.0;
-        const pos_y: T = 13.2;
-        const neg_x: T = -12.0;
-        const neg_y: T = -13.2;
+        const eps_value = comptime math.epsilon(T);
+        const sqrt_eps_value = comptime math.sqrt(eps_value);
 
-        expectWithinEpsilon(pos_x, pos_y, 0.1);
-        expectWithinEpsilon(neg_x, neg_y, 0.1);
+        const pos_x: T = 12.0;
+        const pos_y: T = pos_x + 2 * eps_value;
+        const neg_x: T = -12.0;
+        const neg_y: T = neg_x - 2 * eps_value;
+
+        expectApproxEqRel(pos_x, pos_y, sqrt_eps_value);
+        expectApproxEqRel(neg_x, neg_y, sqrt_eps_value);
     }
 }
 
@@ -254,12 +276,12 @@ pub fn expectEqualSlices(comptime T: type, expected: []const T, actual: []const 
     // If the child type is u8 and no weird bytes, we could print it as strings
     // Even for the length difference, it would be useful to see the values of the slices probably.
     if (expected.len != actual.len) {
-        std.debug.panic("slice lengths differ. expected {}, found {}", .{ expected.len, actual.len });
+        std.debug.panic("slice lengths differ. expected {d}, found {d}", .{ expected.len, actual.len });
     }
     var i: usize = 0;
     while (i < expected.len) : (i += 1) {
         if (!std.meta.eql(expected[i], actual[i])) {
-            std.debug.panic("index {} incorrect. expected {}, found {}", .{ i, expected[i], actual[i] });
+            std.debug.panic("index {} incorrect. expected {any}, found {any}", .{ i, expected[i], actual[i] });
         }
     }
 }
@@ -276,7 +298,7 @@ pub const TmpDir = struct {
     sub_path: [sub_path_len]u8,
 
     const random_bytes_count = 12;
-    const sub_path_len = std.base64.Base64Encoder.calcSize(random_bytes_count);
+    const sub_path_len = std.fs.base64_encoder.calcSize(random_bytes_count);
 
     pub fn cleanup(self: *TmpDir) void {
         self.dir.close();
@@ -356,7 +378,7 @@ pub fn expectEqualStrings(expected: []const u8, actual: []const u8) void {
         for (expected[0..diff_index]) |value| {
             if (value == '\n') diff_line_number += 1;
         }
-        print("First difference occurs on line {}:\n", .{diff_line_number});
+        print("First difference occurs on line {d}:\n", .{diff_line_number});
 
         print("expected:\n", .{});
         printIndicatorLine(expected, diff_index);
@@ -412,18 +434,18 @@ fn printWithVisibleNewlines(source: []const u8) void {
     while (std.mem.indexOf(u8, source[i..], "\n")) |nl| : (i += nl + 1) {
         printLine(source[i .. i + nl]);
     }
-    print("{}␃\n", .{source[i..]}); // End of Text symbol (ETX)
+    print("{s}␃\n", .{source[i..]}); // End of Text symbol (ETX)
 }
 
 fn printLine(line: []const u8) void {
     if (line.len != 0) switch (line[line.len - 1]) {
-        ' ', '\t' => print("{}⏎\n", .{line}), // Carriage return symbol,
+        ' ', '\t' => print("{s}⏎\n", .{line}), // Carriage return symbol,
         else => {},
     };
-    print("{}\n", .{line});
+    print("{s}\n", .{line});
 }
 
-test "" {
+test {
     expectEqualStrings("foo", "foo");
 }
 

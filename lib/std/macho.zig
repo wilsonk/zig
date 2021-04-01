@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -1227,6 +1227,24 @@ pub const S_ATTR_EXT_RELOC = 0x200;
 /// section has local relocation entries
 pub const S_ATTR_LOC_RELOC = 0x100;
 
+/// template of initial values for TLVs
+pub const S_THREAD_LOCAL_REGULAR = 0x11;
+
+/// template of initial values for TLVs
+pub const S_THREAD_LOCAL_ZEROFILL = 0x12;
+
+/// TLV descriptors
+pub const S_THREAD_LOCAL_VARIABLES = 0x13;
+
+/// pointers to TLV descriptors
+pub const S_THREAD_LOCAL_VARIABLE_POINTERS = 0x14;
+
+/// functions to call to initialize TLV values
+pub const S_THREAD_LOCAL_INIT_FUNCTION_POINTERS = 0x15;
+
+/// 32-bit offsets to initializers
+pub const S_INIT_FUNC_OFFSETS = 0x16;
+
 pub const cpu_type_t = integer_t;
 pub const cpu_subtype_t = integer_t;
 pub const integer_t = c_int;
@@ -1257,6 +1275,24 @@ pub const VM_PROT_WRITE: vm_prot_t = 0x2;
 /// VM execute permission
 pub const VM_PROT_EXECUTE: vm_prot_t = 0x4;
 
+// The following are used to encode rebasing information
+pub const REBASE_TYPE_POINTER: u8 = 1;
+pub const REBASE_TYPE_TEXT_ABSOLUTE32: u8 = 2;
+pub const REBASE_TYPE_TEXT_PCREL32: u8 = 3;
+
+pub const REBASE_OPCODE_MASK: u8 = 0xF0;
+pub const REBASE_IMMEDIATE_MASK: u8 = 0x0F;
+pub const REBASE_OPCODE_DONE: u8 = 0x00;
+pub const REBASE_OPCODE_SET_TYPE_IMM: u8 = 0x10;
+pub const REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: u8 = 0x20;
+pub const REBASE_OPCODE_ADD_ADDR_ULEB: u8 = 0x30;
+pub const REBASE_OPCODE_ADD_ADDR_IMM_SCALED: u8 = 0x40;
+pub const REBASE_OPCODE_DO_REBASE_IMM_TIMES: u8 = 0x50;
+pub const REBASE_OPCODE_DO_REBASE_ULEB_TIMES: u8 = 0x60;
+pub const REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB: u8 = 0x70;
+pub const REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB: u8 = 0x80;
+
+// The following are used to encode binding information
 pub const BIND_TYPE_POINTER: u8 = 1;
 pub const BIND_TYPE_TEXT_ABSOLUTE32: u8 = 2;
 pub const BIND_TYPE_TEXT_PCREL32: u8 = 3;
@@ -1316,6 +1352,41 @@ pub const reloc_type_x86_64 = packed enum(u4) {
     X86_64_RELOC_TLV,
 };
 
+pub const reloc_type_arm64 = packed enum(u4) {
+    /// For pointers.
+    ARM64_RELOC_UNSIGNED = 0,
+
+    /// Must be followed by a ARM64_RELOC_UNSIGNED.
+    ARM64_RELOC_SUBTRACTOR,
+
+    /// A B/BL instruction with 26-bit displacement.
+    ARM64_RELOC_BRANCH26,
+
+    /// Pc-rel distance to page of target.
+    ARM64_RELOC_PAGE21,
+
+    /// Offset within page, scaled by r_length.
+    ARM64_RELOC_PAGEOFF12,
+
+    /// Pc-rel distance to page of GOT slot.
+    ARM64_RELOC_GOT_LOAD_PAGE21,
+
+    /// Offset within page of GOT slot, scaled by r_length.
+    ARM64_RELOC_GOT_LOAD_PAGEOFF12,
+
+    /// For pointers to GOT slots.
+    ARM64_RELOC_POINTER_TO_GOT,
+
+    /// Pc-rel distance to page of TLVP slot.
+    ARM64_RELOC_TLVP_LOAD_PAGE21,
+
+    /// Offset within page of TLVP slot, scaled by r_length.
+    ARM64_RELOC_TLVP_LOAD_PAGEOFF12,
+
+    /// Must be followed by PAGE21 or PAGEOFF12.
+    ARM64_RELOC_ADDEND,
+};
+
 /// This symbol is a reference to an external non-lazy (data) symbol.
 pub const REFERENCE_FLAG_UNDEFINED_NON_LAZY: u16 = 0x0;
 
@@ -1360,7 +1431,7 @@ pub const N_WEAK_DEF: u16 = 0x80;
 /// This bit is only available in .o files (MH_OBJECT filetype)
 pub const N_SYMBOL_RESOLVER: u16 = 0x100;
 
-// The following are used on the flags byte of a terminal node // in the export information.
+// The following are used on the flags byte of a terminal node in the export information.
 pub const EXPORT_SYMBOL_FLAGS_KIND_MASK: u8 = 0x03;
 pub const EXPORT_SYMBOL_FLAGS_KIND_REGULAR: u8 = 0x00;
 pub const EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL: u8 = 0x01;
@@ -1368,6 +1439,14 @@ pub const EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE: u8 = 0x02;
 pub const EXPORT_SYMBOL_FLAGS_KIND_WEAK_DEFINITION: u8 = 0x04;
 pub const EXPORT_SYMBOL_FLAGS_REEXPORT: u8 = 0x08;
 pub const EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER: u8 = 0x10;
+
+// An indirect symbol table entry is simply a 32bit index into the symbol table
+// to the symbol that the pointer or stub is refering to.  Unless it is for a
+// non-lazy symbol pointer section for a defined symbol which strip(1) as
+// removed.  In which case it has the value INDIRECT_SYMBOL_LOCAL.  If the
+// symbol was also absolute INDIRECT_SYMBOL_ABS is or'ed with that.
+pub const INDIRECT_SYMBOL_LOCAL: u32 = 0x80000000;
+pub const INDIRECT_SYMBOL_ABS: u32 = 0x40000000;
 
 // Codesign consts and structs taken from:
 // https://opensource.apple.com/source/xnu/xnu-6153.81.5/osfmk/kern/cs_blobs.h.auto.html
@@ -1535,4 +1614,18 @@ pub const GenericBlob = extern struct {
 
     /// Total length of blob
     length: u32,
+};
+
+/// The LC_DATA_IN_CODE load commands uses a linkedit_data_command
+/// to point to an array of data_in_code_entry entries. Each entry
+/// describes a range of data in a code section.
+pub const data_in_code_entry = extern struct {
+    /// From mach_header to start of data range.
+    offset: u32,
+
+    /// Number of bytes in data range.
+    length: u16,
+
+    /// A DICE_KIND value.
+    kind: u16,
 };

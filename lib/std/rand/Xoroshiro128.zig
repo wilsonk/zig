@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -129,5 +129,28 @@ test "xoroshiro sequence" {
 
     for (seq2) |s| {
         std.testing.expect(s == r.next());
+    }
+}
+
+test "xoroshiro fill" {
+    var r = Xoroshiro128.init(0);
+    r.s[0] = 0xaeecf86f7878dd75;
+    r.s[1] = 0x01cd153642e72622;
+
+    const seq = [_]u64{
+        0xb0ba0da5bb600397,
+        0x18a08afde614dccc,
+        0xa2635b956a31b929,
+        0xabe633c971efa045,
+        0x9ac19f9706ca3cac,
+        0xf62b426578c1e3fb,
+    };
+
+    for (seq) |s| {
+        var buf0: [8]u8 = undefined;
+        var buf1: [7]u8 = undefined;
+        std.mem.writeIntLittle(u64, &buf0, s);
+        Xoroshiro128.fill(&r.random, &buf1);
+        std.testing.expect(std.mem.eql(u8, buf0[0..7], buf1[0..]));
     }
 }

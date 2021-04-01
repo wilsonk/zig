@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -78,7 +78,8 @@ pub const BootServices = extern struct {
     /// Returns an array of handles that support a specified protocol.
     locateHandle: fn (LocateSearchType, ?*align(8) const Guid, ?*const c_void, *usize, [*]Handle) callconv(.C) Status,
 
-    locateDevicePath: Status, // TODO
+    /// Locates the handle to a device on the device path that supports the specified protocol
+    locateDevicePath: fn (*align(8) const Guid, **const DevicePathProtocol, *?Handle) callconv(.C) Status,
     installConfigurationTable: Status, // TODO
 
     /// Loads an EFI image into memory.

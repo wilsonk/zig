@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -51,9 +51,9 @@ const BinaryElfOutput = struct {
             .segments = ArrayList(*BinaryElfSegment).init(allocator),
             .sections = ArrayList(*BinaryElfSection).init(allocator),
         };
-        const elf_hdr = try std.elf.readHeader(elf_file);
+        const elf_hdr = try std.elf.Header.read(&elf_file);
 
-        var section_headers = elf_hdr.section_header_iterator(elf_file);
+        var section_headers = elf_hdr.section_header_iterator(&elf_file);
         while (try section_headers.next()) |section| {
             if (sectionValidForOutput(section)) {
                 const newSection = try allocator.create(BinaryElfSection);
@@ -67,7 +67,7 @@ const BinaryElfOutput = struct {
             }
         }
 
-        var program_headers = elf_hdr.program_header_iterator(elf_file);
+        var program_headers = elf_hdr.program_header_iterator(&elf_file);
         while (try program_headers.next()) |phdr| {
             if (phdr.p_type == elf.PT_LOAD) {
                 const newSegment = try allocator.create(BinaryElfSegment);
@@ -189,7 +189,7 @@ pub const InstallRawStep = struct {
     pub fn create(builder: *Builder, artifact: *LibExeObjStep, dest_filename: []const u8) *Self {
         const self = builder.allocator.create(Self) catch unreachable;
         self.* = Self{
-            .step = Step.init(.InstallRaw, builder.fmt("install raw binary {}", .{artifact.step.name}), builder.allocator, make),
+            .step = Step.init(.InstallRaw, builder.fmt("install raw binary {s}", .{artifact.step.name}), builder.allocator, make),
             .builder = builder,
             .artifact = artifact,
             .dest_dir = switch (artifact.kind) {
@@ -223,6 +223,6 @@ pub const InstallRawStep = struct {
     }
 };
 
-test "" {
+test {
     std.testing.refAllDecls(InstallRawStep);
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -189,6 +189,75 @@ fn testReadlink(target_path: []const u8, symlink_path: []const u8) !void {
     expect(mem.eql(u8, target_path, given));
 }
 
+test "link with relative paths" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    var cwd = fs.cwd();
+
+    cwd.deleteFile("example.txt") catch {};
+    cwd.deleteFile("new.txt") catch {};
+
+    try cwd.writeFile("example.txt", "example");
+    try os.link("example.txt", "new.txt", 0);
+
+    const efd = try cwd.openFile("example.txt", .{});
+    defer efd.close();
+
+    const nfd = try cwd.openFile("new.txt", .{});
+    defer nfd.close();
+
+    {
+        const estat = try os.fstat(efd.handle);
+        const nstat = try os.fstat(nfd.handle);
+
+        testing.expectEqual(estat.ino, nstat.ino);
+        testing.expectEqual(@as(usize, 2), nstat.nlink);
+    }
+
+    try os.unlink("new.txt");
+
+    {
+        const estat = try os.fstat(efd.handle);
+        testing.expectEqual(@as(usize, 1), estat.nlink);
+    }
+
+    try cwd.deleteFile("example.txt");
+}
+
+test "linkat with different directories" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+    var cwd = fs.cwd();
+    var tmp = tmpDir(.{});
+
+    cwd.deleteFile("example.txt") catch {};
+    tmp.dir.deleteFile("new.txt") catch {};
+
+    try cwd.writeFile("example.txt", "example");
+    try os.linkat(cwd.fd, "example.txt", tmp.dir.fd, "new.txt", 0);
+
+    const efd = try cwd.openFile("example.txt", .{});
+    defer efd.close();
+
+    const nfd = try tmp.dir.openFile("new.txt", .{});
+
+    {
+        defer nfd.close();
+        const estat = try os.fstat(efd.handle);
+        const nstat = try os.fstat(nfd.handle);
+
+        testing.expectEqual(estat.ino, nstat.ino);
+        testing.expectEqual(@as(usize, 2), nstat.nlink);
+    }
+
+    try os.unlinkat(tmp.dir.fd, "new.txt", 0);
+
+    {
+        const estat = try os.fstat(efd.handle);
+        testing.expectEqual(@as(usize, 1), estat.nlink);
+    }
+
+    try cwd.deleteFile("example.txt");
+}
+
 test "fstatat" {
     // enable when `fstat` and `fstatat` are implemented on Windows
     if (builtin.os.tag == .windows) return error.SkipZigTest;
@@ -248,7 +317,7 @@ test "std.Thread.getCurrentId" {
     if (builtin.single_threaded) return error.SkipZigTest;
 
     var thread_current_id: Thread.Id = undefined;
-    const thread = try Thread.spawn(&thread_current_id, testThreadIdFn);
+    const thread = try Thread.spawn(testThreadIdFn, &thread_current_id);
     const thread_id = thread.handle();
     thread.wait();
     if (Thread.use_pthreads) {
@@ -267,10 +336,10 @@ test "spawn threads" {
 
     var shared_ctx: i32 = 1;
 
-    const thread1 = try Thread.spawn({}, start1);
-    const thread2 = try Thread.spawn(&shared_ctx, start2);
-    const thread3 = try Thread.spawn(&shared_ctx, start2);
-    const thread4 = try Thread.spawn(&shared_ctx, start2);
+    const thread1 = try Thread.spawn(start1, {});
+    const thread2 = try Thread.spawn(start2, &shared_ctx);
+    const thread3 = try Thread.spawn(start2, &shared_ctx);
+    const thread4 = try Thread.spawn(start2, &shared_ctx);
 
     thread1.wait();
     thread2.wait();
@@ -298,8 +367,8 @@ test "cpu count" {
 
 test "thread local storage" {
     if (builtin.single_threaded) return error.SkipZigTest;
-    const thread1 = try Thread.spawn({}, testTls);
-    const thread2 = try Thread.spawn({}, testTls);
+    const thread1 = try Thread.spawn(testTls, {});
+    const thread2 = try Thread.spawn(testTls, {});
     testTls({});
     thread1.wait();
     thread2.wait();
@@ -475,7 +544,7 @@ test "mmap" {
         const file = try tmp.dir.createFile(test_out_file, .{});
         defer file.close();
 
-        const stream = file.outStream();
+        const stream = file.writer();
 
         var i: u32 = 0;
         while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
@@ -499,7 +568,7 @@ test "mmap" {
         defer os.munmap(data);
 
         var mem_stream = io.fixedBufferStream(data);
-        const stream = mem_stream.inStream();
+        const stream = mem_stream.reader();
 
         var i: u32 = 0;
         while (i < alloc_size / @sizeOf(u32)) : (i += 1) {
@@ -523,7 +592,7 @@ test "mmap" {
         defer os.munmap(data);
 
         var mem_stream = io.fixedBufferStream(data);
-        const stream = mem_stream.inStream();
+        const stream = mem_stream.reader();
 
         var i: u32 = alloc_size / 2 / @sizeOf(u32);
         while (i < alloc_size / @sizeOf(u32)) : (i += 1) {

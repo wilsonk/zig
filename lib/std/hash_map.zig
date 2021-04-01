@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -17,6 +17,17 @@ const Allocator = mem.Allocator;
 const Wyhash = std.hash.Wyhash;
 
 pub fn getAutoHashFn(comptime K: type) (fn (K) u64) {
+    comptime {
+        assert(@hasDecl(std, "StringHashMap")); // detect when the following message needs updated
+        if (K == []const u8) {
+            @compileError("std.auto_hash.autoHash does not allow slices here (" ++
+                @typeName(K) ++
+                ") because the intent is unclear. " ++
+                "Consider using std.StringHashMap for hashing the contents of []const u8. " ++
+                "Alternatively, consider using std.auto_hash.hash or providing your own hash function instead.");
+        }
+    }
+
     return struct {
         fn hash(key: K) u64 {
             if (comptime trait.hasUniqueRepresentation(K)) {
@@ -39,20 +50,20 @@ pub fn getAutoEqlFn(comptime K: type) (fn (K, K) bool) {
 }
 
 pub fn AutoHashMap(comptime K: type, comptime V: type) type {
-    return HashMap(K, V, getAutoHashFn(K), getAutoEqlFn(K), DefaultMaxLoadPercentage);
+    return HashMap(K, V, getAutoHashFn(K), getAutoEqlFn(K), default_max_load_percentage);
 }
 
 pub fn AutoHashMapUnmanaged(comptime K: type, comptime V: type) type {
-    return HashMapUnmanaged(K, V, getAutoHashFn(K), getAutoEqlFn(K), DefaultMaxLoadPercentage);
+    return HashMapUnmanaged(K, V, getAutoHashFn(K), getAutoEqlFn(K), default_max_load_percentage);
 }
 
 /// Builtin hashmap for strings as keys.
 pub fn StringHashMap(comptime V: type) type {
-    return HashMap([]const u8, V, hashString, eqlString, DefaultMaxLoadPercentage);
+    return HashMap([]const u8, V, hashString, eqlString, default_max_load_percentage);
 }
 
 pub fn StringHashMapUnmanaged(comptime V: type) type {
-    return HashMapUnmanaged([]const u8, V, hashString, eqlString, DefaultMaxLoadPercentage);
+    return HashMapUnmanaged([]const u8, V, hashString, eqlString, default_max_load_percentage);
 }
 
 pub fn eqlString(a: []const u8, b: []const u8) bool {
@@ -63,7 +74,10 @@ pub fn hashString(s: []const u8) u64 {
     return std.hash.Wyhash.hash(0, s);
 }
 
-pub const DefaultMaxLoadPercentage = 80;
+/// Deprecated use `default_max_load_percentage`
+pub const DefaultMaxLoadPercentage = default_max_load_percentage;
+
+pub const default_max_load_percentage = 80;
 
 /// General purpose hash table.
 /// No order is guaranteed and any modification invalidates live iterators.
@@ -78,13 +92,13 @@ pub fn HashMap(
     comptime V: type,
     comptime hashFn: fn (key: K) u64,
     comptime eqlFn: fn (a: K, b: K) bool,
-    comptime MaxLoadPercentage: u64,
+    comptime max_load_percentage: u64,
 ) type {
     return struct {
         unmanaged: Unmanaged,
         allocator: *Allocator,
 
-        pub const Unmanaged = HashMapUnmanaged(K, V, hashFn, eqlFn, MaxLoadPercentage);
+        pub const Unmanaged = HashMapUnmanaged(K, V, hashFn, eqlFn, max_load_percentage);
         pub const Entry = Unmanaged.Entry;
         pub const Hash = Unmanaged.Hash;
         pub const Iterator = Unmanaged.Iterator;
@@ -240,9 +254,9 @@ pub fn HashMapUnmanaged(
     comptime V: type,
     hashFn: fn (key: K) u64,
     eqlFn: fn (a: K, b: K) bool,
-    comptime MaxLoadPercentage: u64,
+    comptime max_load_percentage: u64,
 ) type {
-    comptime assert(MaxLoadPercentage > 0 and MaxLoadPercentage < 100);
+    comptime assert(max_load_percentage > 0 and max_load_percentage < 100);
 
     return struct {
         const Self = @This();
@@ -263,12 +277,12 @@ pub fn HashMapUnmanaged(
         // Having a countdown to grow reduces the number of instructions to
         // execute when determining if the hashmap has enough capacity already.
         /// Number of available slots before a grow is needed to satisfy the
-        /// `MaxLoadPercentage`.
+        /// `max_load_percentage`.
         available: Size = 0,
 
         // This is purely empirical and not a /very smart magic constant™/.
         /// Capacity of the first grow when bootstrapping the hashmap.
-        const MinimalCapacity = 8;
+        const minimal_capacity = 8;
 
         // This hashmap is specially designed for sizes that fit in a u32.
         const Size = u32;
@@ -371,7 +385,7 @@ pub fn HashMapUnmanaged(
             found_existing: bool,
         };
 
-        pub const Managed = HashMap(K, V, hashFn, eqlFn, MaxLoadPercentage);
+        pub const Managed = HashMap(K, V, hashFn, eqlFn, max_load_percentage);
 
         pub fn promote(self: Self, allocator: *Allocator) Managed {
             return .{
@@ -381,7 +395,7 @@ pub fn HashMapUnmanaged(
         }
 
         fn isUnderMaxLoadPercentage(size: Size, cap: Size) bool {
-            return size * 100 < MaxLoadPercentage * cap;
+            return size * 100 < max_load_percentage * cap;
         }
 
         pub fn init(allocator: *Allocator) Self {
@@ -414,7 +428,7 @@ pub fn HashMapUnmanaged(
         }
 
         fn capacityForSize(size: Size) Size {
-            var new_cap = @truncate(u32, (@as(u64, size) * 100) / MaxLoadPercentage + 1);
+            var new_cap = @truncate(u32, (@as(u64, size) * 100) / max_load_percentage + 1);
             new_cap = math.ceilPowerOfTwo(u32, new_cap) catch unreachable;
             return new_cap;
         }
@@ -428,7 +442,7 @@ pub fn HashMapUnmanaged(
             if (self.metadata) |_| {
                 self.initMetadatas();
                 self.size = 0;
-                self.available = @truncate(u32, (self.capacity() * MaxLoadPercentage) / 100);
+                self.available = @truncate(u32, (self.capacity() * max_load_percentage) / 100);
             }
         }
 
@@ -552,7 +566,6 @@ pub fn HashMapUnmanaged(
         }
 
         /// Insert an entry if the associated key is not already present, otherwise update preexisting value.
-        /// Returns true if the key was already present.
         pub fn put(self: *Self, allocator: *Allocator, key: K, value: V) !void {
             const result = try self.getOrPut(allocator, key);
             result.entry.value = value;
@@ -702,9 +715,9 @@ pub fn HashMapUnmanaged(
         }
 
         // This counts the number of occupied slots, used + tombstones, which is
-        // what has to stay under the MaxLoadPercentage of capacity.
+        // what has to stay under the max_load_percentage of capacity.
         fn load(self: *const Self) Size {
-            const max_load = (self.capacity() * MaxLoadPercentage) / 100;
+            const max_load = (self.capacity() * max_load_percentage) / 100;
             assert(max_load >= self.available);
             return @truncate(Size, max_load - self.available);
         }
@@ -723,7 +736,7 @@ pub fn HashMapUnmanaged(
             const new_cap = capacityForSize(self.size);
             try other.allocate(allocator, new_cap);
             other.initMetadatas();
-            other.available = @truncate(u32, (new_cap * MaxLoadPercentage) / 100);
+            other.available = @truncate(u32, (new_cap * max_load_percentage) / 100);
 
             var i: Size = 0;
             var metadata = self.metadata.?;
@@ -741,7 +754,7 @@ pub fn HashMapUnmanaged(
         }
 
         fn grow(self: *Self, allocator: *Allocator, new_capacity: Size) !void {
-            const new_cap = std.math.max(new_capacity, MinimalCapacity);
+            const new_cap = std.math.max(new_capacity, minimal_capacity);
             assert(new_cap > self.capacity());
             assert(std.math.isPowerOfTwo(new_cap));
 
@@ -749,7 +762,7 @@ pub fn HashMapUnmanaged(
             defer map.deinit(allocator);
             try map.allocate(allocator, new_cap);
             map.initMetadatas();
-            map.available = @truncate(u32, (new_cap * MaxLoadPercentage) / 100);
+            map.available = @truncate(u32, (new_cap * max_load_percentage) / 100);
 
             if (self.size != 0) {
                 const old_capacity = self.capacity();
@@ -933,7 +946,7 @@ test "std.hash_map ensureCapacity with existing elements" {
 
     try map.put(0, 0);
     expectEqual(map.count(), 1);
-    expectEqual(map.capacity(), @TypeOf(map).Unmanaged.MinimalCapacity);
+    expectEqual(map.capacity(), @TypeOf(map).Unmanaged.minimal_capacity);
 
     try map.ensureCapacity(65);
     expectEqual(map.count(), 1);
@@ -1105,7 +1118,7 @@ test "std.hash_map put" {
 
     var i: u32 = 0;
     while (i < 16) : (i += 1) {
-        _ = try map.put(i, i);
+        try map.put(i, i);
     }
 
     i = 0;

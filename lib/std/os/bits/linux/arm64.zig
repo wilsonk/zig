@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -313,6 +313,7 @@ pub const SYS = extern enum(usize) {
     pidfd_getfd = 438,
     faccessat2 = 439,
     process_madvise = 440,
+    epoll_pwait2 = 441,
 
     _,
 };
@@ -399,10 +400,10 @@ pub const msghdr = extern struct {
     msg_namelen: socklen_t,
     msg_iov: [*]iovec,
     msg_iovlen: i32,
-    __pad1: i32,
+    __pad1: i32 = 0,
     msg_control: ?*c_void,
     msg_controllen: socklen_t,
-    __pad2: socklen_t,
+    __pad2: socklen_t = 0,
     msg_flags: i32,
 };
 
@@ -411,10 +412,10 @@ pub const msghdr_const = extern struct {
     msg_namelen: socklen_t,
     msg_iov: [*]iovec_const,
     msg_iovlen: i32,
-    __pad1: i32,
+    __pad1: i32 = 0,
     msg_control: ?*c_void,
     msg_controllen: socklen_t,
-    __pad2: socklen_t,
+    __pad2: socklen_t = 0,
     msg_flags: i32,
 };
 
