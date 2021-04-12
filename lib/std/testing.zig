@@ -298,7 +298,7 @@ pub const TmpDir = struct {
     sub_path: [sub_path_len]u8,
 
     const random_bytes_count = 12;
-    const sub_path_len = std.base64.Base64Encoder.calcSize(random_bytes_count);
+    const sub_path_len = std.fs.base64_encoder.calcSize(random_bytes_count);
 
     pub fn cleanup(self: *TmpDir) void {
         self.dir.close();
@@ -431,7 +431,7 @@ fn printIndicatorLine(source: []const u8, indicator_index: usize) void {
 
 fn printWithVisibleNewlines(source: []const u8) void {
     var i: usize = 0;
-    while (std.mem.indexOf(u8, source[i..], "\n")) |nl| : (i += nl + 1) {
+    while (std.mem.indexOfScalar(u8, source[i..], '\n')) |nl| : (i += nl + 1) {
         printLine(source[i .. i + nl]);
     }
     print("{s}␃\n", .{source[i..]}); // End of Text symbol (ETX)
@@ -439,7 +439,7 @@ fn printWithVisibleNewlines(source: []const u8) void {
 
 fn printLine(line: []const u8) void {
     if (line.len != 0) switch (line[line.len - 1]) {
-        ' ', '\t' => print("{s}⏎\n", .{line}), // Carriage return symbol,
+        ' ', '\t' => return print("{s}⏎\n", .{line}), // Carriage return symbol,
         else => {},
     };
     print("{s}\n", .{line});
@@ -451,7 +451,7 @@ test {
 
 /// Given a type, reference all the declarations inside, so that the semantic analyzer sees them.
 pub fn refAllDecls(comptime T: type) void {
-    if (!@import("builtin").is_test) return;
+    if (!std.builtin.is_test) return;
     inline for (std.meta.declarations(T)) |decl| {
         _ = decl;
     }

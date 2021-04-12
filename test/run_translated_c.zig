@@ -1258,4 +1258,156 @@ pub fn addCases(cases: *tests.RunTranslatedCContext) void {
         \\    return 0;
         \\}
     , "");
+
+    cases.add("cast RHS of compound assignment if necessary, unused result",
+        \\#include <stdlib.h>
+        \\int main(void) {
+        \\   signed short val = -1;
+        \\   val += 1; if (val != 0) abort();
+        \\   val -= 1; if (val != -1) abort();
+        \\   val *= 2; if (val != -2) abort();
+        \\   val /= 2; if (val != -1) abort();
+        \\   val %= 2; if (val != -1) abort();
+        \\   val <<= 1; if (val != -2) abort();
+        \\   val >>= 1; if (val != -1) abort();
+        \\   val += 100000000;       // compile error if @truncate() not inserted
+        \\   unsigned short uval = 1;
+        \\   uval += 1; if (uval != 2) abort();
+        \\   uval -= 1; if (uval != 1) abort();
+        \\   uval *= 2; if (uval != 2) abort();
+        \\   uval /= 2; if (uval != 1) abort();
+        \\   uval %= 2; if (uval != 1) abort();
+        \\   uval <<= 1; if (uval != 2) abort();
+        \\   uval >>= 1; if (uval != 1) abort();
+        \\   uval += 100000000;      // compile error if @truncate() not inserted
+        \\}
+    , "");
+
+    cases.add("cast RHS of compound assignment if necessary, used result",
+        \\#include <stdlib.h>
+        \\int main(void) {
+        \\   signed short foo;
+        \\   signed short val = -1;
+        \\   foo = (val += 1); if (foo != 0) abort();
+        \\   foo = (val -= 1); if (foo != -1) abort();
+        \\   foo = (val *= 2); if (foo != -2) abort();
+        \\   foo = (val /= 2); if (foo != -1) abort();
+        \\   foo = (val %= 2); if (foo != -1) abort();
+        \\   foo = (val <<= 1); if (foo != -2) abort();
+        \\   foo = (val >>= 1); if (foo != -1) abort();
+        \\   foo = (val += 100000000);    // compile error if @truncate() not inserted
+        \\   unsigned short ufoo;
+        \\   unsigned short uval = 1;
+        \\   ufoo = (uval += 1); if (ufoo != 2) abort();
+        \\   ufoo = (uval -= 1); if (ufoo != 1) abort();
+        \\   ufoo = (uval *= 2); if (ufoo != 2) abort();
+        \\   ufoo = (uval /= 2); if (ufoo != 1) abort();
+        \\   ufoo = (uval %= 2); if (ufoo != 1) abort();
+        \\   ufoo = (uval <<= 1); if (ufoo != 2) abort();
+        \\   ufoo = (uval >>= 1); if (ufoo != 1) abort();
+        \\   ufoo = (uval += 100000000);  // compile error if @truncate() not inserted
+        \\}
+    , "");
+
+    cases.add("basic vector expressions",
+        \\#include <stdlib.h>
+        \\#include <stdint.h>
+        \\typedef int16_t  __v8hi __attribute__((__vector_size__(16)));
+        \\int main(int argc, char**argv) {
+        \\    __v8hi uninitialized;
+        \\    __v8hi empty_init = {};
+        \\    __v8hi partial_init = {0, 1, 2, 3};
+        \\
+        \\    __v8hi a = {0, 1, 2, 3, 4, 5, 6, 7};
+        \\    __v8hi b = (__v8hi) {100, 200, 300, 400, 500, 600, 700, 800};
+        \\
+        \\    __v8hi sum = a + b;
+        \\    for (int i = 0; i < 8; i++) {
+        \\        if (sum[i] != a[i] + b[i]) abort();
+        \\    }
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("__builtin_shufflevector",
+        \\#include <stdlib.h>
+        \\#include <stdint.h>
+        \\typedef int16_t  __v4hi __attribute__((__vector_size__(8)));
+        \\typedef int16_t  __v8hi __attribute__((__vector_size__(16)));
+        \\int main(int argc, char**argv) {
+        \\    __v8hi v8_a = {0, 1, 2, 3, 4, 5, 6, 7};
+        \\    __v8hi v8_b = {100, 200, 300, 400, 500, 600, 700, 800};
+        \\    __v8hi shuffled = __builtin_shufflevector(v8_a, v8_b, 0, 1, 2, 3, 8, 9, 10, 11);
+        \\    for (int i = 0; i < 8; i++) {
+        \\        if (i < 4) {
+        \\            if (shuffled[i] != v8_a[i]) abort();
+        \\        } else {
+        \\            if (shuffled[i] != v8_b[i - 4]) abort();
+        \\        }
+        \\    }
+        \\    shuffled = __builtin_shufflevector(
+        \\        (__v8hi) {-1, -1, -1, -1, -1, -1, -1, -1},
+        \\        (__v8hi) {42, 42, 42, 42, 42, 42, 42, 42},
+        \\        0, 1, 2, 3, 8, 9, 10, 11
+        \\    );
+        \\    for (int i = 0; i < 8; i++) {
+        \\        if (i < 4) {
+        \\            if (shuffled[i] != -1) abort();
+        \\        } else {
+        \\            if (shuffled[i] != 42) abort();
+        \\        }
+        \\    }
+        \\    __v4hi shuffled_to_fewer_elements = __builtin_shufflevector(v8_a, v8_b, 0, 1, 8, 9);
+        \\    for (int i = 0; i < 4; i++) {
+        \\        if (i < 2) {
+        \\            if (shuffled_to_fewer_elements[i] != v8_a[i]) abort();
+        \\        } else {
+        \\            if (shuffled_to_fewer_elements[i] != v8_b[i - 2]) abort();
+        \\        }
+        \\    }
+        \\    __v4hi v4_a = {0, 1, 2, 3};
+        \\    __v4hi v4_b = {100, 200, 300, 400};
+        \\    __v8hi shuffled_to_more_elements = __builtin_shufflevector(v4_a, v4_b, 0, 1, 2, 3, 4, 5, 6, 7);
+        \\    for (int i = 0; i < 4; i++) {
+        \\        if (shuffled_to_more_elements[i] != v4_a[i]) abort();
+        \\        if (shuffled_to_more_elements[i + 4] != v4_b[i]) abort();
+        \\    }
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("__builtin_convertvector",
+        \\#include <stdlib.h>
+        \\#include <stdint.h>
+        \\typedef int16_t  __v8hi __attribute__((__vector_size__(16)));
+        \\typedef uint16_t __v8hu __attribute__((__vector_size__(16)));
+        \\int main(int argc, char**argv) {
+        \\    __v8hi signed_vector = { 1, 2, 3, 4, -1, -2, -3,-4};
+        \\    __v8hu unsigned_vector = __builtin_convertvector(signed_vector, __v8hu);
+        \\
+        \\    for (int i = 0; i < 8; i++) {
+        \\        if (unsigned_vector[i] != (uint16_t)signed_vector[i]) abort();
+        \\    }
+        \\    return 0;
+        \\}
+    , "");
+
+    cases.add("vector casting",
+        \\#include <stdlib.h>
+        \\#include <stdint.h>
+        \\typedef int8_t __v8qi __attribute__((__vector_size__(8)));
+        \\typedef uint8_t __v8qu __attribute__((__vector_size__(8)));
+        \\int main(int argc, char**argv) {
+        \\    __v8qi signed_vector = { 1, 2, 3, 4, -1, -2, -3,-4};
+        \\
+        \\    uint64_t big_int = (uint64_t) signed_vector;
+        \\    if (big_int != 0x01020304FFFEFDFCULL && big_int != 0xFCFDFEFF04030201ULL) abort();
+        \\    __v8qu unsigned_vector = (__v8qu) big_int;
+        \\    for (int i = 0; i < 8; i++) {
+        \\        if (unsigned_vector[i] != (uint8_t)signed_vector[i] && unsigned_vector[i] != (uint8_t)signed_vector[7 - i]) abort();
+        \\    }
+        \\    return 0;
+        \\}
+    , "");
+
 }
