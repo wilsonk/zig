@@ -29,7 +29,7 @@ pub var zig_exe_path: []const u8 = undefined;
 /// and then aborts when actual_error_union is not expected_error.
 pub fn expectError(expected_error: anyerror, actual_error_union: anytype) void {
     if (actual_error_union) |actual_payload| {
-        std.debug.panic("expected error.{s}, found {}", .{ @errorName(expected_error), actual_payload });
+        std.debug.panic("expected error.{s}, found {any}", .{ @errorName(expected_error), actual_payload });
     } else |actual_error| {
         if (expected_error != actual_error) {
             std.debug.panic("expected error.{s}, found error.{s}", .{
@@ -88,7 +88,7 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 },
                 .Slice => {
                     if (actual.ptr != expected.ptr) {
-                        std.debug.panic("expected slice ptr {}, found {}", .{ expected.ptr, actual.ptr });
+                        std.debug.panic("expected slice ptr {*}, found {*}", .{ expected.ptr, actual.ptr });
                     }
                     if (actual.len != expected.len) {
                         std.debug.panic("expected slice len {}, found {}", .{ expected.len, actual.len });
@@ -145,11 +145,11 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 if (actual) |actual_payload| {
                     expectEqual(expected_payload, actual_payload);
                 } else {
-                    std.debug.panic("expected {}, found null", .{expected_payload});
+                    std.debug.panic("expected {any}, found null", .{expected_payload});
                 }
             } else {
                 if (actual) |actual_payload| {
-                    std.debug.panic("expected null, found {}", .{actual_payload});
+                    std.debug.panic("expected null, found {any}", .{actual_payload});
                 }
             }
         },
@@ -159,11 +159,11 @@ pub fn expectEqual(expected: anytype, actual: @TypeOf(expected)) void {
                 if (actual) |actual_payload| {
                     expectEqual(expected_payload, actual_payload);
                 } else |actual_err| {
-                    std.debug.panic("expected {}, found {}", .{ expected_payload, actual_err });
+                    std.debug.panic("expected {any}, found {}", .{ expected_payload, actual_err });
                 }
             } else |expected_err| {
                 if (actual) |actual_payload| {
-                    std.debug.panic("expected {}, found {}", .{ expected_err, actual_payload });
+                    std.debug.panic("expected {}, found {any}", .{ expected_err, actual_payload });
                 } else |actual_err| {
                     expectEqual(expected_err, actual_err);
                 }
@@ -200,67 +200,69 @@ pub fn expectFmt(expected: []const u8, comptime template: []const u8, args: anyt
     return error.TestFailed;
 }
 
-/// This function is intended to be used only in tests. When the actual value is not
-/// within the margin of the expected value,
-/// prints diagnostics to stderr to show exactly how they are not equal, then aborts.
-/// The types must be floating point
-pub fn expectWithinMargin(expected: anytype, actual: @TypeOf(expected), margin: @TypeOf(expected)) void {
-    std.debug.assert(margin >= 0.0);
+pub const expectWithinMargin = @compileError("expectWithinMargin is deprecated, use expectApproxEqAbs or expectApproxEqRel");
+pub const expectWithinEpsilon = @compileError("expectWithinEpsilon is deprecated, use expectApproxEqAbs or expectApproxEqRel");
 
-    switch (@typeInfo(@TypeOf(actual))) {
-        .Float,
-        .ComptimeFloat,
-        => {
-            if (@fabs(expected - actual) > margin) {
-                std.debug.panic("actual {}, not within margin {} of expected {}", .{ actual, margin, expected });
-            }
-        },
+/// This function is intended to be used only in tests. When the actual value is
+/// not approximately equal to the expected value, prints diagnostics to stderr
+/// to show exactly how they are not equal, then aborts.
+/// See `math.approxEqAbs` for more informations on the tolerance parameter.
+/// The types must be floating point
+pub fn expectApproxEqAbs(expected: anytype, actual: @TypeOf(expected), tolerance: @TypeOf(expected)) void {
+    const T = @TypeOf(expected);
+
+    switch (@typeInfo(T)) {
+        .Float => if (!math.approxEqAbs(T, expected, actual, tolerance))
+            std.debug.panic("actual {}, not within absolute tolerance {} of expected {}", .{ actual, tolerance, expected }),
+
+        .ComptimeFloat => @compileError("Cannot approximately compare two comptime_float values"),
+
         else => @compileError("Unable to compare non floating point values"),
     }
 }
 
-test "expectWithinMargin" {
+test "expectApproxEqAbs" {
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
         const pos_x: T = 12.0;
         const pos_y: T = 12.06;
         const neg_x: T = -12.0;
         const neg_y: T = -12.06;
 
-        expectWithinMargin(pos_x, pos_y, 0.1);
-        expectWithinMargin(neg_x, neg_y, 0.1);
+        expectApproxEqAbs(pos_x, pos_y, 0.1);
+        expectApproxEqAbs(neg_x, neg_y, 0.1);
     }
 }
 
-/// This function is intended to be used only in tests. When the actual value is not
-/// within the epsilon of the expected value,
-/// prints diagnostics to stderr to show exactly how they are not equal, then aborts.
+/// This function is intended to be used only in tests. When the actual value is
+/// not approximately equal to the expected value, prints diagnostics to stderr
+/// to show exactly how they are not equal, then aborts.
+/// See `math.approxEqRel` for more informations on the tolerance parameter.
 /// The types must be floating point
-pub fn expectWithinEpsilon(expected: anytype, actual: @TypeOf(expected), epsilon: @TypeOf(expected)) void {
-    std.debug.assert(epsilon >= 0.0 and epsilon <= 1.0);
+pub fn expectApproxEqRel(expected: anytype, actual: @TypeOf(expected), tolerance: @TypeOf(expected)) void {
+    const T = @TypeOf(expected);
 
-    // Relative epsilon test.
-    const margin = math.max(math.fabs(expected), math.fabs(actual)) * epsilon;
-    switch (@typeInfo(@TypeOf(actual))) {
-        .Float,
-        .ComptimeFloat,
-        => {
-            if (@fabs(expected - actual) > margin) {
-                std.debug.panic("actual {}, not within epsilon {}, of expected {}", .{ actual, epsilon, expected });
-            }
-        },
+    switch (@typeInfo(T)) {
+        .Float => if (!math.approxEqRel(T, expected, actual, tolerance))
+            std.debug.panic("actual {}, not within relative tolerance {} of expected {}", .{ actual, tolerance, expected }),
+
+        .ComptimeFloat => @compileError("Cannot approximately compare two comptime_float values"),
+
         else => @compileError("Unable to compare non floating point values"),
     }
 }
 
-test "expectWithinEpsilon" {
+test "expectApproxEqRel" {
     inline for ([_]type{ f16, f32, f64, f128 }) |T| {
-        const pos_x: T = 12.0;
-        const pos_y: T = 13.2;
-        const neg_x: T = -12.0;
-        const neg_y: T = -13.2;
+        const eps_value = comptime math.epsilon(T);
+        const sqrt_eps_value = comptime math.sqrt(eps_value);
 
-        expectWithinEpsilon(pos_x, pos_y, 0.1);
-        expectWithinEpsilon(neg_x, neg_y, 0.1);
+        const pos_x: T = 12.0;
+        const pos_y: T = pos_x + 2 * eps_value;
+        const neg_x: T = -12.0;
+        const neg_y: T = neg_x - 2 * eps_value;
+
+        expectApproxEqRel(pos_x, pos_y, sqrt_eps_value);
+        expectApproxEqRel(neg_x, neg_y, sqrt_eps_value);
     }
 }
 
@@ -279,7 +281,7 @@ pub fn expectEqualSlices(comptime T: type, expected: []const T, actual: []const 
     var i: usize = 0;
     while (i < expected.len) : (i += 1) {
         if (!std.meta.eql(expected[i], actual[i])) {
-            std.debug.panic("index {} incorrect. expected {}, found {}", .{ i, expected[i], actual[i] });
+            std.debug.panic("index {} incorrect. expected {any}, found {any}", .{ i, expected[i], actual[i] });
         }
     }
 }
@@ -296,7 +298,7 @@ pub const TmpDir = struct {
     sub_path: [sub_path_len]u8,
 
     const random_bytes_count = 12;
-    const sub_path_len = std.base64.Base64Encoder.calcSize(random_bytes_count);
+    const sub_path_len = std.fs.base64_encoder.calcSize(random_bytes_count);
 
     pub fn cleanup(self: *TmpDir) void {
         self.dir.close();
@@ -429,7 +431,7 @@ fn printIndicatorLine(source: []const u8, indicator_index: usize) void {
 
 fn printWithVisibleNewlines(source: []const u8) void {
     var i: usize = 0;
-    while (std.mem.indexOf(u8, source[i..], "\n")) |nl| : (i += nl + 1) {
+    while (std.mem.indexOfScalar(u8, source[i..], '\n')) |nl| : (i += nl + 1) {
         printLine(source[i .. i + nl]);
     }
     print("{s}␃\n", .{source[i..]}); // End of Text symbol (ETX)
@@ -437,7 +439,7 @@ fn printWithVisibleNewlines(source: []const u8) void {
 
 fn printLine(line: []const u8) void {
     if (line.len != 0) switch (line[line.len - 1]) {
-        ' ', '\t' => print("{s}⏎\n", .{line}), // Carriage return symbol,
+        ' ', '\t' => return print("{s}⏎\n", .{line}), // Carriage return symbol,
         else => {},
     };
     print("{s}\n", .{line});
@@ -449,7 +451,7 @@ test {
 
 /// Given a type, reference all the declarations inside, so that the semantic analyzer sees them.
 pub fn refAllDecls(comptime T: type) void {
-    if (!@import("builtin").is_test) return;
+    if (!std.builtin.is_test) return;
     inline for (std.meta.declarations(T)) |decl| {
         _ = decl;
     }

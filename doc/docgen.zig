@@ -4,6 +4,7 @@ const io = std.io;
 const fs = std.fs;
 const process = std.process;
 const ChildProcess = std.ChildProcess;
+const Progress = std.Progress;
 const print = std.debug.print;
 const mem = std.mem;
 const testing = std.testing;
@@ -34,6 +35,15 @@ pub fn main() !void {
     const out_file_name = try (args_it.next(allocator) orelse @panic("expected output arg"));
     defer allocator.free(out_file_name);
 
+    var do_code_tests = true;
+    if (args_it.next(allocator)) |arg| {
+        if (mem.eql(u8, try arg, "--skip-code-tests")) {
+            do_code_tests = false;
+        } else {
+            @panic("unrecognized arg");
+        }
+    }
+
     var in_file = try fs.cwd().openFile(in_file_name, .{ .read = true });
     defer in_file.close();
 
@@ -50,7 +60,7 @@ pub fn main() !void {
     try fs.cwd().makePath(tmp_dir_name);
     defer fs.cwd().deleteTree(tmp_dir_name) catch {};
 
-    try genHtml(allocator, &tokenizer, &toc, buffered_writer.writer(), zig_exe);
+    try genHtml(allocator, &tokenizer, &toc, buffered_writer.writer(), zig_exe, do_code_tests);
     try buffered_writer.flush();
 }
 
@@ -225,7 +235,7 @@ fn parseError(tokenizer: *Tokenizer, token: Token, comptime fmt: []const u8, arg
             }
         }
         {
-            const caret_count = token.end - token.start;
+            const caret_count = std.math.min(token.end, loc.line_end) - token.start;
             var i: usize = 0;
             while (i < caret_count) : (i += 1) {
                 print("~", .{});
@@ -564,8 +574,7 @@ fn genToc(allocator: *mem.Allocator, tokenizer: *Tokenizer) !Toc {
                             );
                         }
                         _ = try eatToken(tokenizer, Token.Id.BracketClose);
-                    } else
-                        unreachable; // TODO issue #707
+                    } else unreachable; // TODO issue #707
                     try nodes.append(Node{
                         .Code = Code{
                             .id = code_kind_id,
@@ -781,106 +790,119 @@ fn tokenizeAndPrintRaw(docgen_tokenizer: *Tokenizer, out: anytype, source_token:
         next_tok_is_fn = false;
 
         const token = tokenizer.next();
-        try writeEscaped(out, src[index..token.loc.start]);
-        switch (token.id) {
-            .Eof => break,
+        if (mem.indexOf(u8, src[index..token.loc.start], "//")) |comment_start_off| {
+            // render one comment
+            const comment_start = index + comment_start_off;
+            const comment_end_off = mem.indexOf(u8, src[comment_start..token.loc.start], "\n");
+            const comment_end = if (comment_end_off) |o| comment_start + o else token.loc.start;
 
-            .Keyword_align,
-            .Keyword_and,
-            .Keyword_asm,
-            .Keyword_async,
-            .Keyword_await,
-            .Keyword_break,
-            .Keyword_catch,
-            .Keyword_comptime,
-            .Keyword_const,
-            .Keyword_continue,
-            .Keyword_defer,
-            .Keyword_else,
-            .Keyword_enum,
-            .Keyword_errdefer,
-            .Keyword_error,
-            .Keyword_export,
-            .Keyword_extern,
-            .Keyword_for,
-            .Keyword_if,
-            .Keyword_inline,
-            .Keyword_noalias,
-            .Keyword_noinline,
-            .Keyword_nosuspend,
-            .Keyword_opaque,
-            .Keyword_or,
-            .Keyword_orelse,
-            .Keyword_packed,
-            .Keyword_anyframe,
-            .Keyword_pub,
-            .Keyword_resume,
-            .Keyword_return,
-            .Keyword_linksection,
-            .Keyword_callconv,
-            .Keyword_struct,
-            .Keyword_suspend,
-            .Keyword_switch,
-            .Keyword_test,
-            .Keyword_threadlocal,
-            .Keyword_try,
-            .Keyword_union,
-            .Keyword_unreachable,
-            .Keyword_usingnamespace,
-            .Keyword_var,
-            .Keyword_volatile,
-            .Keyword_allowzero,
-            .Keyword_while,
-            .Keyword_anytype,
+            try writeEscaped(out, src[index..comment_start]);
+            try out.writeAll("<span class=\"tok-comment\">");
+            try writeEscaped(out, src[comment_start..comment_end]);
+            try out.writeAll("</span>");
+            index = comment_end;
+            tokenizer.index = index;
+            continue;
+        }
+
+        try writeEscaped(out, src[index..token.loc.start]);
+        switch (token.tag) {
+            .eof => break,
+
+            .keyword_align,
+            .keyword_and,
+            .keyword_asm,
+            .keyword_async,
+            .keyword_await,
+            .keyword_break,
+            .keyword_catch,
+            .keyword_comptime,
+            .keyword_const,
+            .keyword_continue,
+            .keyword_defer,
+            .keyword_else,
+            .keyword_enum,
+            .keyword_errdefer,
+            .keyword_error,
+            .keyword_export,
+            .keyword_extern,
+            .keyword_for,
+            .keyword_if,
+            .keyword_inline,
+            .keyword_noalias,
+            .keyword_noinline,
+            .keyword_nosuspend,
+            .keyword_opaque,
+            .keyword_or,
+            .keyword_orelse,
+            .keyword_packed,
+            .keyword_anyframe,
+            .keyword_pub,
+            .keyword_resume,
+            .keyword_return,
+            .keyword_linksection,
+            .keyword_callconv,
+            .keyword_struct,
+            .keyword_suspend,
+            .keyword_switch,
+            .keyword_test,
+            .keyword_threadlocal,
+            .keyword_try,
+            .keyword_union,
+            .keyword_unreachable,
+            .keyword_usingnamespace,
+            .keyword_var,
+            .keyword_volatile,
+            .keyword_allowzero,
+            .keyword_while,
+            .keyword_anytype,
             => {
                 try out.writeAll("<span class=\"tok-kw\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
             },
 
-            .Keyword_fn => {
+            .keyword_fn => {
                 try out.writeAll("<span class=\"tok-kw\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
                 next_tok_is_fn = true;
             },
 
-            .Keyword_undefined,
-            .Keyword_null,
-            .Keyword_true,
-            .Keyword_false,
+            .keyword_undefined,
+            .keyword_null,
+            .keyword_true,
+            .keyword_false,
             => {
                 try out.writeAll("<span class=\"tok-null\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
             },
 
-            .StringLiteral,
-            .MultilineStringLiteralLine,
-            .CharLiteral,
+            .string_literal,
+            .multiline_string_literal_line,
+            .char_literal,
             => {
                 try out.writeAll("<span class=\"tok-str\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
             },
 
-            .Builtin => {
+            .builtin => {
                 try out.writeAll("<span class=\"tok-builtin\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
             },
 
-            .LineComment,
-            .DocComment,
-            .ContainerDocComment,
-            .ShebangLine,
+            .doc_comment,
+            .container_doc_comment,
             => {
                 try out.writeAll("<span class=\"tok-comment\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
             },
 
-            .Identifier => {
+            .identifier => {
                 if (prev_tok_was_fn) {
                     try out.writeAll("<span class=\"tok-fn\">");
                     try writeEscaped(out, src[token.loc.start..token.loc.end]);
@@ -908,71 +930,71 @@ fn tokenizeAndPrintRaw(docgen_tokenizer: *Tokenizer, out: anytype, source_token:
                 }
             },
 
-            .IntegerLiteral,
-            .FloatLiteral,
+            .integer_literal,
+            .float_literal,
             => {
                 try out.writeAll("<span class=\"tok-number\">");
                 try writeEscaped(out, src[token.loc.start..token.loc.end]);
                 try out.writeAll("</span>");
             },
 
-            .Bang,
-            .Pipe,
-            .PipePipe,
-            .PipeEqual,
-            .Equal,
-            .EqualEqual,
-            .EqualAngleBracketRight,
-            .BangEqual,
-            .LParen,
-            .RParen,
-            .Semicolon,
-            .Percent,
-            .PercentEqual,
-            .LBrace,
-            .RBrace,
-            .LBracket,
-            .RBracket,
-            .Period,
-            .PeriodAsterisk,
-            .Ellipsis2,
-            .Ellipsis3,
-            .Caret,
-            .CaretEqual,
-            .Plus,
-            .PlusPlus,
-            .PlusEqual,
-            .PlusPercent,
-            .PlusPercentEqual,
-            .Minus,
-            .MinusEqual,
-            .MinusPercent,
-            .MinusPercentEqual,
-            .Asterisk,
-            .AsteriskEqual,
-            .AsteriskAsterisk,
-            .AsteriskPercent,
-            .AsteriskPercentEqual,
-            .Arrow,
-            .Colon,
-            .Slash,
-            .SlashEqual,
-            .Comma,
-            .Ampersand,
-            .AmpersandEqual,
-            .QuestionMark,
-            .AngleBracketLeft,
-            .AngleBracketLeftEqual,
-            .AngleBracketAngleBracketLeft,
-            .AngleBracketAngleBracketLeftEqual,
-            .AngleBracketRight,
-            .AngleBracketRightEqual,
-            .AngleBracketAngleBracketRight,
-            .AngleBracketAngleBracketRightEqual,
-            .Tilde,
+            .bang,
+            .pipe,
+            .pipe_pipe,
+            .pipe_equal,
+            .equal,
+            .equal_equal,
+            .equal_angle_bracket_right,
+            .bang_equal,
+            .l_paren,
+            .r_paren,
+            .semicolon,
+            .percent,
+            .percent_equal,
+            .l_brace,
+            .r_brace,
+            .l_bracket,
+            .r_bracket,
+            .period,
+            .period_asterisk,
+            .ellipsis2,
+            .ellipsis3,
+            .caret,
+            .caret_equal,
+            .plus,
+            .plus_plus,
+            .plus_equal,
+            .plus_percent,
+            .plus_percent_equal,
+            .minus,
+            .minus_equal,
+            .minus_percent,
+            .minus_percent_equal,
+            .asterisk,
+            .asterisk_equal,
+            .asterisk_asterisk,
+            .asterisk_percent,
+            .asterisk_percent_equal,
+            .arrow,
+            .colon,
+            .slash,
+            .slash_equal,
+            .comma,
+            .ampersand,
+            .ampersand_equal,
+            .question_mark,
+            .angle_bracket_left,
+            .angle_bracket_left_equal,
+            .angle_bracket_angle_bracket_left,
+            .angle_bracket_angle_bracket_left_equal,
+            .angle_bracket_right,
+            .angle_bracket_right_equal,
+            .angle_bracket_angle_bracket_right,
+            .angle_bracket_angle_bracket_right_equal,
+            .tilde,
             => try writeEscaped(out, src[token.loc.start..token.loc.end]),
 
-            .Invalid, .Invalid_ampersands, .Invalid_periodasterisks => return parseError(
+            .invalid, .invalid_ampersands, .invalid_periodasterisks => return parseError(
                 docgen_tokenizer,
                 source_token,
                 "syntax error",
@@ -989,8 +1011,11 @@ fn tokenizeAndPrint(docgen_tokenizer: *Tokenizer, out: anytype, source_token: To
     return tokenizeAndPrintRaw(docgen_tokenizer, out, source_token, raw_src);
 }
 
-fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: anytype, zig_exe: []const u8) !void {
+fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: anytype, zig_exe: []const u8, do_code_tests: bool) !void {
     var code_progress_index: usize = 0;
+    var progress = Progress{};
+    const root_node = try progress.start("Generating docgen examples", toc.nodes.len);
+    defer root_node.end();
 
     var env_map = try process.getEnvMap(allocator);
     try env_map.set("ZIG_DEBUG_COLOR", "1");
@@ -998,6 +1023,7 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
     const builtin_code = try getBuiltinCode(allocator, &env_map, zig_exe);
 
     for (toc.nodes) |node| {
+        defer root_node.completeOne();
         switch (node) {
             .Content => |data| {
                 try out.writeAll(data);
@@ -1037,9 +1063,6 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                 try tokenizeAndPrint(tokenizer, out, content_tok);
             },
             .Code => |code| {
-                code_progress_index += 1;
-                print("docgen example code {}/{}...", .{ code_progress_index, tokenizer.code_node_count });
-
                 const raw_source = tokenizer.buffer[code.source_token.start..code.source_token.end];
                 const trimmed_raw_source = mem.trim(u8, raw_source, " \n");
                 if (!code.is_inline) {
@@ -1048,6 +1071,11 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                 try out.writeAll("<pre>");
                 try tokenizeAndPrint(tokenizer, out, code.source_token);
                 try out.writeAll("</pre>");
+
+                if (!do_code_tests) {
+                    continue;
+                }
+
                 const name_plus_ext = try std.fmt.allocPrint(allocator, "{s}.zig", .{code.name});
                 const tmp_source_file_name = try fs.path.join(
                     allocator,
@@ -1106,12 +1134,14 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                             switch (result.term) {
                                 .Exited => |exit_code| {
                                     if (exit_code == 0) {
+                                        progress.log("", .{});
                                         print("{s}\nThe following command incorrectly succeeded:\n", .{result.stderr});
                                         dumpArgs(build_args.items);
                                         return parseError(tokenizer, code.source_token, "example incorrectly compiled", .{});
                                     }
                                 },
                                 else => {
+                                    progress.log("", .{});
                                     print("{s}\nThe following command crashed:\n", .{result.stderr});
                                     dumpArgs(build_args.items);
                                     return parseError(tokenizer, code.source_token, "example compile crashed", .{});
@@ -1160,6 +1190,7 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                             switch (result.term) {
                                 .Exited => |exit_code| {
                                     if (exit_code == 0) {
+                                        progress.log("", .{});
                                         print("{s}\nThe following command incorrectly succeeded:\n", .{result.stderr});
                                         dumpArgs(run_args);
                                         return parseError(tokenizer, code.source_token, "example incorrectly compiled", .{});
@@ -1239,18 +1270,21 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                         switch (result.term) {
                             .Exited => |exit_code| {
                                 if (exit_code == 0) {
+                                    progress.log("", .{});
                                     print("{s}\nThe following command incorrectly succeeded:\n", .{result.stderr});
                                     dumpArgs(test_args.items);
                                     return parseError(tokenizer, code.source_token, "example incorrectly compiled", .{});
                                 }
                             },
                             else => {
+                                progress.log("", .{});
                                 print("{s}\nThe following command crashed:\n", .{result.stderr});
                                 dumpArgs(test_args.items);
                                 return parseError(tokenizer, code.source_token, "example compile crashed", .{});
                             },
                         }
                         if (mem.indexOf(u8, result.stderr, error_match) == null) {
+                            progress.log("", .{});
                             print("{s}\nExpected to find '{s}' in stderr\n", .{ result.stderr, error_match });
                             return parseError(tokenizer, code.source_token, "example did not have expected compile error", .{});
                         }
@@ -1294,24 +1328,27 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                         switch (result.term) {
                             .Exited => |exit_code| {
                                 if (exit_code == 0) {
+                                    progress.log("", .{});
                                     print("{s}\nThe following command incorrectly succeeded:\n", .{result.stderr});
                                     dumpArgs(test_args.items);
                                     return parseError(tokenizer, code.source_token, "example test incorrectly succeeded", .{});
                                 }
                             },
                             else => {
+                                progress.log("", .{});
                                 print("{s}\nThe following command crashed:\n", .{result.stderr});
                                 dumpArgs(test_args.items);
                                 return parseError(tokenizer, code.source_token, "example compile crashed", .{});
                             },
                         }
                         if (mem.indexOf(u8, result.stderr, error_match) == null) {
+                            progress.log("", .{});
                             print("{s}\nExpected to find '{s}' in stderr\n", .{ result.stderr, error_match });
                             return parseError(tokenizer, code.source_token, "example did not have expected runtime safety error message", .{});
                         }
                         const escaped_stderr = try escapeHtml(allocator, result.stderr);
                         const colored_stderr = try termColor(allocator, escaped_stderr);
-                        try out.print("<pre><code class=\"shell\">$ zig test {s}.zig{s}\n{s}</code></pre>\n", .{
+                        try out.print("<pre><code class=\"shell\">$ zig test {s}.zig {s}\n{s}</code></pre>\n", .{
                             code.name,
                             mode_arg,
                             colored_stderr,
@@ -1373,18 +1410,21 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                             switch (result.term) {
                                 .Exited => |exit_code| {
                                     if (exit_code == 0) {
+                                        progress.log("", .{});
                                         print("{s}\nThe following command incorrectly succeeded:\n", .{result.stderr});
                                         dumpArgs(build_args.items);
                                         return parseError(tokenizer, code.source_token, "example build incorrectly succeeded", .{});
                                     }
                                 },
                                 else => {
+                                    progress.log("", .{});
                                     print("{s}\nThe following command crashed:\n", .{result.stderr});
                                     dumpArgs(build_args.items);
                                     return parseError(tokenizer, code.source_token, "example compile crashed", .{});
                                 },
                             }
                             if (mem.indexOf(u8, result.stderr, error_match) == null) {
+                                progress.log("", .{});
                                 print("{s}\nExpected to find '{s}' in stderr\n", .{ result.stderr, error_match });
                                 return parseError(tokenizer, code.source_token, "example did not have expected compile error message", .{});
                             }
@@ -1434,7 +1474,6 @@ fn genHtml(allocator: *mem.Allocator, tokenizer: *Tokenizer, toc: *Toc, out: any
                         try out.print("\n{s}{s}</code></pre>\n", .{ escaped_stderr, escaped_stdout });
                     },
                 }
-                print("OK\n", .{});
             },
         }
     }

@@ -34,7 +34,7 @@ pub const base_tag: link.File.Tag = .coff;
 const msdos_stub = @embedFile("msdos-stub.bin");
 
 /// If this is not null, an object file is created by LLVM and linked with LLD afterwards.
-llvm_ir_module: ?*llvm_backend.LLVMIRModule = null,
+llvm_object: ?*llvm_backend.Object = null,
 
 base: link.File,
 ptr_width: PtrWidth,
@@ -129,7 +129,7 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         const self = try createEmpty(allocator, options);
         errdefer self.base.destroy();
 
-        self.llvm_ir_module = try llvm_backend.LLVMIRModule.create(allocator, sub_path, options);
+        self.llvm_object = try llvm_backend.Object.create(allocator, sub_path, options);
         return self;
     }
 
@@ -413,7 +413,7 @@ pub fn createEmpty(gpa: *Allocator, options: link.Options) !*Coff {
 }
 
 pub fn allocateDeclIndexes(self: *Coff, decl: *Module.Decl) !void {
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
     try self.offset_table.ensureCapacity(self.base.allocator, self.offset_table.items.len + 1);
 
@@ -660,7 +660,7 @@ pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
     defer tracy.end();
 
     if (build_options.have_llvm)
-        if (self.llvm_ir_module) |llvm_ir_module| return try llvm_ir_module.updateDecl(module, decl);
+        if (self.llvm_object) |llvm_object| return try llvm_object.updateDecl(module, decl);
 
     const typed_value = decl.typed_value.most_recent.typed_value;
     if (typed_value.val.tag() == .extern_fn) {
@@ -701,7 +701,11 @@ pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
         }
     } else {
         const vaddr = try self.allocateTextBlock(&decl.link.coff, code.len, required_alignment);
-        log.debug("allocated text block for {s} at 0x{x} (size: {Bi})\n", .{ mem.spanZ(decl.name), vaddr, code.len });
+        log.debug("allocated text block for {s} at 0x{x} (size: {Bi})\n", .{
+            mem.spanZ(decl.name),
+            vaddr,
+            std.fmt.fmtIntSizeDec(code.len),
+        });
         errdefer self.freeTextBlock(&decl.link.coff);
         self.offset_table.items[decl.link.coff.offset_table_index] = vaddr;
         try self.writeOffsetTableEntry(decl.link.coff.offset_table_index);
@@ -716,15 +720,15 @@ pub fn updateDecl(self: *Coff, module: *Module, decl: *Module.Decl) !void {
 }
 
 pub fn freeDecl(self: *Coff, decl: *Module.Decl) void {
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
     // Appending to free lists is allowed to fail because the free lists are heuristics based anyway.
     self.freeTextBlock(&decl.link.coff);
     self.offset_table_free_list.append(self.base.allocator, decl.link.coff.offset_table_index) catch {};
 }
 
-pub fn updateDeclExports(self: *Coff, module: *Module, decl: *const Module.Decl, exports: []const *Module.Export) !void {
-    if (self.llvm_ir_module) |_| return;
+pub fn updateDeclExports(self: *Coff, module: *Module, decl: *Module.Decl, exports: []const *Module.Export) !void {
+    if (self.llvm_object) |_| return;
 
     for (exports) |exp| {
         if (exp.options.section) |section_name| {
@@ -767,7 +771,7 @@ pub fn flushModule(self: *Coff, comp: *Compilation) !void {
     defer tracy.end();
 
     if (build_options.have_llvm)
-        if (self.llvm_ir_module) |llvm_ir_module| return try llvm_ir_module.flushModule(comp);
+        if (self.llvm_object) |llvm_object| return try llvm_object.flushModule(comp);
 
     if (self.text_section_size_dirty) {
         // Write the new raw size in the .text header
@@ -892,17 +896,17 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
             id_symlink_basename,
             &prev_digest_buf,
         ) catch |err| blk: {
-            log.debug("COFF LLD new_digest={} error: {s}", .{ digest, @errorName(err) });
+            log.debug("COFF LLD new_digest={s} error: {s}", .{ std.fmt.fmtSliceHexLower(&digest), @errorName(err) });
             // Handle this as a cache miss.
             break :blk prev_digest_buf[0..0];
         };
         if (mem.eql(u8, prev_digest, &digest)) {
-            log.debug("COFF LLD digest={} match - skipping invocation", .{digest});
+            log.debug("COFF LLD digest={s} match - skipping invocation", .{std.fmt.fmtSliceHexLower(&digest)});
             // Hot diggity dog! The output binary is already there.
             self.base.lock = man.toOwnedLock();
             return;
         }
-        log.debug("COFF LLD prev_digest={} new_digest={}", .{ prev_digest, digest });
+        log.debug("COFF LLD prev_digest={s} new_digest={s}", .{ std.fmt.fmtSliceHexLower(prev_digest), std.fmt.fmtSliceHexLower(&digest) });
 
         // We are about to change the output file to be different, so we invalidate the build hash now.
         directory.handle.deleteFile(id_symlink_basename) catch |err| switch (err) {
@@ -1304,7 +1308,7 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
 }
 
 pub fn getDeclVAddr(self: *Coff, decl: *const Module.Decl) u64 {
-    assert(self.llvm_ir_module == null);
+    assert(self.llvm_object == null);
     return self.text_section_virtual_address + decl.link.coff.text_offset;
 }
 
@@ -1314,7 +1318,7 @@ pub fn updateDeclLineNumber(self: *Coff, module: *Module, decl: *Module.Decl) !v
 
 pub fn deinit(self: *Coff) void {
     if (build_options.have_llvm)
-        if (self.llvm_ir_module) |ir_module| ir_module.deinit(self.base.allocator);
+        if (self.llvm_object) |ir_module| ir_module.deinit(self.base.allocator);
 
     self.text_block_free_list.deinit(self.base.allocator);
     self.offset_table.deinit(self.base.allocator);

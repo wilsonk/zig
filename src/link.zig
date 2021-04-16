@@ -138,7 +138,7 @@ pub const File = struct {
         coff: Coff.TextBlock,
         macho: MachO.TextBlock,
         c: C.DeclBlock,
-        wasm: void,
+        wasm: Wasm.DeclBlock,
         spirv: void,
     };
 
@@ -147,7 +147,7 @@ pub const File = struct {
         coff: Coff.SrcFn,
         macho: MachO.SrcFn,
         c: C.FnBlock,
-        wasm: ?Wasm.FnData,
+        wasm: Wasm.FnData,
         spirv: SpirV.FnData,
     };
 
@@ -328,7 +328,8 @@ pub const File = struct {
             .elf => return @fieldParentPtr(Elf, "base", base).allocateDeclIndexes(decl),
             .macho => return @fieldParentPtr(MachO, "base", base).allocateDeclIndexes(decl),
             .c => return @fieldParentPtr(C, "base", base).allocateDeclIndexes(decl),
-            .wasm, .spirv => {},
+            .wasm => return @fieldParentPtr(Wasm, "base", base).allocateDeclIndexes(decl),
+            .spirv => {},
         }
     }
 
@@ -550,11 +551,11 @@ pub const File = struct {
                 id_symlink_basename,
                 &prev_digest_buf,
             ) catch |err| b: {
-                log.debug("archive new_digest={} readFile error: {s}", .{ digest, @errorName(err) });
+                log.debug("archive new_digest={s} readFile error: {s}", .{ std.fmt.fmtSliceHexLower(&digest), @errorName(err) });
                 break :b prev_digest_buf[0..0];
             };
             if (mem.eql(u8, prev_digest, &digest)) {
-                log.debug("archive digest={} match - skipping invocation", .{digest});
+                log.debug("archive digest={s} match - skipping invocation", .{std.fmt.fmtSliceHexLower(&digest)});
                 base.lock = man.toOwnedLock();
                 return;
             }

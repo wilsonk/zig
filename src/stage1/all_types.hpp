@@ -74,6 +74,7 @@ enum CallingConvention {
     CallingConventionC,
     CallingConventionNaked,
     CallingConventionAsync,
+    CallingConventionInline,
     CallingConventionInterrupt,
     CallingConventionSignal,
     CallingConventionStdcall,
@@ -390,6 +391,8 @@ enum LazyValueId {
     LazyValueIdAlignOf,
     LazyValueIdSizeOf,
     LazyValueIdPtrType,
+    LazyValueIdPtrTypeSimple,
+    LazyValueIdPtrTypeSimpleConst,
     LazyValueIdOptType,
     LazyValueIdSliceType,
     LazyValueIdFnType,
@@ -464,6 +467,13 @@ struct LazyValuePtrType {
     bool is_const;
     bool is_volatile;
     bool is_allowzero;
+};
+
+struct LazyValuePtrTypeSimple {
+    LazyValue base;
+
+    IrAnalyze *ira;
+    IrInstGen *elem_type;
 };
 
 struct LazyValueOptType {
@@ -703,12 +713,6 @@ enum NodeType {
     NodeTypeAnyTypeField,
 };
 
-enum FnInline {
-    FnInlineAuto,
-    FnInlineAlways,
-    FnInlineNever,
-};
-
 struct AstNodeFnProto {
     Buf *name;
     ZigList<AstNode *> params;
@@ -725,13 +729,12 @@ struct AstNodeFnProto {
     AstNode *callconv_expr;
     Buf doc_comments;
 
-    FnInline fn_inline;
-
     VisibMod visib_mod;
     bool auto_err_set;
     bool is_var_args;
     bool is_extern;
     bool is_export;
+    bool is_noinline;
 };
 
 struct AstNodeFnDef {
@@ -1719,7 +1722,6 @@ struct ZigFn {
 
     LLVMValueRef valgrind_client_request_array;
 
-    FnInline fn_inline;
     FnAnalState anal_state;
 
     uint32_t align_bytes;
@@ -1728,6 +1730,7 @@ struct ZigFn {
     bool calls_or_awaits_errorable_fn;
     bool is_cold;
     bool is_test;
+    bool is_noinline;
 };
 
 uint32_t fn_table_entry_hash(ZigFn*);
@@ -2074,6 +2077,7 @@ struct CodeGen {
     ZigType *compile_var_import;
     ZigType *root_import;
     ZigType *start_import;
+    ZigType *std_builtin_import;
 
     struct {
         ZigType *entry_bool;
@@ -2136,10 +2140,6 @@ struct CodeGen {
     Buf llvm_ir_file_output_path;
     Buf analysis_json_output_path;
     Buf docs_output_path;
-    Buf *cache_dir;
-    Buf *c_artifact_dir;
-    const char **libc_include_dir_list;
-    size_t libc_include_dir_len;
 
     Buf *builtin_zig_path;
     Buf *zig_std_special_dir; // Cannot be overridden; derived from zig_lib_dir.
@@ -2616,7 +2616,8 @@ enum IrInstSrcId {
     IrInstSrcIdEnumToInt,
     IrInstSrcIdIntToErr,
     IrInstSrcIdErrToInt,
-    IrInstSrcIdCheckSwitchProngs,
+    IrInstSrcIdCheckSwitchProngsUnderYes,
+    IrInstSrcIdCheckSwitchProngsUnderNo,
     IrInstSrcIdCheckStatementIsVoid,
     IrInstSrcIdTypeName,
     IrInstSrcIdDeclRef,
@@ -2630,12 +2631,15 @@ enum IrInstSrcId {
     IrInstSrcIdHasField,
     IrInstSrcIdSetEvalBranchQuota,
     IrInstSrcIdPtrType,
+    IrInstSrcIdPtrTypeSimple,
+    IrInstSrcIdPtrTypeSimpleConst,
     IrInstSrcIdAlignCast,
     IrInstSrcIdImplicitCast,
     IrInstSrcIdResolveResult,
     IrInstSrcIdResetResult,
     IrInstSrcIdSetAlignStack,
-    IrInstSrcIdArgType,
+    IrInstSrcIdArgTypeAllowVarFalse,
+    IrInstSrcIdArgTypeAllowVarTrue,
     IrInstSrcIdExport,
     IrInstSrcIdExtern,
     IrInstSrcIdErrorReturnTrace,
@@ -3297,6 +3301,12 @@ struct IrInstSrcArrayType {
 
     IrInstSrc *size;
     IrInstSrc *sentinel;
+    IrInstSrc *child_type;
+};
+
+struct IrInstSrcPtrTypeSimple {
+    IrInstSrc base;
+
     IrInstSrc *child_type;
 };
 
@@ -4026,7 +4036,6 @@ struct IrInstSrcCheckSwitchProngs {
     IrInstSrcCheckSwitchProngsRange *ranges;
     size_t range_count;
     AstNode* else_prong;
-    bool have_underscore_prong;
 };
 
 struct IrInstSrcCheckStatementIsVoid {
@@ -4150,7 +4159,6 @@ struct IrInstSrcArgType {
 
     IrInstSrc *fn_type;
     IrInstSrc *arg_index;
-    bool allow_var;
 };
 
 struct IrInstSrcExport {

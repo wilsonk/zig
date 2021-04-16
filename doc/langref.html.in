@@ -85,7 +85,6 @@
       #main-wrapper {
         display: flex;
         flex-direction: column;
-        height: 100vh;
       }
 
       #contents-wrapper {
@@ -105,6 +104,11 @@
       @media screen and (min-width: 1025px) {
         #main-wrapper {
             flex-direction: row;
+        }
+        #toc {
+            height: 100vh;
+            position: sticky;
+            top: 0;
         }
         #contents-wrapper, #toc {
             overflow: auto;
@@ -310,7 +314,7 @@ pub fn main() !void {
       <p>
         The two arguments passed to the <code>stdout.print()</code> function, <code>"Hello, {s}!\n"</code>
         and <code>.{"world"}</code>, are evaluated at {#link|compile-time|comptime#}. The code sample is
-        purposely written to show how to perform {#link|string|String Literals and Character Literals#}
+        purposely written to show how to perform {#link|string|String Literals and Unicode Code Point Literals#}
         substitution in the <code>print</code> function. The curly-braces inside of the first argument
         are substituted with the compile-time known value inside of the second argument
         (known as an {#link|anonymous struct literal|Anonymous Struct Literals#}). The <code>\n</code>
@@ -682,18 +686,31 @@ pub fn main() void {
       </div>
       {#see_also|Optionals|undefined#}
       {#header_close#}
-      {#header_open|String Literals and Character Literals#}
+      {#header_open|String Literals and Unicode Code Point Literals#}
       <p>
-      String literals are single-item constant {#link|Pointers#} to null-terminated UTF-8 encoded byte arrays.
+      String literals are constant single-item {#link|Pointers#} to null-terminated byte arrays.
       The type of string literals encodes both the length, and the fact that they are null-terminated,
       and thus they can be {#link|coerced|Type Coercion#} to both {#link|Slices#} and
       {#link|Null-Terminated Pointers|Sentinel-Terminated Pointers#}.
       Dereferencing string literals converts them to {#link|Arrays#}.
       </p>
       <p>
-      Character literals have type {#syntax#}comptime_int{#endsyntax#}, the same as
+      The encoding of a string in Zig is de-facto assumed to be UTF-8.
+      Because Zig source code is {#link|UTF-8 encoded|Source Encoding#}, any non-ASCII bytes appearing within a string literal
+      in source code carry their UTF-8 meaning into the content of the string in the Zig program;
+      the bytes are not modified by the compiler.
+      However, it is possible to embbed non-UTF-8 bytes into a string literal using <code>\xNN</code> notation.
+      </p>
+      <p>
+      Unicode code point literals have type {#syntax#}comptime_int{#endsyntax#}, the same as
       {#link|Integer Literals#}. All {#link|Escape Sequences#} are valid in both string literals
-      and character literals.
+      and Unicode code point literals.
+      </p>
+      <p>
+      In many other programming languages, a Unicode code point literal is called a "character literal".
+      However, there is <a href="https://unicode.org/glossary">no precise technical definition of a "character"</a>
+      in recent versions of the Unicode specification (as of Unicode 13.0).
+      In Zig, a Unicode code point literal corresponds to the Unicode definition of a code point.
       </p>
       {#code_begin|test#}
 const expect = @import("std").testing.expect;
@@ -709,6 +726,7 @@ test "string literals" {
     expect('\u{1f4a9}' == 128169);
     expect('💯' == 128175);
     expect(mem.eql(u8, "hello", "h\x65llo"));
+    expect("\xff"[0] == 0xff); // non-UTF-8 strings are possible with \xNN notation.
 }
       {#code_end#}
       {#see_also|Arrays|Zig Test|Source Encoding#}
@@ -749,11 +767,11 @@ test "string literals" {
         </tr>
         <tr>
             <td><code>\xNN</code></td>
-          <td>hexadecimal 8-bit character code (2 digits)</td>
+          <td>hexadecimal 8-bit byte value (2 digits)</td>
         </tr>
         <tr>
             <td><code>\u{NNNNNN}</code></td>
-          <td>hexadecimal Unicode character code UTF-8 encoded (1 or more digits)</td>
+          <td>hexadecimal Unicode code point UTF-8 encoded (1 or more digits)</td>
         </tr>
       </table>
       </div>
@@ -919,8 +937,8 @@ const assert = std.debug.assert;
 threadlocal var x: i32 = 1234;
 
 test "thread local storage" {
-    const thread1 = try std.Thread.spawn({}, testTls);
-    const thread2 = try std.Thread.spawn({}, testTls);
+    const thread1 = try std.Thread.spawn(testTls, {});
+    const thread2 = try std.Thread.spawn(testTls, {});
     testTls({});
     thread1.wait();
     thread2.wait();
@@ -1769,7 +1787,7 @@ comptime {
     expect(message.len == 5);
 }
 
-// A string literal is a pointer to an array literal.
+// A string literal is a single-item pointer to an array literal.
 const same_message = "hello";
 
 comptime {
@@ -1975,15 +1993,15 @@ test "null terminated array" {
 
       {#header_open|Pointers#}
       <p>
-      Zig has two kinds of pointers:
+      Zig has two kinds of pointers: single-item and many-item.
       </p>
       <ul>
-          <li>{#syntax#}*T{#endsyntax#} - pointer to exactly one item.
+          <li>{#syntax#}*T{#endsyntax#} - single-item pointer to exactly one item.
             <ul>
               <li>Supports deref syntax: {#syntax#}ptr.*{#endsyntax#}</li>
             </ul>
           </li>
-          <li>{#syntax#}[*]T{#endsyntax#} - pointer to unknown number of items.
+          <li>{#syntax#}[*]T{#endsyntax#} - many-item pointer to unknown number of items.
             <ul>
               <li>Supports index syntax: {#syntax#}ptr[i]{#endsyntax#}</li>
               <li>Supports slice syntax: {#syntax#}ptr[start..end]{#endsyntax#}</li>
@@ -1995,7 +2013,7 @@ test "null terminated array" {
       </ul>
       <p>These types are closely related to {#link|Arrays#} and {#link|Slices#}:</p>
         <ul>
-            <li>{#syntax#}*[N]T{#endsyntax#} - pointer to N items, same as single-item pointer to array.
+            <li>{#syntax#}*[N]T{#endsyntax#} - pointer to N items, same as single-item pointer to an array.
             <ul>
                 <li>Supports index syntax: {#syntax#}array_ptr[i]{#endsyntax#}</li>
                 <li>Supports slice syntax: {#syntax#}array_ptr[start..end]{#endsyntax#}</li>
@@ -2024,7 +2042,7 @@ test "address of syntax" {
     // Dereference a pointer:
     expect(x_ptr.* == 1234);
 
-    // When you get the address of a const variable, you get a const pointer to a single item.
+    // When you get the address of a const variable, you get a const single-item pointer.
     expect(@TypeOf(x_ptr) == *const i32);
 
     // If you want to mutate the value, you'd need an address of a mutable variable:
@@ -2037,7 +2055,7 @@ test "address of syntax" {
 
 test "pointer array access" {
     // Taking an address of an individual element gives a
-    // pointer to a single item. This kind of pointer
+    // single-item pointer. This kind of pointer
     // does not support pointer arithmetic.
     var array = [_]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
     const ptr = &array[2];
@@ -2306,8 +2324,8 @@ test "basic slices" {
     expect(&slice[0] == &array[0]);
     expect(slice.len == array.len);
 
-    // Using the address-of operator on a slice gives a pointer to a single
-    // item, while using the `ptr` field gives an unknown length pointer.
+    // Using the address-of operator on a slice gives a single-item pointer,
+    // while using the `ptr` field gives a many-item pointer.
     expect(@TypeOf(slice.ptr) == [*]i32);
     expect(@TypeOf(&slice[0]) == *i32);
     expect(@ptrToInt(slice.ptr) == @ptrToInt(&slice[0]));
@@ -2745,9 +2763,24 @@ test "overaligned pointer to packed struct" {
       cause the test suite to fail, notifying the bug fixer to update these docs.
       </p>
       <p>
-      It's also
-      <a href="https://github.com/ziglang/zig/issues/1512">planned to be able to set alignment of struct fields</a>.
+      It's also possible to set alignment of struct fields:
       </p>
+      {#code_begin|test#}
+const std = @import("std");
+const expectEqual = std.testing.expectEqual;
+
+test "aligned struct fields" {
+    const S = struct {
+        a: u32 align(2),
+        b: u32 align(64),
+    };
+    var foo = S{ .a = 1, .b = 2 };
+
+    expectEqual(64, @alignOf(S));
+    expectEqual(*align(2) u32, @TypeOf(&foo.a));
+    expectEqual(*align(64) u32, @TypeOf(&foo.b));
+}
+      {#code_end#}
       <p>
       Using packed structs with {#link|volatile#} is problematic, and may be a compile error in the future.
       For details on this subscribe to
@@ -4240,9 +4273,9 @@ fn _start() callconv(.Naked) noreturn {
     abort();
 }
 
-// The inline specifier forces a function to be inlined at all call sites.
+// The inline calling convention forces a function to be inlined at all call sites.
 // If the function cannot be inlined, it is a compile-time error.
-inline fn shiftLeftOne(a: u32) u32 {
+fn shiftLeftOne(a: u32) callconv(.Inline) u32 {
     return a << 1;
 }
 
@@ -5230,8 +5263,7 @@ test "*[N]T to []T" {
     expect(std.mem.eql(f32, x2, &[2]f32{ 1.2, 3.4 }));
 }
 
-// Single-item pointers to arrays can be coerced to
-// unknown length pointers.
+// Single-item pointers to arrays can be coerced to many-item pointers.
 test "*[N]T to [*]T" {
     var buf: [5]u8 = "hello".*;
     const x: [*]u8 = &buf;
@@ -6581,13 +6613,11 @@ const std = @import("std");
 const expect = std.testing.expect;
 
 test "async and await" {
-    // Here we have an exception where we do not match an async
-    // with an await. The test block is not async and so cannot
-    // have a suspend point in it.
-    // This is well-defined behavior, and everything is OK here.
-    // Note however that there would be no way to collect the
-    // return value of amain, if it were something other than void.
-    _ = async amain();
+    // The test block is not async and so cannot have a suspend
+    // point in it. By using the nosuspend keyword, we promise that
+    // the code in amain will finish executing without suspending
+    // back to the test block.
+    nosuspend amain();
 }
 
 fn amain() void {
@@ -7414,7 +7444,7 @@ test "main" {
       This function returns a compile time constant pointer to null-terminated,
       fixed-size array with length equal to the byte count of the file given by
       {#syntax#}path{#endsyntax#}. The contents of the array are the contents of the file.
-      This is equivalent to a {#link|string literal|String Literals and Character Literals#}
+      This is equivalent to a {#link|string literal|String Literals and Unicode Code Point Literals#}
       with the file contents.
       </p>
       <p>
@@ -9839,7 +9869,7 @@ const c = @cImport({
       </p>
       <p>
       When importing C header files, it is ambiguous whether pointers should be translated as
-      single-item pointers ({#syntax#}*T{#endsyntax#}) or unknown-length pointers ({#syntax#}[*]T{#endsyntax#}).
+      single-item pointers ({#syntax#}*T{#endsyntax#}) or many-item pointers ({#syntax#}[*]T{#endsyntax#}).
       C pointers are a compromise so that Zig code can utilize translated header files directly.
       </p>
       <p>{#syntax#}[*c]T{#endsyntax#} - C pointer.</p>
@@ -9939,9 +9969,9 @@ export fn decode_base_64(
 ) usize {
     const src = source_ptr[0..source_len];
     const dest = dest_ptr[0..dest_len];
-    const base64_decoder = base64.standard_decoder_unsafe;
-    const decoded_size = base64_decoder.calcSize(src);
-    base64_decoder.decode(dest[0..decoded_size], src);
+    const base64_decoder = base64.standard.Decoder;
+    const decoded_size = base64_decoder.calcSizeForSlice(src) catch unreachable;
+    base64_decoder.decode(dest[0..decoded_size], src) catch unreachable;
     return decoded_size;
 }
       {#code_end#}
@@ -10433,13 +10463,40 @@ fn readU32Be() u32 {}
       {#header_close#}
       {#header_open|Source Encoding#}
       <p>Zig source code is encoded in UTF-8. An invalid UTF-8 byte sequence results in a compile error.</p>
-      <p>Throughout all zig source code (including in comments), some codepoints are never allowed:</p>
+      <p>Throughout all zig source code (including in comments), some code points are never allowed:</p>
       <ul>
-        <li>Ascii control characters, except for U+000a (LF): U+0000 - U+0009, U+000b - U+0001f, U+007f. (Note that Windows line endings (CRLF) are not allowed, and hard tabs are not allowed.)</li>
+        <li>Ascii control characters, except for U+000a (LF), U+000d (CR), and U+0009 (HT): U+0000 - U+0008, U+000b - U+000c, U+000e - U+0001f, U+007f.</li>
         <li>Non-Ascii Unicode line endings: U+0085 (NEL), U+2028 (LS), U+2029 (PS).</li>
       </ul>
-      <p>The codepoint U+000a (LF) (which is encoded as the single-byte value 0x0a) is the line terminator character. This character always terminates a line of zig source code (except possibly the last line of the file).</p>
-      <p>For some discussion on the rationale behind these design decisions, see <a href="https://github.com/ziglang/zig/issues/663">issue #663</a></p>
+      <p>
+      LF (byte value 0x0a, code point U+000a, {#syntax#}'\n'{#endsyntax#}) is the line terminator in Zig source code.
+      This byte value terminates every line of zig source code except the last line of the file.
+      It is recommended that non-empty source files end with an empty line, which means the last byte would be 0x0a (LF).
+      </p>
+      <p>
+      Each LF may be immediately preceded by a single CR (byte value 0x0d, code point U+000d, {#syntax#}'\r'{#endsyntax#})
+      to form a Windows style line ending, but this is discouraged.
+      A CR in any other context is not allowed.
+      </p>
+      <p>
+      HT hard tabs (byte value 0x09, code point U+0009, {#syntax#}'\t'{#endsyntax#}) are interchangeable with
+      SP spaces (byte value 0x20, code point U+0020, {#syntax#}' '{#endsyntax#}) as a token separator,
+      but use of hard tabs is discouraged. See {#link|Grammar#}.
+      </p>
+      <p>
+      Note that running <code>zig fmt</code> on a source file will implement all recommendations mentioned here.
+      Note also that the stage1 compiler does <a href="https://github.com/ziglang/zig/wiki/FAQ#why-does-zig-force-me-to-use-spaces-instead-of-tabs">not yet support CR or HT</a> control characters.
+      </p>
+      <p>
+      Note that a tool reading Zig source code can make assumptions if the source code is assumed to be correct Zig code.
+      For example, when identifying the ends of lines, a tool can use a naive search such as <code>/\n/</code>,
+      or an <a href="https://msdn.microsoft.com/en-us/library/dd409797.aspx">advanced</a>
+      search such as <code>/\r\n?|[\n\u0085\u2028\u2029]/</code>, and in either case line endings will be correctly identified.
+      For another example, when identifying the whitespace before the first token on a line,
+      a tool can either use a naive search such as <code>/[ \t]/</code>,
+      or an <a href="https://tc39.es/ecma262/#sec-characterclassescape">advanced</a> search such as <code>/\s/</code>,
+      and in either case whitespace will be correctly identified.
+      </p>
       {#header_close#}
 
       {#header_open|Keyword Reference#}
@@ -10759,9 +10816,16 @@ fn readU32Be() u32 {}
             <pre>{#syntax#}nosuspend{#endsyntax#}</pre>
           </td>
           <td>
-            The {#syntax#}nosuspend{#endsyntax#} keyword.
+            The {#syntax#}nosuspend{#endsyntax#} keyword can be used in front of a block, statement or expression, to mark a scope where no suspension points are reached.
+            In particular, inside a {#syntax#}nosuspend{#endsyntax#} scope:
             <ul>
-              <li>TODO add documentation for nosuspend</li>
+              <li>Using the {#syntax#}suspend{#endsyntax#} keyword results in a compile error.</li>
+              <li>Using {#syntax#}await{#endsyntax#} on a function frame which hasn't completed yet results in safety-checked {#link|Undefined Behavior#}.</li>
+              <li>Calling an async function may result in safety-checked {#link|Undefined Behavior#}, because it's equivalent to <code>await async some_async_fn()</code>, which contains an {#syntax#}await{#endsyntax#}.</li>
+            </ul>
+            Code inside a {#syntax#}nosuspend{#endsyntax#} scope does not cause the enclosing function to become an {#link|async function|Async Functions#}.
+            <ul>
+              <li>See also {#link|Async Functions#}</li>
             </ul>
           </td>
         </tr>
@@ -11359,6 +11423,7 @@ ExprList &lt;- (Expr COMMA)* Expr?
 
 # *** Tokens ***
 eof &lt;- !.
+eol &lt;- ('\r'? '\n') | eof
 hex &lt;- [0-9a-fA-F]
 hex_ &lt;- ('_'/hex)
 dec &lt;- [0-9]
@@ -11368,39 +11433,39 @@ dec_int &lt;- dec (dec_* dec)?
 hex_int &lt;- hex (hex_* dec)?
 
 char_escape
-    &lt;- &quot;\\x&quot; hex hex
-     / &quot;\\u{&quot; hex+ &quot;}&quot;
-     / &quot;\\&quot; [nr\\t'&quot;]
+    &lt;- '\\x' hex hex
+     / '\\u{' hex+ '}'
+     / '\\' [nr\\t'&quot;]
 char_char
     &lt;- char_escape
-     / [^\\'\n]
+     / [^\\'\r\n]
 string_char
     &lt;- char_escape
-     / [^\\&quot;\n]
+     / [^\\&quot;\r\n]
 
-line_comment &lt;- '//'[^\n]*
-line_string &lt;- (&quot;\\\\&quot; [^\n]* [ \n]*)+
-skip &lt;- ([ \n] / line_comment)*
+line_comment &lt;- '//'[^\r\n]* eol
+line_string &lt;- ('\\\\' [^\r\n]* eol skip)+
+skip &lt;- ([ \t] / eol / line_comment)*
 
 CHAR_LITERAL &lt;- &quot;'&quot; char_char &quot;'&quot; skip
 FLOAT
-    &lt;- &quot;0x&quot; hex_* hex &quot;.&quot; hex_int ([pP] [-+]? hex_int)? skip
-     /      dec_int   &quot;.&quot; dec_int ([eE] [-+]? dec_int)? skip
-     / &quot;0x&quot; hex_* hex &quot;.&quot;? [pP] [-+]? hex_int skip
-     /      dec_int   &quot;.&quot;? [eE] [-+]? dec_int skip
+    &lt;- '0x' hex_* hex '.' hex_int ([pP] [-+]? hex_int)? skip
+     /      dec_int   '.' dec_int ([eE] [-+]? dec_int)? skip
+     / '0x' hex_* hex '.'? [pP] [-+]? hex_int skip
+     /      dec_int   '.'? [eE] [-+]? dec_int skip
 INTEGER
-    &lt;- &quot;0b&quot; [_01]*  [01]  skip
-     / &quot;0o&quot; [_0-7]* [0-7] skip
-     / &quot;0x&quot; hex_* hex skip
+    &lt;- '0b' [_01]*  [01]  skip
+     / '0o' [_0-7]* [0-7] skip
+     / '0x' hex_* hex skip
      /      dec_int   skip
-STRINGLITERALSINGLE &lt;- &quot;\&quot;&quot; string_char* &quot;\&quot;&quot; skip
+STRINGLITERALSINGLE &lt;- '&quot;' string_char* '&quot;' skip
 STRINGLITERAL
     &lt;- STRINGLITERALSINGLE
-     / line_string                 skip
+     / line_string skip
 IDENTIFIER
     &lt;- !keyword [A-Za-z_] [A-Za-z0-9_]* skip
-     / &quot;@\&quot;&quot; string_char* &quot;\&quot;&quot;                            skip
-BUILTINIDENTIFIER &lt;- &quot;@&quot;[A-Za-z_][A-Za-z0-9_]* skip
+     / '@&quot;' string_char* '&quot;' skip
+BUILTINIDENTIFIER &lt;- '@'[A-Za-z_][A-Za-z0-9_]* skip
 
 
 AMPERSAND            &lt;- '&amp;'      ![=]      skip

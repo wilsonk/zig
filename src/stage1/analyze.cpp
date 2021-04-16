@@ -973,6 +973,7 @@ const char *calling_convention_name(CallingConvention cc) {
         case CallingConventionAPCS: return "APCS";
         case CallingConventionAAPCS: return "AAPCS";
         case CallingConventionAAPCSVFP: return "AAPCSVFP";
+        case CallingConventionInline: return "Inline";
     }
     zig_unreachable();
 }
@@ -981,6 +982,7 @@ bool calling_convention_allows_zig_types(CallingConvention cc) {
     switch (cc) {
         case CallingConventionUnspecified:
         case CallingConventionAsync:
+        case CallingConventionInline:
             return true;
         case CallingConventionC:
         case CallingConventionNaked:
@@ -1007,7 +1009,8 @@ ZigType *get_stack_trace_type(CodeGen *g) {
 }
 
 bool want_first_arg_sret(CodeGen *g, FnTypeId *fn_type_id) {
-    if (fn_type_id->cc == CallingConventionUnspecified) {
+    if (fn_type_id->cc == CallingConventionUnspecified
+        || fn_type_id->cc == CallingConventionInline) {
         return handle_is_ptr(g, fn_type_id->return_type);
     }
     if (fn_type_id->cc != CallingConventionC) {
@@ -1234,6 +1237,22 @@ Error type_val_resolve_zero_bits(CodeGen *g, ZigValue *type_val, ZigType *parent
                         parent_type_val, is_zero_bits);
             }
         }
+        case LazyValueIdPtrTypeSimple:
+        case LazyValueIdPtrTypeSimpleConst: {
+            LazyValuePtrTypeSimple *lazy_ptr_type = reinterpret_cast<LazyValuePtrTypeSimple *>(type_val->data.x_lazy);
+
+            if (parent_type_val == lazy_ptr_type->elem_type->value) {
+                // Does a struct which contains a pointer field to itself have bits? Yes.
+                *is_zero_bits = false;
+                return ErrorNone;
+            } else {
+                if (parent_type_val == nullptr) {
+                    parent_type_val = type_val;
+                }
+                return type_val_resolve_zero_bits(g, lazy_ptr_type->elem_type->value, parent_type,
+                        parent_type_val, is_zero_bits);
+            }
+        }
         case LazyValueIdArrayType: {
             LazyValueArrayType *lazy_array_type =
                 reinterpret_cast<LazyValueArrayType *>(type_val->data.x_lazy);
@@ -1282,6 +1301,8 @@ Error type_val_resolve_is_opaque_type(CodeGen *g, ZigValue *type_val, bool *is_o
             zig_unreachable();
         case LazyValueIdSliceType:
         case LazyValueIdPtrType:
+        case LazyValueIdPtrTypeSimple:
+        case LazyValueIdPtrTypeSimpleConst:
         case LazyValueIdFnType:
         case LazyValueIdOptType:
         case LazyValueIdErrUnionType:
@@ -1308,6 +1329,11 @@ static ReqCompTime type_val_resolve_requires_comptime(CodeGen *g, ZigValue *type
         }
         case LazyValueIdPtrType: {
             LazyValuePtrType *lazy_ptr_type = reinterpret_cast<LazyValuePtrType *>(type_val->data.x_lazy);
+            return type_val_resolve_requires_comptime(g, lazy_ptr_type->elem_type->value);
+        }
+        case LazyValueIdPtrTypeSimple:
+        case LazyValueIdPtrTypeSimpleConst: {
+            LazyValuePtrTypeSimple *lazy_ptr_type = reinterpret_cast<LazyValuePtrTypeSimple *>(type_val->data.x_lazy);
             return type_val_resolve_requires_comptime(g, lazy_ptr_type->elem_type->value);
         }
         case LazyValueIdOptType: {
@@ -1410,6 +1436,24 @@ start_over:
             }
             return ErrorNone;
         }
+        case LazyValueIdPtrTypeSimple:
+        case LazyValueIdPtrTypeSimpleConst: {
+            LazyValuePtrTypeSimple *lazy_ptr_type = reinterpret_cast<LazyValuePtrTypeSimple *>(type_val->data.x_lazy);
+            bool is_zero_bits;
+            if ((err = type_val_resolve_zero_bits(g, lazy_ptr_type->elem_type->value, nullptr,
+                nullptr, &is_zero_bits)))
+            {
+                return err;
+            }
+            if (is_zero_bits) {
+                *abi_size = 0;
+                *size_in_bits = 0;
+            } else {
+                *abi_size = g->builtin_types.entry_usize->abi_size;
+                *size_in_bits = g->builtin_types.entry_usize->size_in_bits;
+            }
+            return ErrorNone;
+        }
         case LazyValueIdFnType:
             *abi_size = g->builtin_types.entry_usize->abi_size;
             *size_in_bits = g->builtin_types.entry_usize->size_in_bits;
@@ -1446,6 +1490,8 @@ Error type_val_resolve_abi_align(CodeGen *g, AstNode *source_node, ZigValue *typ
             zig_unreachable();
         case LazyValueIdSliceType:
         case LazyValueIdPtrType:
+        case LazyValueIdPtrTypeSimple:
+        case LazyValueIdPtrTypeSimpleConst:
         case LazyValueIdFnType:
             *abi_align = g->builtin_types.entry_usize->abi_align;
             return ErrorNone;
@@ -1503,7 +1549,9 @@ static OnePossibleValue type_val_resolve_has_one_possible_value(CodeGen *g, ZigV
                 return OnePossibleValueYes;
             return type_val_resolve_has_one_possible_value(g, lazy_array_type->elem_type->value);
         }
-        case LazyValueIdPtrType: {
+        case LazyValueIdPtrType:
+        case LazyValueIdPtrTypeSimple:
+        case LazyValueIdPtrTypeSimpleConst: {
             Error err;
             bool zero_bits;
             if ((err = type_val_resolve_zero_bits(g, type_val, nullptr, nullptr, &zero_bits))) {
@@ -1888,6 +1936,7 @@ Error emit_error_unless_callconv_allowed_for_target(CodeGen *g, AstNode *source_
         case CallingConventionC:
         case CallingConventionNaked:
         case CallingConventionAsync:
+        case CallingConventionInline:
             break;
         case CallingConventionInterrupt:
             if (g->zig_target->arch != ZigLLVM_x86
@@ -3587,7 +3636,7 @@ static void get_fully_qualified_decl_name(CodeGen *g, Buf *buf, Tld *tld, bool i
     }
 }
 
-static ZigFn *create_fn_raw(CodeGen *g, FnInline inline_value) {
+static ZigFn *create_fn_raw(CodeGen *g, bool is_noinline) {
     ZigFn *fn_entry = heap::c_allocator.create<ZigFn>();
     fn_entry->ir_executable = heap::c_allocator.create<IrExecutableSrc>();
 
@@ -3597,7 +3646,7 @@ static ZigFn *create_fn_raw(CodeGen *g, FnInline inline_value) {
     fn_entry->analyzed_executable.backward_branch_quota = &fn_entry->prealloc_backward_branch_quota;
     fn_entry->analyzed_executable.fn_entry = fn_entry;
     fn_entry->ir_executable->fn_entry = fn_entry;
-    fn_entry->fn_inline = inline_value;
+    fn_entry->is_noinline = is_noinline;
 
     return fn_entry;
 }
@@ -3606,7 +3655,7 @@ ZigFn *create_fn(CodeGen *g, AstNode *proto_node) {
     assert(proto_node->type == NodeTypeFnProto);
     AstNodeFnProto *fn_proto = &proto_node->data.fn_proto;
 
-    ZigFn *fn_entry = create_fn_raw(g, fn_proto->fn_inline);
+    ZigFn *fn_entry = create_fn_raw(g, fn_proto->is_noinline);
 
     fn_entry->proto_node = proto_node;
     fn_entry->body_node = (proto_node->data.fn_proto.fn_def_node == nullptr) ? nullptr :
@@ -3739,6 +3788,12 @@ static void resolve_decl_fn(CodeGen *g, TldFn *tld_fn) {
                     fn_table_entry->type_entry = g->builtin_types.entry_invalid;
                     tld_fn->base.resolution = TldResolutionInvalid;
                     return;
+                case CallingConventionInline:
+                    add_node_error(g, fn_def_node,
+                        buf_sprintf("exported function cannot be inline"));
+                    fn_table_entry->type_entry = g->builtin_types.entry_invalid;
+                    tld_fn->base.resolution = TldResolutionInvalid;
+                    return;
                 case CallingConventionC:
                 case CallingConventionNaked:
                 case CallingConventionInterrupt:
@@ -3774,7 +3829,7 @@ static void resolve_decl_fn(CodeGen *g, TldFn *tld_fn) {
             fn_table_entry->inferred_async_node = fn_table_entry->proto_node;
         }
     } else if (source_node->type == NodeTypeTestDecl) {
-        ZigFn *fn_table_entry = create_fn_raw(g, FnInlineAuto);
+        ZigFn *fn_table_entry = create_fn_raw(g, false);
 
         get_fully_qualified_decl_name(g, &fn_table_entry->symbol_name, &tld_fn->base, true);
 
@@ -5748,6 +5803,8 @@ static bool can_mutate_comptime_var_state(ZigValue *value) {
             case LazyValueIdAlignOf:
             case LazyValueIdSizeOf:
             case LazyValueIdPtrType:
+            case LazyValueIdPtrTypeSimple:
+            case LazyValueIdPtrTypeSimpleConst:
             case LazyValueIdOptType:
             case LazyValueIdSliceType:
             case LazyValueIdFnType:
@@ -8128,14 +8185,18 @@ bool err_ptr_eql(const ErrorTableEntry *a, const ErrorTableEntry *b) {
 }
 
 ZigValue *get_builtin_value(CodeGen *codegen, const char *name) {
-    ScopeDecls *builtin_scope = get_container_scope(codegen->compile_var_import);
-    Tld *tld = find_container_decl(codegen, builtin_scope, buf_create_from_str(name));
+    Buf *buf_name = buf_create_from_str(name);
+
+    ScopeDecls *builtin_scope = get_container_scope(codegen->std_builtin_import);
+    Tld *tld = find_container_decl(codegen, builtin_scope, buf_name);
     assert(tld != nullptr);
     resolve_top_level_decl(codegen, tld, nullptr, false);
     assert(tld->id == TldIdVar && tld->resolution == TldResolutionOk);
     TldVar *tld_var = (TldVar *)tld;
     ZigValue *var_value = tld_var->var->const_value;
     assert(var_value != nullptr);
+
+    buf_destroy(buf_name);
     return var_value;
 }
 
@@ -8666,7 +8727,9 @@ static void resolve_llvm_types_struct(CodeGen *g, ZigType *struct_type, ResolveS
                 assert(async_frame_type->id == ZigTypeIdFnFrame);
                 assert(field_type->id == ZigTypeIdFn);
                 resolve_llvm_types_fn(g, async_frame_type->data.frame.fn);
-                llvm_type = LLVMPointerType(async_frame_type->data.frame.fn->raw_type_ref, 0);
+
+                const unsigned addrspace = ZigLLVMDataLayoutGetProgramAddressSpace(g->target_data_ref);
+                llvm_type = LLVMPointerType(async_frame_type->data.frame.fn->raw_type_ref, addrspace);
             } else {
                 llvm_type = get_llvm_type(g, field_type);
             }

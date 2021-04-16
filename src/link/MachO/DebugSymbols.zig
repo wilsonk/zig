@@ -839,8 +839,8 @@ fn findFreeSpaceLinkedit(self: *DebugSymbols, object_size: u64, min_alignment: u
 
 fn relocateSymbolTable(self: *DebugSymbols) !void {
     const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
-    const nlocals = self.base.local_symbols.items.len;
-    const nglobals = self.base.global_symbols.items.len;
+    const nlocals = self.base.locals.items.len;
+    const nglobals = self.base.globals.items.len;
     const nsyms = nlocals + nglobals;
 
     if (symtab.nsyms < nsyms) {
@@ -875,7 +875,7 @@ pub fn writeLocalSymbol(self: *DebugSymbols, index: usize) !void {
     const symtab = &self.load_commands.items[self.symtab_cmd_index.?].Symtab;
     const off = symtab.symoff + @sizeOf(macho.nlist_64) * index;
     log.debug("writing dSym local symbol {} at 0x{x}", .{ index, off });
-    try self.file.pwriteAll(mem.asBytes(&self.base.local_symbols.items[index]), off);
+    try self.file.pwriteAll(mem.asBytes(&self.base.locals.items[index]), off);
 }
 
 fn writeStringTable(self: *DebugSymbols) !void {
@@ -904,13 +904,18 @@ pub fn updateDeclLineNumber(self: *DebugSymbols, module: *Module, decl: *const M
     const tracy = trace(@src());
     defer tracy.end();
 
-    const tree = decl.container.file_scope.contents.tree;
-    const file_ast_decls = tree.root_node.decls();
+    const tree = decl.container.file_scope.tree;
+    const node_tags = tree.nodes.items(.tag);
+    const node_datas = tree.nodes.items(.data);
+    const token_starts = tree.tokens.items(.start);
+
     // TODO Look into improving the performance here by adding a token-index-to-line
     // lookup table. Currently this involves scanning over the source code for newlines.
-    const fn_proto = file_ast_decls[decl.src_index].castTag(.FnProto).?;
-    const block = fn_proto.getBodyNode().?.castTag(.Block).?;
-    const line_delta = std.zig.lineDelta(tree.source, 0, tree.token_locs[block.lbrace].start);
+    const fn_decl = decl.src_node;
+    assert(node_tags[fn_decl] == .fn_decl);
+    const block = node_datas[fn_decl].rhs;
+    const lbrace = tree.firstToken(block);
+    const line_delta = std.zig.lineDelta(tree.source, 0, token_starts[lbrace]);
     const casted_line_off = @intCast(u28, line_delta);
 
     const dwarf_segment = &self.load_commands.items[self.dwarf_segment_cmd_index.?].Segment;
@@ -948,13 +953,18 @@ pub fn initDeclDebugBuffers(
             try dbg_line_buffer.ensureCapacity(26);
 
             const line_off: u28 = blk: {
-                const tree = decl.container.file_scope.contents.tree;
-                const file_ast_decls = tree.root_node.decls();
+                const tree = decl.container.file_scope.tree;
+                const node_tags = tree.nodes.items(.tag);
+                const node_datas = tree.nodes.items(.data);
+                const token_starts = tree.tokens.items(.start);
+
                 // TODO Look into improving the performance here by adding a token-index-to-line
                 // lookup table. Currently this involves scanning over the source code for newlines.
-                const fn_proto = file_ast_decls[decl.src_index].castTag(.FnProto).?;
-                const block = fn_proto.getBodyNode().?.castTag(.Block).?;
-                const line_delta = std.zig.lineDelta(tree.source, 0, tree.token_locs[block.lbrace].start);
+                const fn_decl = decl.src_node;
+                assert(node_tags[fn_decl] == .fn_decl);
+                const block = node_datas[fn_decl].rhs;
+                const lbrace = tree.firstToken(block);
+                const line_delta = std.zig.lineDelta(tree.source, 0, token_starts[lbrace]);
                 break :blk @intCast(u28, line_delta);
             };
 
@@ -1045,7 +1055,7 @@ pub fn commitDeclDebugInfo(
     var dbg_info_buffer = &debug_buffers.dbg_info_buffer;
     var dbg_info_type_relocs = &debug_buffers.dbg_info_type_relocs;
 
-    const symbol = self.base.local_symbols.items[decl.link.macho.local_sym_index];
+    const symbol = self.base.locals.items[decl.link.macho.local_sym_index];
     const text_block = &decl.link.macho;
     // If the Decl is a function, we need to update the __debug_line program.
     const typed_value = decl.typed_value.most_recent.typed_value;
@@ -1084,7 +1094,7 @@ pub fn commitDeclDebugInfo(
                     if (src_fn.off + src_fn.len + min_nop_size > next.off) {
                         // It grew too big, so we move it to a new location.
                         if (src_fn.prev) |prev| {
-                            _ = self.dbg_line_fn_free_list.put(allocator, prev, {}) catch {};
+                            self.dbg_line_fn_free_list.put(allocator, prev, {}) catch {};
                             prev.next = src_fn.next;
                         }
                         next.prev = src_fn.prev;
@@ -1244,7 +1254,7 @@ fn updateDeclDebugInfoAllocation(
             if (text_block.dbg_info_off + text_block.dbg_info_len + min_nop_size > next.dbg_info_off) {
                 // It grew too big, so we move it to a new location.
                 if (text_block.dbg_info_prev) |prev| {
-                    _ = self.dbg_info_decl_free_list.put(allocator, prev, {}) catch {};
+                    self.dbg_info_decl_free_list.put(allocator, prev, {}) catch {};
                     prev.dbg_info_next = text_block.dbg_info_next;
                 }
                 next.dbg_info_prev = text_block.dbg_info_prev;

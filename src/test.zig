@@ -122,11 +122,6 @@ pub const TestContext = struct {
         path: []const u8,
     };
 
-    pub const Extension = enum {
-        Zig,
-        ZIR,
-    };
-
     /// A `Case` consists of a list of `Update`. The same `Compilation` is used for each
     /// update, so each update's source is treated as a single file being
     /// updated by the test harness and incrementally compiled.
@@ -141,7 +136,6 @@ pub const TestContext = struct {
         /// to Executable.
         output_mode: std.builtin.OutputMode,
         updates: std.ArrayList(Update),
-        extension: Extension,
         object_format: ?std.builtin.ObjectFormat = null,
         emit_h: bool = false,
         llvm_backend: bool = false,
@@ -155,7 +149,7 @@ pub const TestContext = struct {
             self.updates.append(.{
                 .src = src,
                 .case = .{ .Header = result },
-            }) catch unreachable;
+            }) catch @panic("out of memory");
         }
 
         /// Adds a subcase in which the module is updated with `src`, compiled,
@@ -164,7 +158,7 @@ pub const TestContext = struct {
             self.updates.append(.{
                 .src = src,
                 .case = .{ .Execution = result },
-            }) catch unreachable;
+            }) catch @panic("out of memory");
         }
 
         /// Adds a subcase in which the module is updated with `src`, compiled,
@@ -173,7 +167,7 @@ pub const TestContext = struct {
             self.updates.append(.{
                 .src = src,
                 .case = .{ .CompareObjectFile = result },
-            }) catch unreachable;
+            }) catch @panic("out of memory");
         }
 
         /// Adds a subcase in which the module is updated with `src`, which
@@ -181,7 +175,7 @@ pub const TestContext = struct {
         /// for the expected reasons, given in sequential order in `errors` in
         /// the form `:line:column: error: message`.
         pub fn addError(self: *Case, src: [:0]const u8, errors: []const []const u8) void {
-            var array = self.updates.allocator.alloc(ErrorMsg, errors.len) catch unreachable;
+            var array = self.updates.allocator.alloc(ErrorMsg, errors.len) catch @panic("out of memory");
             for (errors) |err_msg_line, i| {
                 if (std.mem.startsWith(u8, err_msg_line, "error: ")) {
                     array[i] = .{
@@ -224,7 +218,7 @@ pub const TestContext = struct {
                     },
                 };
             }
-            self.updates.append(.{ .src = src, .case = .{ .Error = array } }) catch unreachable;
+            self.updates.append(.{ .src = src, .case = .{ .Error = array } }) catch @panic("out of memory");
         }
 
         /// Adds a subcase in which the module is updated with `src`, and
@@ -238,22 +232,20 @@ pub const TestContext = struct {
         ctx: *TestContext,
         name: []const u8,
         target: CrossTarget,
-        extension: Extension,
     ) *Case {
         ctx.cases.append(Case{
             .name = name,
             .target = target,
             .updates = std.ArrayList(Update).init(ctx.cases.allocator),
             .output_mode = .Exe,
-            .extension = extension,
             .files = std.ArrayList(File).init(ctx.cases.allocator),
-        }) catch unreachable;
+        }) catch @panic("out of memory");
         return &ctx.cases.items[ctx.cases.items.len - 1];
     }
 
     /// Adds a test case for Zig input, producing an executable
     pub fn exe(ctx: *TestContext, name: []const u8, target: CrossTarget) *Case {
-        return ctx.addExe(name, target, .Zig);
+        return ctx.addExe(name, target);
     }
 
     /// Adds a test case for ZIR input, producing an executable
@@ -262,15 +254,16 @@ pub const TestContext = struct {
     }
 
     pub fn exeFromCompiledC(ctx: *TestContext, name: []const u8, target: CrossTarget) *Case {
+        const prefixed_name = std.fmt.allocPrint(ctx.cases.allocator, "CBE: {s}", .{name}) catch
+            @panic("out of memory");
         ctx.cases.append(Case{
-            .name = name,
+            .name = prefixed_name,
             .target = target,
             .updates = std.ArrayList(Update).init(ctx.cases.allocator),
             .output_mode = .Exe,
-            .extension = .Zig,
             .object_format = .c,
             .files = std.ArrayList(File).init(ctx.cases.allocator),
-        }) catch unreachable;
+        }) catch @panic("out of memory");
         return &ctx.cases.items[ctx.cases.items.len - 1];
     }
 
@@ -282,10 +275,9 @@ pub const TestContext = struct {
             .target = target,
             .updates = std.ArrayList(Update).init(ctx.cases.allocator),
             .output_mode = .Exe,
-            .extension = .Zig,
             .files = std.ArrayList(File).init(ctx.cases.allocator),
             .llvm_backend = true,
-        }) catch unreachable;
+        }) catch @panic("out of memory");
         return &ctx.cases.items[ctx.cases.items.len - 1];
     }
 
@@ -293,22 +285,20 @@ pub const TestContext = struct {
         ctx: *TestContext,
         name: []const u8,
         target: CrossTarget,
-        extension: Extension,
     ) *Case {
         ctx.cases.append(Case{
             .name = name,
             .target = target,
             .updates = std.ArrayList(Update).init(ctx.cases.allocator),
             .output_mode = .Obj,
-            .extension = extension,
             .files = std.ArrayList(File).init(ctx.cases.allocator),
-        }) catch unreachable;
+        }) catch @panic("out of memory");
         return &ctx.cases.items[ctx.cases.items.len - 1];
     }
 
     /// Adds a test case for Zig input, producing an object file.
     pub fn obj(ctx: *TestContext, name: []const u8, target: CrossTarget) *Case {
-        return ctx.addObj(name, target, .Zig);
+        return ctx.addObj(name, target);
     }
 
     /// Adds a test case for ZIR input, producing an object file.
@@ -317,35 +307,33 @@ pub const TestContext = struct {
     }
 
     /// Adds a test case for Zig or ZIR input, producing C code.
-    pub fn addC(ctx: *TestContext, name: []const u8, target: CrossTarget, ext: Extension) *Case {
+    pub fn addC(ctx: *TestContext, name: []const u8, target: CrossTarget) *Case {
         ctx.cases.append(Case{
             .name = name,
             .target = target,
             .updates = std.ArrayList(Update).init(ctx.cases.allocator),
             .output_mode = .Obj,
-            .extension = ext,
             .object_format = .c,
             .files = std.ArrayList(File).init(ctx.cases.allocator),
-        }) catch unreachable;
+        }) catch @panic("out of memory");
         return &ctx.cases.items[ctx.cases.items.len - 1];
     }
 
     pub fn c(ctx: *TestContext, name: []const u8, target: CrossTarget, src: [:0]const u8, comptime out: [:0]const u8) void {
-        ctx.addC(name, target, .Zig).addCompareObjectFile(src, zig_h ++ out);
+        ctx.addC(name, target).addCompareObjectFile(src, zig_h ++ out);
     }
 
     pub fn h(ctx: *TestContext, name: []const u8, target: CrossTarget, src: [:0]const u8, comptime out: [:0]const u8) void {
-        ctx.addC(name, target, .Zig).addHeader(src, zig_h ++ out);
+        ctx.addC(name, target).addHeader(src, zig_h ++ out);
     }
 
     pub fn addCompareOutput(
         ctx: *TestContext,
         name: []const u8,
-        extension: Extension,
         src: [:0]const u8,
         expected_stdout: []const u8,
     ) void {
-        ctx.addExe(name, .{}, extension).addCompareOutput(src, expected_stdout);
+        ctx.addExe(name, .{}).addCompareOutput(src, expected_stdout);
     }
 
     /// Adds a test case that compiles the Zig source given in `src`, executes
@@ -356,7 +344,7 @@ pub const TestContext = struct {
         src: [:0]const u8,
         expected_stdout: []const u8,
     ) void {
-        return ctx.addCompareOutput(name, .Zig, src, expected_stdout);
+        return ctx.addCompareOutput(name, src, expected_stdout);
     }
 
     /// Adds a test case that compiles the ZIR source given in `src`, executes
@@ -374,11 +362,10 @@ pub const TestContext = struct {
         ctx: *TestContext,
         name: []const u8,
         target: CrossTarget,
-        extension: Extension,
         src: [:0]const u8,
         result: [:0]const u8,
     ) void {
-        ctx.addObj(name, target, extension).addTransform(src, result);
+        ctx.addObj(name, target).addTransform(src, result);
     }
 
     /// Adds a test case that compiles the Zig given in `src` to ZIR and tests
@@ -390,7 +377,7 @@ pub const TestContext = struct {
         src: [:0]const u8,
         result: [:0]const u8,
     ) void {
-        ctx.addTransform(name, target, .Zig, src, result);
+        ctx.addTransform(name, target, src, result);
     }
 
     /// Adds a test case that cleans up the ZIR source given in `src`, and
@@ -409,11 +396,10 @@ pub const TestContext = struct {
         ctx: *TestContext,
         name: []const u8,
         target: CrossTarget,
-        extension: Extension,
         src: [:0]const u8,
         expected_errors: []const []const u8,
     ) void {
-        ctx.addObj(name, target, extension).addError(src, expected_errors);
+        ctx.addObj(name, target).addError(src, expected_errors);
     }
 
     /// Adds a test case that ensures that the Zig given in `src` fails to
@@ -426,7 +412,7 @@ pub const TestContext = struct {
         src: [:0]const u8,
         expected_errors: []const []const u8,
     ) void {
-        ctx.addError(name, target, .Zig, src, expected_errors);
+        ctx.addError(name, target, src, expected_errors);
     }
 
     /// Adds a test case that ensures that the ZIR given in `src` fails to
@@ -446,10 +432,9 @@ pub const TestContext = struct {
         ctx: *TestContext,
         name: []const u8,
         target: CrossTarget,
-        extension: Extension,
         src: [:0]const u8,
     ) void {
-        ctx.addObj(name, target, extension).compiles(src);
+        ctx.addObj(name, target).compiles(src);
     }
 
     /// Adds a test case that asserts that the Zig given in `src` compiles
@@ -460,7 +445,7 @@ pub const TestContext = struct {
         target: CrossTarget,
         src: [:0]const u8,
     ) void {
-        ctx.addCompiles(name, target, .Zig, src);
+        ctx.addCompiles(name, target, src);
     }
 
     /// Adds a test case that asserts that the ZIR given in `src` compiles
@@ -487,7 +472,7 @@ pub const TestContext = struct {
         expected_errors: []const []const u8,
         fixed_src: [:0]const u8,
     ) void {
-        var case = ctx.addObj(name, target, .Zig);
+        var case = ctx.addObj(name, target);
         case.addError(src, expected_errors);
         case.compiles(fixed_src);
     }
@@ -612,15 +597,14 @@ pub const TestContext = struct {
             .path = try std.fs.path.join(arena, &[_][]const u8{ tmp_dir_path, "zig-cache" }),
         };
 
-        const tmp_src_path = switch (case.extension) {
-            .Zig => "test_case.zig",
-            .ZIR => "test_case.zir",
-        };
+        const tmp_src_path = "test_case.zig";
 
         var root_pkg: Package = .{
             .root_src_directory = .{ .path = tmp_dir_path, .handle = tmp.dir },
             .root_src_path = tmp_src_path,
+            .namespace_hash = Package.root_namespace_hash,
         };
+        defer root_pkg.table.deinit(allocator);
 
         const bin_name = try std.zig.binNameAlloc(arena, .{
             .root_name = "test_case",
@@ -637,13 +621,10 @@ pub const TestContext = struct {
             .directory = emit_directory,
             .basename = bin_name,
         };
-        const emit_h: ?Compilation.EmitLoc = if (case.emit_h)
-            .{
-                .directory = emit_directory,
-                .basename = "test_case.h",
-            }
-        else
-            null;
+        const emit_h: ?Compilation.EmitLoc = if (case.emit_h) .{
+            .directory = emit_directory,
+            .basename = "test_case.h",
+        } else null;
         const comp = try Compilation.create(allocator, .{
             .local_cache_directory = zig_cache_directory,
             .global_cache_directory = global_cache_directory,
@@ -866,10 +847,10 @@ pub const TestContext = struct {
                                 std.testing.zig_exe_path,
                                 "run",
                                 "-cflags",
-                                "-std=c89",
+                                "-std=c99",
                                 "-pedantic",
                                 "-Werror",
-                                "-Wno-declaration-after-statement",
+                                "-Wno-incompatible-library-redeclaration", // https://github.com/ziglang/zig/issues/875
                                 "--",
                                 "-lc",
                                 exe_path,
@@ -1028,8 +1009,8 @@ pub const TestContext = struct {
             var file = try tmp_dir.openFile(bin_name, .{ .read = true });
             defer file.close();
 
-            const header = try std.elf.readHeader(file);
-            var iterator = header.program_header_iterator(file);
+            const header = try std.elf.Header.read(&file);
+            var iterator = header.program_header_iterator(&file);
 
             var none_loaded = true;
 

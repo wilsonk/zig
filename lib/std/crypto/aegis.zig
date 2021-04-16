@@ -8,6 +8,7 @@ const std = @import("std");
 const mem = std.mem;
 const assert = std.debug.assert;
 const AesBlock = std.crypto.core.aes.Block;
+const Error = std.crypto.Error;
 
 const State128L = struct {
     blocks: [8]AesBlock,
@@ -35,7 +36,7 @@ const State128L = struct {
         return state;
     }
 
-    inline fn update(state: *State128L, d1: AesBlock, d2: AesBlock) void {
+    fn update(state: *State128L, d1: AesBlock, d2: AesBlock) callconv(.Inline) void {
         const blocks = &state.blocks;
         const tmp = blocks[7];
         comptime var i: usize = 7;
@@ -81,8 +82,8 @@ const State128L = struct {
         while (i < 7) : (i += 1) {
             state.update(tmp, tmp);
         }
-        return blocks[0].xorBlocks(blocks[1]).xorBlocks(blocks[2]).xorBlocks(blocks[3]).xorBlocks(blocks[4]).
-            xorBlocks(blocks[5]).xorBlocks(blocks[6]).toBytes();
+        return blocks[0].xorBlocks(blocks[1]).xorBlocks(blocks[2]).xorBlocks(blocks[3]).xorBlocks(blocks[4])
+            .xorBlocks(blocks[5]).xorBlocks(blocks[6]).toBytes();
     }
 };
 
@@ -136,7 +137,7 @@ pub const Aegis128L = struct {
     /// ad: Associated Data
     /// npub: public nonce
     /// k: private key
-    pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) !void {
+    pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) Error!void {
         assert(c.len == m.len);
         var state = State128L.init(key, npub);
         var src: [32]u8 align(16) = undefined;
@@ -207,7 +208,7 @@ const State256 = struct {
         return state;
     }
 
-    inline fn update(state: *State256, d: AesBlock) void {
+    fn update(state: *State256, d: AesBlock) callconv(.Inline) void {
         const blocks = &state.blocks;
         const tmp = blocks[5].encrypt(blocks[0]);
         comptime var i: usize = 5;
@@ -244,8 +245,8 @@ const State256 = struct {
         while (i < 7) : (i += 1) {
             state.update(tmp);
         }
-        return blocks[0].xorBlocks(blocks[1]).xorBlocks(blocks[2]).xorBlocks(blocks[3]).xorBlocks(blocks[4]).
-            xorBlocks(blocks[5]).toBytes();
+        return blocks[0].xorBlocks(blocks[1]).xorBlocks(blocks[2]).xorBlocks(blocks[3]).xorBlocks(blocks[4])
+            .xorBlocks(blocks[5]).toBytes();
     }
 };
 
@@ -298,7 +299,7 @@ pub const Aegis256 = struct {
     /// ad: Associated Data
     /// npub: public nonce
     /// k: private key
-    pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) !void {
+    pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, key: [key_length]u8) Error!void {
         assert(c.len == m.len);
         var state = State256.init(key, npub);
         var src: [16]u8 align(16) = undefined;

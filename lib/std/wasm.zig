@@ -5,6 +5,8 @@
 // and substantial portions of the software.
 const testing = @import("std.zig").testing;
 
+// TODO: Add support for multi-byte ops (e.g. table operations)
+
 /// Wasm instruction opcodes
 ///
 /// All instructions are defined as per spec:
@@ -175,7 +177,7 @@ pub const Opcode = enum(u8) {
     i32_reinterpret_f32 = 0xBC,
     i64_reinterpret_f64 = 0xBD,
     f32_reinterpret_i32 = 0xBE,
-    i64_reinterpret_i64 = 0xBF,
+    f64_reinterpret_i64 = 0xBF,
     i32_extend8_s = 0xC0,
     i32_extend16_s = 0xC1,
     i64_extend8_s = 0xC2,
@@ -253,6 +255,20 @@ pub fn section(val: Section) u8 {
     return @enumToInt(val);
 }
 
+/// The kind of the type when importing or exporting to/from the host environment
+/// https://webassembly.github.io/spec/core/syntax/modules.html
+pub const ExternalKind = enum(u8) {
+    function,
+    table,
+    memory,
+    global,
+};
+
+/// Returns the integer value of a given `ExternalKind`
+pub fn externalKind(val: ExternalKind) u8 {
+    return @enumToInt(val);
+}
+
 // types
 pub const element_type: u8 = 0x70;
 pub const function_type: u8 = 0x60;
@@ -264,3 +280,6 @@ pub const block_empty: u8 = 0x40;
 // binary constants
 pub const magic = [_]u8{ 0x00, 0x61, 0x73, 0x6D }; // \0asm
 pub const version = [_]u8{ 0x01, 0x00, 0x00, 0x00 }; // version 1
+
+// Each wasm page size is 64kB
+pub const page_size = 64 * 1024;

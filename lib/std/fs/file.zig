@@ -223,15 +223,15 @@ pub const File = struct {
         return os.lseek_SET(self.handle, offset);
     }
 
-    pub const GetPosError = os.SeekError || os.FStatError;
+    pub const GetSeekPosError = os.SeekError || os.FStatError;
 
     /// TODO: integrate with async I/O
-    pub fn getPos(self: File) GetPosError!u64 {
+    pub fn getPos(self: File) GetSeekPosError!u64 {
         return os.lseek_CUR_get(self.handle);
     }
 
     /// TODO: integrate with async I/O
-    pub fn getEndPos(self: File) GetPosError!u64 {
+    pub fn getEndPos(self: File) GetSeekPosError!u64 {
         if (builtin.os.tag == .windows) {
             return windows.GetFileSizeEx(self.handle);
         }
@@ -587,6 +587,7 @@ pub const File = struct {
     }
 
     /// See https://github.com/ziglang/zig/issues/7699
+    /// See equivalent function: `std.net.Stream.writev`.
     pub fn writev(self: File, iovecs: []const os.iovec_const) WriteError!usize {
         if (is_windows) {
             // TODO improve this to use WriteFileScatter
@@ -605,6 +606,7 @@ pub const File = struct {
     /// The `iovecs` parameter is mutable because this function needs to mutate the fields in
     /// order to handle partial writes from the underlying OS layer.
     /// See https://github.com/ziglang/zig/issues/7699
+    /// See equivalent function: `std.net.Stream.writevAll`.
     pub fn writevAll(self: File, iovecs: []os.iovec_const) WriteError!void {
         if (iovecs.len == 0) return;
 
@@ -817,7 +819,7 @@ pub const File = struct {
     pub const SeekableStream = io.SeekableStream(
         File,
         SeekError,
-        GetPosError,
+        GetSeekPosError,
         seekTo,
         seekBy,
         getPos,

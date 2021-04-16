@@ -28,6 +28,8 @@ pub fn main() !void {
     const zig_exe = try fs.path.resolve(a, &[_][]const u8{zig_exe_rel});
 
     const dir_path = try fs.path.join(a, &[_][]const u8{ cache_root, "clitest" });
+    defer fs.cwd().deleteTree(dir_path) catch {};
+    
     const TestFn = fn ([]const u8, []const u8) anyerror!void;
     const test_fns = [_]TestFn{
         testZigInitLib,
@@ -51,9 +53,9 @@ fn unwrapArg(arg: UnwrapArgError![]u8) UnwrapArgError![]u8 {
 }
 
 fn printCmd(cwd: []const u8, argv: []const []const u8) void {
-    std.debug.warn("cd {} && ", .{cwd});
+    std.debug.warn("cd {s} && ", .{cwd});
     for (argv) |arg| {
-        std.debug.warn("{} ", .{arg});
+        std.debug.warn("{s} ", .{arg});
     }
     std.debug.warn("\n", .{});
 }
@@ -75,14 +77,14 @@ fn exec(cwd: []const u8, expect_0: bool, argv: []const []const u8) !ChildProcess
             if ((code != 0) == expect_0) {
                 std.debug.warn("The following command exited with error code {}:\n", .{code});
                 printCmd(cwd, argv);
-                std.debug.warn("stderr:\n{}\n", .{result.stderr});
+                std.debug.warn("stderr:\n{s}\n", .{result.stderr});
                 return error.CommandFailed;
             }
         },
         else => {
             std.debug.warn("The following command terminated unexpectedly:\n", .{});
             printCmd(cwd, argv);
-            std.debug.warn("stderr:\n{}\n", .{result.stderr});
+            std.debug.warn("stderr:\n{s}\n", .{result.stderr});
             return error.CommandFailed;
         },
     }
@@ -113,7 +115,7 @@ fn testGodboltApi(zig_exe: []const u8, dir_path: []const u8) anyerror!void {
         \\    return num * num;
         \\}
         \\extern fn zig_panic() noreturn;
-        \\pub inline fn panic(msg: []const u8, error_return_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\pub fn panic(msg: []const u8, error_return_trace: ?*@import("builtin").StackTrace) noreturn {
         \\    zig_panic();
         \\}
     );
@@ -174,4 +176,13 @@ fn testZigFmt(zig_exe: []const u8, dir_path: []const u8) !void {
     const run_result3 = try exec(dir_path, true, &[_][]const u8{ zig_exe, "fmt", dir_path });
     // both files have been formatted, nothing should change now
     testing.expect(run_result3.stdout.len == 0);
+
+    // Check UTF-16 decoding
+    const fmt4_zig_path = try fs.path.join(a, &[_][]const u8{ dir_path, "fmt4.zig" });
+    var unformatted_code_utf16 = "\xff\xfe \x00 \x00 \x00 \x00/\x00/\x00 \x00n\x00o\x00 \x00r\x00e\x00a\x00s\x00o\x00n\x00";
+    try fs.cwd().writeFile(fmt4_zig_path, unformatted_code_utf16);
+
+    const run_result4 = try exec(dir_path, true, &[_][]const u8{ zig_exe, "fmt", dir_path });
+    testing.expect(std.mem.startsWith(u8, run_result4.stdout, fmt4_zig_path));
+    testing.expect(run_result4.stdout.len == fmt4_zig_path.len + 1 and run_result4.stdout[run_result4.stdout.len - 1] == '\n');
 }

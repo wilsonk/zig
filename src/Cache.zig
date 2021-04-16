@@ -153,7 +153,11 @@ pub const HashHelper = struct {
         hh.hasher.final(&bin_digest);
 
         var out_digest: [hex_digest_len]u8 = undefined;
-        _ = std.fmt.bufPrint(&out_digest, "{x}", .{bin_digest}) catch unreachable;
+        _ = std.fmt.bufPrint(
+            &out_digest,
+            "{s}",
+            .{std.fmt.fmtSliceHexLower(&bin_digest)},
+        ) catch unreachable;
         return out_digest;
     }
 };
@@ -250,7 +254,11 @@ pub const Manifest = struct {
         var bin_digest: BinDigest = undefined;
         self.hash.hasher.final(&bin_digest);
 
-        _ = std.fmt.bufPrint(&self.hex_digest, "{x}", .{bin_digest}) catch unreachable;
+        _ = std.fmt.bufPrint(
+            &self.hex_digest,
+            "{s}",
+            .{std.fmt.fmtSliceHexLower(&bin_digest)},
+        ) catch unreachable;
 
         self.hash.hasher = hasher_init;
         self.hash.hasher.update(&bin_digest);
@@ -317,7 +325,7 @@ pub const Manifest = struct {
             cache_hash_file.stat.size = fmt.parseInt(u64, size, 10) catch return error.InvalidFormat;
             cache_hash_file.stat.inode = fmt.parseInt(fs.File.INode, inode, 10) catch return error.InvalidFormat;
             cache_hash_file.stat.mtime = fmt.parseInt(i64, mtime_nsec_str, 10) catch return error.InvalidFormat;
-            std.fmt.hexToBytes(&cache_hash_file.bin_digest, digest_str) catch return error.InvalidFormat;
+            _ = std.fmt.hexToBytes(&cache_hash_file.bin_digest, digest_str) catch return error.InvalidFormat;
 
             if (file_path.len == 0) {
                 return error.InvalidFormat;
@@ -549,7 +557,11 @@ pub const Manifest = struct {
         self.hash.hasher.final(&bin_digest);
 
         var out_digest: [hex_digest_len]u8 = undefined;
-        _ = std.fmt.bufPrint(&out_digest, "{x}", .{bin_digest}) catch unreachable;
+        _ = std.fmt.bufPrint(
+            &out_digest,
+            "{s}",
+            .{std.fmt.fmtSliceHexLower(&bin_digest)},
+        ) catch unreachable;
 
         return out_digest;
     }
@@ -565,7 +577,11 @@ pub const Manifest = struct {
         var encoded_digest: [hex_digest_len]u8 = undefined;
 
         for (self.files.items) |file| {
-            _ = std.fmt.bufPrint(&encoded_digest, "{x}", .{file.bin_digest}) catch unreachable;
+            _ = std.fmt.bufPrint(
+                &encoded_digest,
+                "{s}",
+                .{std.fmt.fmtSliceHexLower(&file.bin_digest)},
+            ) catch unreachable;
             try writer.print("{d} {d} {d} {s} {s}\n", .{
                 file.stat.size,
                 file.stat.inode,

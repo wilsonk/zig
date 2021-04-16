@@ -6,6 +6,7 @@
 const std = @import("std");
 const readIntLittle = std.mem.readIntLittle;
 const writeIntLittle = std.mem.writeIntLittle;
+const Error = std.crypto.Error;
 
 pub const Fe = struct {
     limbs: [5]u64,
@@ -52,7 +53,7 @@ pub const Fe = struct {
     pub const edwards25519sqrtam2 = Fe{ .limbs = .{ 1693982333959686, 608509411481997, 2235573344831311, 947681270984193, 266558006233600 } };
 
     /// Return true if the field element is zero
-    pub inline fn isZero(fe: Fe) bool {
+    pub fn isZero(fe: Fe) callconv(.Inline) bool {
         var reduced = fe;
         reduced.reduce();
         const limbs = reduced.limbs;
@@ -60,7 +61,7 @@ pub const Fe = struct {
     }
 
     /// Return true if both field elements are equivalent
-    pub inline fn equivalent(a: Fe, b: Fe) bool {
+    pub fn equivalent(a: Fe, b: Fe) callconv(.Inline) bool {
         return a.sub(b).isZero();
     }
 
@@ -112,7 +113,7 @@ pub const Fe = struct {
     }
 
     /// Reject non-canonical encodings of an element, possibly ignoring the top bit
-    pub fn rejectNonCanonical(s: [32]u8, comptime ignore_extra_bit: bool) !void {
+    pub fn rejectNonCanonical(s: [32]u8, comptime ignore_extra_bit: bool) Error!void {
         var c: u16 = (s[31] & 0x7f) ^ 0x7f;
         comptime var i = 30;
         inline while (i > 0) : (i -= 1) {
@@ -164,7 +165,7 @@ pub const Fe = struct {
     }
 
     /// Add a field element
-    pub inline fn add(a: Fe, b: Fe) Fe {
+    pub fn add(a: Fe, b: Fe) callconv(.Inline) Fe {
         var fe: Fe = undefined;
         comptime var i = 0;
         inline while (i < 5) : (i += 1) {
@@ -174,7 +175,7 @@ pub const Fe = struct {
     }
 
     /// Substract a field elememnt
-    pub inline fn sub(a: Fe, b: Fe) Fe {
+    pub fn sub(a: Fe, b: Fe) callconv(.Inline) Fe {
         var fe = b;
         comptime var i = 0;
         inline while (i < 4) : (i += 1) {
@@ -193,17 +194,17 @@ pub const Fe = struct {
     }
 
     /// Negate a field element
-    pub inline fn neg(a: Fe) Fe {
+    pub fn neg(a: Fe) callconv(.Inline) Fe {
         return zero.sub(a);
     }
 
     /// Return true if a field element is negative
-    pub inline fn isNegative(a: Fe) bool {
+    pub fn isNegative(a: Fe) callconv(.Inline) bool {
         return (a.toBytes()[0] & 1) != 0;
     }
 
     /// Conditonally replace a field element with `a` if `c` is positive
-    pub inline fn cMov(fe: *Fe, a: Fe, c: u64) void {
+    pub fn cMov(fe: *Fe, a: Fe, c: u64) callconv(.Inline) void {
         const mask: u64 = 0 -% c;
         var x = fe.*;
         comptime var i = 0;
@@ -244,7 +245,7 @@ pub const Fe = struct {
         }
     }
 
-    inline fn _carry128(r: *[5]u128) Fe {
+    fn _carry128(r: *[5]u128) callconv(.Inline) Fe {
         var rs: [5]u64 = undefined;
         comptime var i = 0;
         inline while (i < 4) : (i += 1) {
@@ -265,7 +266,7 @@ pub const Fe = struct {
     }
 
     /// Multiply two field elements
-    pub inline fn mul(a: Fe, b: Fe) Fe {
+    pub fn mul(a: Fe, b: Fe) callconv(.Inline) Fe {
         var ax: [5]u128 = undefined;
         var bx: [5]u128 = undefined;
         var a19: [5]u128 = undefined;
@@ -288,7 +289,7 @@ pub const Fe = struct {
         return _carry128(&r);
     }
 
-    inline fn _sq(a: Fe, double: comptime bool) Fe {
+    fn _sq(a: Fe, double: comptime bool) callconv(.Inline) Fe {
         var ax: [5]u128 = undefined;
         var r: [5]u128 = undefined;
         comptime var i = 0;
@@ -317,17 +318,17 @@ pub const Fe = struct {
     }
 
     /// Square a field element
-    pub inline fn sq(a: Fe) Fe {
+    pub fn sq(a: Fe) callconv(.Inline) Fe {
         return _sq(a, false);
     }
 
     /// Square and double a field element
-    pub inline fn sq2(a: Fe) Fe {
+    pub fn sq2(a: Fe) callconv(.Inline) Fe {
         return _sq(a, true);
     }
 
     /// Multiply a field element with a small (32-bit) integer
-    pub inline fn mul32(a: Fe, comptime n: u32) Fe {
+    pub fn mul32(a: Fe, comptime n: u32) callconv(.Inline) Fe {
         const sn = @intCast(u128, n);
         var fe: Fe = undefined;
         var x: u128 = 0;
@@ -342,7 +343,7 @@ pub const Fe = struct {
     }
 
     /// Square a field element `n` times
-    inline fn sqn(a: Fe, comptime n: comptime_int) Fe {
+    fn sqn(a: Fe, comptime n: comptime_int) callconv(.Inline) Fe {
         var i: usize = 0;
         var fe = a;
         while (i < n) : (i += 1) {
@@ -412,7 +413,7 @@ pub const Fe = struct {
     }
 
     /// Compute the square root of `x2`, returning `error.NotSquare` if `x2` was not a square
-    pub fn sqrt(x2: Fe) !Fe {
+    pub fn sqrt(x2: Fe) Error!Fe {
         var x2_copy = x2;
         const x = x2.uncheckedSqrt();
         const check = x.sq().sub(x2_copy);

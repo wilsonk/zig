@@ -35,7 +35,7 @@ base: File,
 ptr_width: PtrWidth,
 
 /// If this is not null, an object file is created by LLVM and linked with LLD afterwards.
-llvm_ir_module: ?*llvm_backend.LLVMIRModule = null,
+llvm_object: ?*llvm_backend.Object = null,
 
 /// Stored in native-endian format, depending on target endianness needs to be bswapped on read/write.
 /// Same order as in the file.
@@ -232,7 +232,7 @@ pub fn openPath(allocator: *Allocator, sub_path: []const u8, options: link.Optio
         const self = try createEmpty(allocator, options);
         errdefer self.base.destroy();
 
-        self.llvm_ir_module = try llvm_backend.LLVMIRModule.create(allocator, sub_path, options);
+        self.llvm_object = try llvm_backend.Object.create(allocator, sub_path, options);
         return self;
     }
 
@@ -299,7 +299,7 @@ pub fn createEmpty(gpa: *Allocator, options: link.Options) !*Elf {
 
 pub fn deinit(self: *Elf) void {
     if (build_options.have_llvm)
-        if (self.llvm_ir_module) |ir_module|
+        if (self.llvm_object) |ir_module|
             ir_module.deinit(self.base.allocator);
 
     self.sections.deinit(self.base.allocator);
@@ -318,7 +318,7 @@ pub fn deinit(self: *Elf) void {
 }
 
 pub fn getDeclVAddr(self: *Elf, decl: *const Module.Decl) u64 {
-    assert(self.llvm_ir_module == null);
+    assert(self.llvm_object == null);
     assert(decl.link.elf.local_sym_index != 0);
     return self.local_symbols.items[decl.link.elf.local_sym_index].st_value;
 }
@@ -438,7 +438,7 @@ fn updateString(self: *Elf, old_str_off: u32, new_name: []const u8) !u32 {
 }
 
 pub fn populateMissingMetadata(self: *Elf) !void {
-    assert(self.llvm_ir_module == null);
+    assert(self.llvm_object == null);
 
     const small_ptr = switch (self.ptr_width) {
         .p32 => true,
@@ -745,7 +745,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
     defer tracy.end();
 
     if (build_options.have_llvm)
-        if (self.llvm_ir_module) |llvm_ir_module| return try llvm_ir_module.flushModule(comp);
+        if (self.llvm_object) |llvm_object| return try llvm_object.flushModule(comp);
 
     // TODO This linker code currently assumes there is only 1 compilation unit and it corresponds to the
     // Zig source code.
@@ -1107,7 +1107,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
                 for (buf) |*phdr, i| {
                     phdr.* = progHeaderTo32(self.program_headers.items[i]);
                     if (foreign_endian) {
-                        bswapAllFields(elf.Elf32_Phdr, phdr);
+                        std.elf.bswapAllFields(elf.Elf32_Phdr, phdr);
                     }
                 }
                 try self.base.file.?.pwriteAll(mem.sliceAsBytes(buf), self.phdr_table_offset.?);
@@ -1119,7 +1119,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
                 for (buf) |*phdr, i| {
                     phdr.* = self.program_headers.items[i];
                     if (foreign_endian) {
-                        bswapAllFields(elf.Elf64_Phdr, phdr);
+                        std.elf.bswapAllFields(elf.Elf64_Phdr, phdr);
                     }
                 }
                 try self.base.file.?.pwriteAll(mem.sliceAsBytes(buf), self.phdr_table_offset.?);
@@ -1196,7 +1196,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
                     shdr.* = sectHeaderTo32(self.sections.items[i]);
                     log.debug("writing section {}\n", .{shdr.*});
                     if (foreign_endian) {
-                        bswapAllFields(elf.Elf32_Shdr, shdr);
+                        std.elf.bswapAllFields(elf.Elf32_Shdr, shdr);
                     }
                 }
                 try self.base.file.?.pwriteAll(mem.sliceAsBytes(buf), self.shdr_table_offset.?);
@@ -1209,7 +1209,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
                     shdr.* = self.sections.items[i];
                     log.debug("writing section {}\n", .{shdr.*});
                     if (foreign_endian) {
-                        bswapAllFields(elf.Elf64_Shdr, shdr);
+                        std.elf.bswapAllFields(elf.Elf64_Shdr, shdr);
                     }
                 }
                 try self.base.file.?.pwriteAll(mem.sliceAsBytes(buf), self.shdr_table_offset.?);
@@ -1365,17 +1365,17 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
             id_symlink_basename,
             &prev_digest_buf,
         ) catch |err| blk: {
-            log.debug("ELF LLD new_digest={} error: {s}", .{ digest, @errorName(err) });
+            log.debug("ELF LLD new_digest={s} error: {s}", .{ std.fmt.fmtSliceHexLower(&digest), @errorName(err) });
             // Handle this as a cache miss.
             break :blk prev_digest_buf[0..0];
         };
         if (mem.eql(u8, prev_digest, &digest)) {
-            log.debug("ELF LLD digest={} match - skipping invocation", .{digest});
+            log.debug("ELF LLD digest={s} match - skipping invocation", .{std.fmt.fmtSliceHexLower(&digest)});
             // Hot diggity dog! The output binary is already there.
             self.base.lock = man.toOwnedLock();
             return;
         }
-        log.debug("ELF LLD prev_digest={} new_digest={}", .{ prev_digest, digest });
+        log.debug("ELF LLD prev_digest={s} new_digest={s}", .{ std.fmt.fmtSliceHexLower(prev_digest), std.fmt.fmtSliceHexLower(&digest) });
 
         // We are about to change the output file to be different, so we invalidate the build hash now.
         directory.handle.deleteFile(id_symlink_basename) catch |err| switch (err) {
@@ -2111,7 +2111,7 @@ fn allocateTextBlock(self: *Elf, text_block: *TextBlock, new_block_size: u64, al
 }
 
 pub fn allocateDeclIndexes(self: *Elf, decl: *Module.Decl) !void {
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
     if (decl.link.elf.local_sym_index != 0) return;
 
@@ -2149,7 +2149,7 @@ pub fn allocateDeclIndexes(self: *Elf, decl: *Module.Decl) !void {
 }
 
 pub fn freeDecl(self: *Elf, decl: *Module.Decl) void {
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
     // Appending to free lists is allowed to fail because the free lists are heuristics based anyway.
     self.freeTextBlock(&decl.link.elf);
@@ -2165,7 +2165,7 @@ pub fn freeDecl(self: *Elf, decl: *Module.Decl) void {
     // is desired for both.
     _ = self.dbg_line_fn_free_list.remove(&decl.fn_link.elf);
     if (decl.fn_link.elf.prev) |prev| {
-        _ = self.dbg_line_fn_free_list.put(self.base.allocator, prev, {}) catch {};
+        self.dbg_line_fn_free_list.put(self.base.allocator, prev, {}) catch {};
         prev.next = decl.fn_link.elf.next;
         if (decl.fn_link.elf.next) |next| {
             next.prev = prev;
@@ -2189,7 +2189,7 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
     defer tracy.end();
 
     if (build_options.have_llvm)
-        if (self.llvm_ir_module) |llvm_ir_module| return try llvm_ir_module.updateDecl(module, decl);
+        if (self.llvm_object) |llvm_object| return try llvm_object.updateDecl(module, decl);
 
     const typed_value = decl.typed_value.most_recent.typed_value;
     if (typed_value.val.tag() == .extern_fn) {
@@ -2223,13 +2223,18 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
         try dbg_line_buffer.ensureCapacity(26);
 
         const line_off: u28 = blk: {
-            const tree = decl.container.file_scope.contents.tree;
-            const file_ast_decls = tree.root_node.decls();
+            const tree = decl.container.file_scope.tree;
+            const node_tags = tree.nodes.items(.tag);
+            const node_datas = tree.nodes.items(.data);
+            const token_starts = tree.tokens.items(.start);
+
             // TODO Look into improving the performance here by adding a token-index-to-line
             // lookup table. Currently this involves scanning over the source code for newlines.
-            const fn_proto = file_ast_decls[decl.src_index].castTag(.FnProto).?;
-            const block = fn_proto.getBodyNode().?.castTag(.Block).?;
-            const line_delta = std.zig.lineDelta(tree.source, 0, tree.token_locs[block.lbrace].start);
+            const fn_decl = decl.src_node;
+            assert(node_tags[fn_decl] == .fn_decl);
+            const block = node_datas[fn_decl].rhs;
+            const lbrace = tree.firstToken(block);
+            const line_delta = std.zig.lineDelta(tree.source, 0, token_starts[lbrace]);
             break :blk @intCast(u28, line_delta);
         };
 
@@ -2417,7 +2422,7 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
                 if (src_fn.off + src_fn.len + min_nop_size > next.off) {
                     // It grew too big, so we move it to a new location.
                     if (src_fn.prev) |prev| {
-                        _ = self.dbg_line_fn_free_list.put(self.base.allocator, prev, {}) catch {};
+                        self.dbg_line_fn_free_list.put(self.base.allocator, prev, {}) catch {};
                         prev.next = src_fn.next;
                     }
                     assert(src_fn.prev != next);
@@ -2573,7 +2578,7 @@ fn updateDeclDebugInfoAllocation(self: *Elf, text_block: *TextBlock, len: u32) !
             if (text_block.dbg_info_off + text_block.dbg_info_len + min_nop_size > next.dbg_info_off) {
                 // It grew too big, so we move it to a new location.
                 if (text_block.dbg_info_prev) |prev| {
-                    _ = self.dbg_info_decl_free_list.put(self.base.allocator, prev, {}) catch {};
+                    self.dbg_info_decl_free_list.put(self.base.allocator, prev, {}) catch {};
                     prev.dbg_info_next = text_block.dbg_info_next;
                 }
                 next.dbg_info_prev = text_block.dbg_info_prev;
@@ -2664,10 +2669,10 @@ fn writeDeclDebugInfo(self: *Elf, text_block: *TextBlock, dbg_info_buf: []const 
 pub fn updateDeclExports(
     self: *Elf,
     module: *Module,
-    decl: *const Module.Decl,
+    decl: *Module.Decl,
     exports: []const *Module.Export,
 ) !void {
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
     const tracy = trace(@src());
     defer tracy.end();
@@ -2742,15 +2747,20 @@ pub fn updateDeclLineNumber(self: *Elf, module: *Module, decl: *const Module.Dec
     const tracy = trace(@src());
     defer tracy.end();
 
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
-    const tree = decl.container.file_scope.contents.tree;
-    const file_ast_decls = tree.root_node.decls();
+    const tree = decl.container.file_scope.tree;
+    const node_tags = tree.nodes.items(.tag);
+    const node_datas = tree.nodes.items(.data);
+    const token_starts = tree.tokens.items(.start);
+
     // TODO Look into improving the performance here by adding a token-index-to-line
     // lookup table. Currently this involves scanning over the source code for newlines.
-    const fn_proto = file_ast_decls[decl.src_index].castTag(.FnProto).?;
-    const block = fn_proto.getBodyNode().?.castTag(.Block).?;
-    const line_delta = std.zig.lineDelta(tree.source, 0, tree.token_locs[block.lbrace].start);
+    const fn_decl = decl.src_node;
+    assert(node_tags[fn_decl] == .fn_decl);
+    const block = node_datas[fn_decl].rhs;
+    const lbrace = tree.firstToken(block);
+    const line_delta = std.zig.lineDelta(tree.source, 0, token_starts[lbrace]);
     const casted_line_off = @intCast(u28, line_delta);
 
     const shdr = &self.sections.items[self.debug_line_section_index.?];
@@ -2761,7 +2771,7 @@ pub fn updateDeclLineNumber(self: *Elf, module: *Module, decl: *const Module.Dec
 }
 
 pub fn deleteExport(self: *Elf, exp: Export) void {
-    if (self.llvm_ir_module) |_| return;
+    if (self.llvm_object) |_| return;
 
     const sym_index = exp.sym_index orelse return;
     self.global_symbol_free_list.append(self.base.allocator, sym_index) catch {};
@@ -2775,14 +2785,14 @@ fn writeProgHeader(self: *Elf, index: usize) !void {
         .p32 => {
             var phdr = [1]elf.Elf32_Phdr{progHeaderTo32(self.program_headers.items[index])};
             if (foreign_endian) {
-                bswapAllFields(elf.Elf32_Phdr, &phdr[0]);
+                std.elf.bswapAllFields(elf.Elf32_Phdr, &phdr[0]);
             }
             return self.base.file.?.pwriteAll(mem.sliceAsBytes(&phdr), offset);
         },
         .p64 => {
             var phdr = [1]elf.Elf64_Phdr{self.program_headers.items[index]};
             if (foreign_endian) {
-                bswapAllFields(elf.Elf64_Phdr, &phdr[0]);
+                std.elf.bswapAllFields(elf.Elf64_Phdr, &phdr[0]);
             }
             return self.base.file.?.pwriteAll(mem.sliceAsBytes(&phdr), offset);
         },
@@ -2796,7 +2806,7 @@ fn writeSectHeader(self: *Elf, index: usize) !void {
             var shdr: [1]elf.Elf32_Shdr = undefined;
             shdr[0] = sectHeaderTo32(self.sections.items[index]);
             if (foreign_endian) {
-                bswapAllFields(elf.Elf32_Shdr, &shdr[0]);
+                std.elf.bswapAllFields(elf.Elf32_Shdr, &shdr[0]);
             }
             const offset = self.shdr_table_offset.? + index * @sizeOf(elf.Elf32_Shdr);
             return self.base.file.?.pwriteAll(mem.sliceAsBytes(&shdr), offset);
@@ -2804,7 +2814,7 @@ fn writeSectHeader(self: *Elf, index: usize) !void {
         .p64 => {
             var shdr = [1]elf.Elf64_Shdr{self.sections.items[index]};
             if (foreign_endian) {
-                bswapAllFields(elf.Elf64_Shdr, &shdr[0]);
+                std.elf.bswapAllFields(elf.Elf64_Shdr, &shdr[0]);
             }
             const offset = self.shdr_table_offset.? + index * @sizeOf(elf.Elf64_Shdr);
             return self.base.file.?.pwriteAll(mem.sliceAsBytes(&shdr), offset);
@@ -2902,7 +2912,7 @@ fn writeSymbol(self: *Elf, index: usize) !void {
                 },
             };
             if (foreign_endian) {
-                bswapAllFields(elf.Elf32_Sym, &sym[0]);
+                std.elf.bswapAllFields(elf.Elf32_Sym, &sym[0]);
             }
             const off = syms_sect.sh_offset + @sizeOf(elf.Elf32_Sym) * index;
             try self.base.file.?.pwriteAll(mem.sliceAsBytes(sym[0..1]), off);
@@ -2910,7 +2920,7 @@ fn writeSymbol(self: *Elf, index: usize) !void {
         .p64 => {
             var sym = [1]elf.Elf64_Sym{self.local_symbols.items[index]};
             if (foreign_endian) {
-                bswapAllFields(elf.Elf64_Sym, &sym[0]);
+                std.elf.bswapAllFields(elf.Elf64_Sym, &sym[0]);
             }
             const off = syms_sect.sh_offset + @sizeOf(elf.Elf64_Sym) * index;
             try self.base.file.?.pwriteAll(mem.sliceAsBytes(sym[0..1]), off);
@@ -2941,7 +2951,7 @@ fn writeAllGlobalSymbols(self: *Elf) !void {
                     .st_shndx = self.global_symbols.items[i].st_shndx,
                 };
                 if (foreign_endian) {
-                    bswapAllFields(elf.Elf32_Sym, sym);
+                    std.elf.bswapAllFields(elf.Elf32_Sym, sym);
                 }
             }
             try self.base.file.?.pwriteAll(mem.sliceAsBytes(buf), global_syms_off);
@@ -2960,7 +2970,7 @@ fn writeAllGlobalSymbols(self: *Elf) !void {
                     .st_shndx = self.global_symbols.items[i].st_shndx,
                 };
                 if (foreign_endian) {
-                    bswapAllFields(elf.Elf64_Sym, sym);
+                    std.elf.bswapAllFields(elf.Elf64_Sym, sym);
                 }
             }
             try self.base.file.?.pwriteAll(mem.sliceAsBytes(buf), global_syms_off);
@@ -3025,7 +3035,7 @@ const min_nop_size = 2;
 
 /// Writes to the file a buffer, prefixed and suffixed by the specified number of
 /// bytes of NOPs. Asserts each padding size is at least `min_nop_size` and total padding bytes
-/// are less than 126,976 bytes (if this limit is ever reached, this function can be
+/// are less than 1044480 bytes (if this limit is ever reached, this function can be
 /// improved to make more than one pwritev call, or the limit can be raised by a fixed
 /// amount by increasing the length of `vecs`).
 fn pwriteDbgLineNops(
@@ -3040,7 +3050,7 @@ fn pwriteDbgLineNops(
 
     const page_of_nops = [1]u8{DW.LNS_negate_stmt} ** 4096;
     const three_byte_nop = [3]u8{ DW.LNS_advance_pc, 0b1000_0000, 0 };
-    var vecs: [32]std.os.iovec_const = undefined;
+    var vecs: [256]std.os.iovec_const = undefined;
     var vec_index: usize = 0;
     {
         var padding_left = prev_padding_size;
@@ -3176,10 +3186,6 @@ fn pwriteDbgInfoNops(
     try self.base.file.?.pwritevAll(vecs[0..vec_index], offset - prev_padding_size);
 }
 
-fn bswapAllFields(comptime S: type, ptr: *S) void {
-    @panic("TODO implement bswapAllFields");
-}
-
 fn progHeaderTo32(phdr: elf.Elf64_Phdr) elf.Elf32_Phdr {
     return .{
         .p_type = phdr.p_type,
@@ -3222,8 +3228,20 @@ fn getLDMOption(target: std.Target) ?[]const u8 {
         .sparcv9 => return "elf64_sparc",
         .mips => return "elf32btsmip",
         .mipsel => return "elf32ltsmip",
-        .mips64 => return "elf64btsmip",
-        .mips64el => return "elf64ltsmip",
+        .mips64 => {
+            if (target.abi == .gnuabin32) {
+                return "elf32btsmipn32";
+            } else {
+                return "elf64btsmip";
+            }
+        },
+        .mips64el => {
+            if (target.abi == .gnuabin32) {
+                return "elf32ltsmipn32";
+            } else {
+                return "elf64ltsmip";
+            }
+        },
         .s390x => return "elf64_s390",
         .x86_64 => {
             if (target.abi == .gnux32) {

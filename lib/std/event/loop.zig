@@ -185,7 +185,7 @@ pub const Loop = struct {
         errdefer self.deinitOsData();
 
         if (!builtin.single_threaded) {
-            self.fs_thread = try Thread.spawn(self, posixFsRun);
+            self.fs_thread = try Thread.spawn(posixFsRun, self);
         }
         errdefer if (!builtin.single_threaded) {
             self.posixFsRequest(&self.fs_end_request);
@@ -264,7 +264,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             .macos, .freebsd, .netbsd, .dragonfly, .openbsd => {
@@ -329,7 +329,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             .windows => {
@@ -378,7 +378,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             else => {},
@@ -440,13 +440,11 @@ pub const Loop = struct {
                 .overlapped = ResumeNode.overlapped_init,
             },
         };
-        var need_to_delete = false;
+        var need_to_delete = true;
         defer if (need_to_delete) self.linuxRemoveFd(fd);
 
         suspend {
-            if (self.linuxAddFd(fd, &resume_node.base, flags)) |_| {
-                need_to_delete = true;
-            } else |err| switch (err) {
+            self.linuxAddFd(fd, &resume_node.base, flags) catch |err| switch (err) {
                 error.FileDescriptorNotRegistered => unreachable,
                 error.OperationCausesCircularLoop => unreachable,
                 error.FileDescriptorIncompatibleWithEpoll => unreachable,
@@ -456,6 +454,7 @@ pub const Loop = struct {
                 error.UserResourceLimitReached,
                 error.Unexpected,
                 => {
+                    need_to_delete = false;
                     // Fall back to a blocking poll(). Ideally this codepath is never hit, since
                     // epoll should be just fine. But this is better than incorrect behavior.
                     var poll_flags: i16 = 0;
@@ -479,7 +478,7 @@ pub const Loop = struct {
                     };
                     resume @frame();
                 },
-            }
+            };
         }
     }
 
@@ -799,7 +798,7 @@ pub const Loop = struct {
                 .event = std.Thread.AutoResetEvent{},
                 .is_running = true,
                 // Must be last so that it can read the other state, such as `is_running`.
-                .thread = try std.Thread.spawn(self, DelayQueue.run),
+                .thread = try std.Thread.spawn(DelayQueue.run, self),
             };
         }
 

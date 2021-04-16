@@ -250,24 +250,6 @@ pub fn panicExtra(trace: ?*const builtin.StackTrace, first_trace_addr: ?usize, c
         resetSegfaultHandler();
     }
 
-    if (comptime std.Target.current.isDarwin() and std.Target.current.cpu.arch == .aarch64)
-        nosuspend {
-            // As a workaround for not having threadlocal variable support in LLD for this target,
-            // we have a simpler panic implementation that does not use threadlocal variables.
-            // TODO https://github.com/ziglang/zig/issues/7527
-            const stderr = io.getStdErr().writer();
-            if (@atomicRmw(u8, &panicking, .Add, 1, .SeqCst) == 0) {
-                stderr.print("panic: " ++ format ++ "\n", args) catch os.abort();
-                if (trace) |t| {
-                    dumpStackTrace(t.*);
-                }
-                dumpCurrentStackTrace(first_trace_addr);
-            } else {
-                stderr.print("Panicked during a panic. Aborting.\n", .{}) catch os.abort();
-            }
-            os.abort();
-        };
-
     nosuspend switch (panic_stage) {
         0 => {
             panic_stage = 1;
@@ -360,14 +342,24 @@ pub const StackIterator = struct {
         };
     }
 
-    // Negative offset of the saved BP wrt the frame pointer.
+    // Offset of the saved BP wrt the frame pointer.
     const fp_offset = if (builtin.arch.isRISCV())
         // On RISC-V the frame pointer points to the top of the saved register
         // area, on pretty much every other architecture it points to the stack
         // slot where the previous frame pointer is saved.
         2 * @sizeOf(usize)
+    else if (builtin.arch.isSPARC())
+        // On SPARC the previous frame pointer is stored at 14 slots past %fp+BIAS.
+        14 * @sizeOf(usize)
     else
         0;
+
+    const fp_bias = if (builtin.arch.isSPARC())
+        // On SPARC frame pointers are biased by a constant.
+        2047
+    else
+        0;
+
     // Positive offset of the saved PC wrt the frame pointer.
     const pc_offset = if (builtin.arch == .powerpc64le)
         2 * @sizeOf(usize)
@@ -388,13 +380,17 @@ pub const StackIterator = struct {
     }
 
     fn next_internal(self: *StackIterator) ?usize {
-        const fp = math.sub(usize, self.fp, fp_offset) catch return null;
+        const fp = if (builtin.arch.isSPARC())
+            // On SPARC the offset is positive. (!)
+            math.add(usize, self.fp, fp_offset) catch return null
+        else
+            math.sub(usize, self.fp, fp_offset) catch return null;
 
         // Sanity check.
         if (fp == 0 or !mem.isAligned(fp, @alignOf(usize)))
             return null;
 
-        const new_fp = @intToPtr(*const usize, fp).*;
+        const new_fp = math.add(usize, @intToPtr(*const usize, fp).*, fp_bias) catch return null;
 
         // Sanity check: the stack grows down thus all the parent frames must be
         // be at addresses that are greater (or equal) than the previous one.
@@ -466,7 +462,7 @@ pub const TTY = struct {
         // TODO give this a payload of file handle
         windows_api,
 
-        fn setColor(conf: Config, out_stream: anytype, color: Color) void {
+        pub fn setColor(conf: Config, out_stream: anytype, color: Color) void {
             nosuspend switch (conf) {
                 .no_color => return,
                 .escape_codes => switch (color) {
@@ -1125,12 +1121,15 @@ pub const DebugInfo = struct {
     }
 
     pub fn getModuleForAddress(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
-        if (comptime std.Target.current.isDarwin())
-            return self.lookupModuleDyld(address)
-        else if (builtin.os.tag == .windows)
-            return self.lookupModuleWin32(address)
-        else
+        if (comptime std.Target.current.isDarwin()) {
+            return self.lookupModuleDyld(address);
+        } else if (builtin.os.tag == .windows) {
+            return self.lookupModuleWin32(address);
+        } else if (builtin.os.tag == .haiku) {
+            return self.lookupModuleHaiku(address);
+        } else {
             return self.lookupModuleDl(address);
+        }
     }
 
     fn lookupModuleDyld(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
@@ -1335,6 +1334,10 @@ pub const DebugInfo = struct {
         try self.address_map.putNoClobber(ctx.base_address, obj_di);
 
         return obj_di;
+    }
+
+    fn lookupModuleHaiku(self: *DebugInfo, address: usize) !*ModuleDebugInfo {
+        @panic("TODO implement lookup module for Haiku");
     }
 };
 

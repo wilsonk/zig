@@ -1027,9 +1027,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\}
         \\fn foo() void {}
     , &[_][]const u8{
-        "tmp.zig:3:21: error: async call in nosuspend scope",
         "tmp.zig:4:9: error: suspend in nosuspend scope",
-        "tmp.zig:5:9: error: resume in nosuspend scope",
     });
 
     cases.add("atomicrmw with bool op not .Xchg",
@@ -1648,7 +1646,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\    @call(.{ .modifier = .compile_time }, baz, .{});
         \\}
         \\fn foo() void {}
-        \\inline fn bar() void {}
+        \\fn bar() callconv(.Inline) void {}
         \\fn baz1() void {}
         \\fn baz2() void {}
     , &[_][]const u8{
@@ -3944,7 +3942,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void {
         \\    var a = b;
         \\}
-        \\inline fn b() void { }
+        \\fn b() callconv(.Inline) void { }
     , &[_][]const u8{
         "tmp.zig:2:5: error: functions marked inline must be stored in const or comptime var",
         "tmp.zig:4:1: note: declared here",
@@ -6782,11 +6780,11 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     //    \\export fn foo() void {
     //    \\    bar();
     //    \\}
-    //    \\inline fn bar() void {
+    //    \\fn bar() callconv(.Inline) void {
     //    \\    baz();
     //    \\    quux();
     //    \\}
-    //    \\inline fn baz() void {
+    //    \\fn baz() callconv(.Inline) void {
     //    \\    bar();
     //    \\    quux();
     //    \\}
@@ -6799,7 +6797,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
     //    \\export fn foo() void {
     //    \\    quux(@ptrToInt(bar));
     //    \\}
-    //    \\inline fn bar() void { }
+    //    \\fn bar() callconv(.Inline) void { }
     //    \\extern fn quux(usize) void;
     //, &[_][]const u8{
     //    "tmp.zig:4:1: error: unable to inline function",
@@ -7207,7 +7205,7 @@ pub fn addCases(cases: *tests.CompileErrorContext) void {
         \\export fn entry() void {
         \\    foo();
         \\}
-        \\inline fn foo() void {
+        \\fn foo() callconv(.Inline) void {
         \\    @setAlignStack(16);
         \\}
     , &[_][]const u8{

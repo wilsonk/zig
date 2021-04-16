@@ -127,6 +127,9 @@ pub const APSInt = opaque {
 
     pub const getNumWords = ZigClangAPSInt_getNumWords;
     extern fn ZigClangAPSInt_getNumWords(*const APSInt) c_uint;
+
+    pub const lessThanEqual = ZigClangAPSInt_lessThanEqual;
+    extern fn ZigClangAPSInt_lessThanEqual(*const APSInt, rhs: u64) bool;
 };
 
 pub const ASTContext = opaque {
@@ -268,14 +271,19 @@ pub const CompoundAssignOperator = opaque {
     extern fn ZigClangCompoundAssignOperator_getRHS(*const CompoundAssignOperator) *const Expr;
 };
 
+pub const CompoundLiteralExpr = opaque {
+    pub const getInitializer = ZigClangCompoundLiteralExpr_getInitializer;
+    extern fn ZigClangCompoundLiteralExpr_getInitializer(*const CompoundLiteralExpr) *const Expr;
+};
+
 pub const CompoundStmt = opaque {
     pub const body_begin = ZigClangCompoundStmt_body_begin;
-    extern fn ZigClangCompoundStmt_body_begin(*const CompoundStmt) const_body_iterator;
+    extern fn ZigClangCompoundStmt_body_begin(*const CompoundStmt) ConstBodyIterator;
 
     pub const body_end = ZigClangCompoundStmt_body_end;
-    extern fn ZigClangCompoundStmt_body_end(*const CompoundStmt) const_body_iterator;
+    extern fn ZigClangCompoundStmt_body_end(*const CompoundStmt) ConstBodyIterator;
 
-    pub const const_body_iterator = [*]const *Stmt;
+    pub const ConstBodyIterator = [*]const *Stmt;
 };
 
 pub const ConditionalOperator = opaque {};
@@ -291,6 +299,14 @@ pub const ConstantArrayType = opaque {
 pub const ConstantExpr = opaque {};
 
 pub const ContinueStmt = opaque {};
+
+pub const ConvertVectorExpr = opaque {
+    pub const getSrcExpr = ZigClangConvertVectorExpr_getSrcExpr;
+    extern fn ZigClangConvertVectorExpr_getSrcExpr(*const ConvertVectorExpr) *const Expr;
+
+    pub const getTypeSourceInfo_getType = ZigClangConvertVectorExpr_getTypeSourceInfo_getType;
+    extern fn ZigClangConvertVectorExpr_getTypeSourceInfo_getType(*const ConvertVectorExpr) QualType;
+};
 
 pub const DecayedType = opaque {
     pub const getDecayedType = ZigClangDecayedType_getDecayedType;
@@ -407,8 +423,8 @@ pub const Expr = opaque {
     pub const getBeginLoc = ZigClangExpr_getBeginLoc;
     extern fn ZigClangExpr_getBeginLoc(*const Expr) SourceLocation;
 
-    pub const EvaluateAsConstantExpr = ZigClangExpr_EvaluateAsConstantExpr;
-    extern fn ZigClangExpr_EvaluateAsConstantExpr(*const Expr, *ExprEvalResult, Expr_ConstExprUsage, *const ASTContext) bool;
+    pub const evaluateAsConstantExpr = ZigClangExpr_EvaluateAsConstantExpr;
+    extern fn ZigClangExpr_EvaluateAsConstantExpr(*const Expr, *ExprEvalResult, Expr_ConstantExprKind, *const ASTContext) bool;
 };
 
 pub const FieldDecl = opaque {
@@ -429,6 +445,9 @@ pub const FieldDecl = opaque {
 
     pub const getLocation = ZigClangFieldDecl_getLocation;
     extern fn ZigClangFieldDecl_getLocation(*const FieldDecl) SourceLocation;
+
+    pub const getParent = ZigClangFieldDecl_getParent;
+    extern fn ZigClangFieldDecl_getParent(*const FieldDecl) ?*const RecordDecl;
 };
 
 pub const FileID = opaque {};
@@ -526,6 +545,11 @@ pub const FunctionType = opaque {
     extern fn ZigClangFunctionType_getReturnType(*const FunctionType) QualType;
 };
 
+pub const GenericSelectionExpr = opaque {
+    pub const getResultExpr = ZigClangGenericSelectionExpr_getResultExpr;
+    extern fn ZigClangGenericSelectionExpr_getResultExpr(*const GenericSelectionExpr) *const Expr;
+};
+
 pub const IfStmt = opaque {
     pub const getThen = ZigClangIfStmt_getThen;
     extern fn ZigClangIfStmt_getThen(*const IfStmt) *const Stmt;
@@ -578,6 +602,44 @@ pub const MacroDefinitionRecord = opaque {
 pub const MacroQualifiedType = opaque {
     pub const getModifiedType = ZigClangMacroQualifiedType_getModifiedType;
     extern fn ZigClangMacroQualifiedType_getModifiedType(*const MacroQualifiedType) QualType;
+};
+
+pub const TypeOfType = opaque {
+    pub const getUnderlyingType = ZigClangTypeOfType_getUnderlyingType;
+    extern fn ZigClangTypeOfType_getUnderlyingType(*const TypeOfType) QualType;
+};
+
+pub const TypeOfExprType = opaque {
+    pub const getUnderlyingExpr = ZigClangTypeOfExprType_getUnderlyingExpr;
+    extern fn ZigClangTypeOfExprType_getUnderlyingExpr(*const TypeOfExprType) *const Expr;
+};
+
+pub const OffsetOfNode = opaque {
+    pub const getKind = ZigClangOffsetOfNode_getKind;
+    extern fn ZigClangOffsetOfNode_getKind(*const OffsetOfNode) OffsetOfNode_Kind;
+
+    pub const getArrayExprIndex = ZigClangOffsetOfNode_getArrayExprIndex;
+    extern fn ZigClangOffsetOfNode_getArrayExprIndex(*const OffsetOfNode) c_uint;
+
+    pub const getField = ZigClangOffsetOfNode_getField;
+    extern fn ZigClangOffsetOfNode_getField(*const OffsetOfNode) *FieldDecl;
+};
+
+pub const OffsetOfExpr = opaque {
+    pub const getNumComponents = ZigClangOffsetOfExpr_getNumComponents;
+    extern fn ZigClangOffsetOfExpr_getNumComponents(*const OffsetOfExpr) c_uint;
+
+    pub const getNumExpressions = ZigClangOffsetOfExpr_getNumExpressions;
+    extern fn ZigClangOffsetOfExpr_getNumExpressions(*const OffsetOfExpr) c_uint;
+
+    pub const getIndexExpr = ZigClangOffsetOfExpr_getIndexExpr;
+    extern fn ZigClangOffsetOfExpr_getIndexExpr(*const OffsetOfExpr, idx: c_uint) *const Expr;
+
+    pub const getComponent = ZigClangOffsetOfExpr_getComponent;
+    extern fn ZigClangOffsetOfExpr_getComponent(*const OffsetOfExpr, idx: c_uint) *const OffsetOfNode;
+
+    pub const getBeginLoc = ZigClangOffsetOfExpr_getBeginLoc;
+    extern fn ZigClangOffsetOfExpr_getBeginLoc(*const OffsetOfExpr) SourceLocation;
 };
 
 pub const MemberExpr = opaque {
@@ -694,7 +756,13 @@ pub const ReturnStmt = opaque {
     extern fn ZigClangReturnStmt_getRetValue(*const ReturnStmt) ?*const Expr;
 };
 
-pub const SkipFunctionBodiesScope = opaque {};
+pub const ShuffleVectorExpr = opaque {
+    pub const getNumSubExprs = ZigClangShuffleVectorExpr_getNumSubExprs;
+    extern fn ZigClangShuffleVectorExpr_getNumSubExprs(*const ShuffleVectorExpr) c_uint;
+
+    pub const getExpr = ZigClangShuffleVectorExpr_getExpr;
+    extern fn ZigClangShuffleVectorExpr_getExpr(*const ShuffleVectorExpr, c_uint) *const Expr;
+};
 
 pub const SourceManager = opaque {
     pub const getSpellingLoc = ZigClangSourceManager_getSpellingLoc;
@@ -785,6 +853,9 @@ pub const Type = opaque {
     pub const isRecordType = ZigClangType_isRecordType;
     extern fn ZigClangType_isRecordType(*const Type) bool;
 
+    pub const isVectorType = ZigClangType_isVectorType;
+    extern fn ZigClangType_isVectorType(*const Type) bool;
+
     pub const isIncompleteOrZeroLengthArrayType = ZigClangType_isIncompleteOrZeroLengthArrayType;
     extern fn ZigClangType_isIncompleteOrZeroLengthArrayType(*const Type, *const ASTContext) bool;
 
@@ -848,7 +919,10 @@ pub const UnaryOperator = opaque {
     extern fn ZigClangUnaryOperator_getBeginLoc(*const UnaryOperator) SourceLocation;
 };
 
-pub const ValueDecl = opaque {};
+pub const ValueDecl = opaque {
+    pub const getType = ZigClangValueDecl_getType;
+    extern fn ZigClangValueDecl_getType(*const ValueDecl) QualType;
+};
 
 pub const VarDecl = opaque {
     pub const getLocation = ZigClangVarDecl_getLocation;
@@ -880,6 +954,14 @@ pub const VarDecl = opaque {
 
     pub const getTypeSourceInfo_getType = ZigClangVarDecl_getTypeSourceInfo_getType;
     extern fn ZigClangVarDecl_getTypeSourceInfo_getType(*const VarDecl) QualType;
+};
+
+pub const VectorType = opaque {
+    pub const getElementType = ZigClangVectorType_getElementType;
+    extern fn ZigClangVectorType_getElementType(*const VectorType) QualType;
+
+    pub const getNumElements = ZigClangVectorType_getNumElements;
+    extern fn ZigClangVectorType_getNumElements(*const VectorType) c_uint;
 };
 
 pub const WhileStmt = opaque {
@@ -1259,6 +1341,8 @@ pub const CK = extern enum {
     IntegralCast,
     IntegralToBoolean,
     IntegralToFloating,
+    FloatingToFixedPoint,
+    FixedPointToFloating,
     FixedPointCast,
     FixedPointToIntegral,
     IntegralToFixedPoint,
@@ -1365,6 +1449,7 @@ pub const DeclKind = extern enum {
     MSGuid,
     OMPDeclareMapper,
     OMPDeclareReduction,
+    TemplateParamObject,
     UnresolvedUsingValue,
     OMPAllocate,
     OMPRequires,
@@ -1475,6 +1560,8 @@ pub const BuiltinTypeKind = extern enum {
     SveFloat64x4,
     SveBFloat16x4,
     SveBool,
+    VectorQuad,
+    VectorPair,
     Void,
     Bool,
     Char_U,
@@ -1628,9 +1715,11 @@ pub const PreprocessedEntity_EntityKind = extern enum {
     InclusionDirectiveKind,
 };
 
-pub const Expr_ConstExprUsage = extern enum {
-    EvaluateForCodeGen,
-    EvaluateForMangling,
+pub const Expr_ConstantExprKind = extern enum {
+    Normal,
+    NonClassTemplateArgument,
+    ClassTemplateArgument,
+    ImmediateInvocation,
 };
 
 pub const UnaryExprOrTypeTrait_Kind = extern enum {
@@ -1639,6 +1728,13 @@ pub const UnaryExprOrTypeTrait_Kind = extern enum {
     VecStep,
     OpenMPRequiredSimdAlign,
     PreferredAlignOf,
+};
+
+pub const OffsetOfNode_Kind = extern enum {
+    Array,
+    Field,
+    Identifier,
+    Base,
 };
 
 pub const Stage2ErrorMsg = extern struct {

@@ -1,7 +1,20 @@
 //! We do this instead of @cImport because the self-hosted compiler is easier
 //! to bootstrap if it does not depend on translate-c.
 
-const LLVMBool = bool;
+/// Do not compare directly to .True, use toBool() instead.
+pub const Bool = enum(c_int) {
+    False,
+    True,
+    _,
+
+    pub fn fromBool(b: bool) Bool {
+        return @intToEnum(Bool, @boolToInt(b));
+    }
+
+    pub fn toBool(b: Bool) bool {
+        return b != .False;
+    }
+};
 pub const AttributeIndex = c_uint;
 
 /// Make sure to use the *InContext functions instead of the global ones.
@@ -21,8 +34,14 @@ pub const Context = opaque {
     pub const voidType = LLVMVoidTypeInContext;
     extern fn LLVMVoidTypeInContext(C: *const Context) *const Type;
 
+    pub const structType = LLVMStructTypeInContext;
+    extern fn LLVMStructTypeInContext(C: *const Context, ElementTypes: [*]*const Type, ElementCount: c_uint, Packed: Bool) *const Type;
+
     pub const constString = LLVMConstStringInContext;
-    extern fn LLVMConstStringInContext(C: *const Context, Str: [*]const u8, Length: c_uint, DontNullTerminate: LLVMBool) *const Value;
+    extern fn LLVMConstStringInContext(C: *const Context, Str: [*]const u8, Length: c_uint, DontNullTerminate: Bool) *const Value;
+
+    pub const constStruct = LLVMConstStructInContext;
+    extern fn LLVMConstStructInContext(C: *const Context, ConstantVals: [*]*const Value, Count: c_uint, Packed: Bool) *const Value;
 
     pub const createBasicBlock = LLVMCreateBasicBlockInContext;
     extern fn LLVMCreateBasicBlockInContext(C: *const Context, Name: [*:0]const u8) *const BasicBlock;
@@ -53,7 +72,7 @@ pub const Value = opaque {
 
 pub const Type = opaque {
     pub const functionType = LLVMFunctionType;
-    extern fn LLVMFunctionType(ReturnType: *const Type, ParamTypes: ?[*]*const Type, ParamCount: c_uint, IsVarArg: LLVMBool) *const Type;
+    extern fn LLVMFunctionType(ReturnType: *const Type, ParamTypes: ?[*]*const Type, ParamCount: c_uint, IsVarArg: Bool) *const Type;
 
     pub const constNull = LLVMConstNull;
     extern fn LLVMConstNull(Ty: *const Type) *const Value;
@@ -62,7 +81,7 @@ pub const Type = opaque {
     extern fn LLVMConstAllOnes(Ty: *const Type) *const Value;
 
     pub const constInt = LLVMConstInt;
-    extern fn LLVMConstInt(IntTy: *const Type, N: c_ulonglong, SignExtend: LLVMBool) *const Value;
+    extern fn LLVMConstInt(IntTy: *const Type, N: c_ulonglong, SignExtend: Bool) *const Value;
 
     pub const constArray = LLVMConstArray;
     extern fn LLVMConstArray(ElementTy: *const Type, ConstantVals: ?[*]*const Value, Length: c_uint) *const Value;
@@ -85,7 +104,7 @@ pub const Module = opaque {
     extern fn LLVMDisposeModule(*const Module) void;
 
     pub const verify = LLVMVerifyModule;
-    extern fn LLVMVerifyModule(*const Module, Action: VerifierFailureAction, OutMessage: *[*:0]const u8) LLVMBool;
+    extern fn LLVMVerifyModule(*const Module, Action: VerifierFailureAction, OutMessage: *[*:0]const u8) Bool;
 
     pub const addFunction = LLVMAddFunction;
     extern fn LLVMAddFunction(*const Module, Name: [*:0]const u8, FunctionTy: *const Type) *const Value;
@@ -185,7 +204,7 @@ pub const Builder = opaque {
     extern fn LLVMBuildNUWSub(*const Builder, LHS: *const Value, RHS: *const Value, Name: [*:0]const u8) *const Value;
 
     pub const buildIntCast2 = LLVMBuildIntCast2;
-    extern fn LLVMBuildIntCast2(*const Builder, Val: *const Value, DestTy: *const Type, IsSigned: LLVMBool, Name: [*:0]const u8) *const Value;
+    extern fn LLVMBuildIntCast2(*const Builder, Val: *const Value, DestTy: *const Type, IsSigned: Bool, Name: [*:0]const u8) *const Value;
 
     pub const buildBitCast = LLVMBuildBitCast;
     extern fn LLVMBuildBitCast(*const Builder, Val: *const Value, DestTy: *const Type, Name: [*:0]const u8) *const Value;
@@ -204,6 +223,9 @@ pub const Builder = opaque {
 
     pub const buildPhi = LLVMBuildPhi;
     extern fn LLVMBuildPhi(*const Builder, Ty: *const Type, Name: [*:0]const u8) *const Value;
+
+    pub const buildExtractValue = LLVMBuildExtractValue;
+    extern fn LLVMBuildExtractValue(*const Builder, AggVal: *const Value, Index: c_uint, Name: [*:0]const u8) *const Value;
 };
 
 pub const IntPredicate = extern enum {
@@ -249,7 +271,7 @@ pub const TargetMachine = opaque {
         Filename: [*:0]const u8,
         codegen: CodeGenFileType,
         ErrorMessage: *[*:0]const u8,
-    ) LLVMBool;
+    ) Bool;
 };
 
 pub const CodeMode = extern enum {
@@ -286,7 +308,7 @@ pub const CodeGenFileType = extern enum {
 
 pub const Target = opaque {
     pub const getFromTriple = LLVMGetTargetFromTriple;
-    extern fn LLVMGetTargetFromTriple(Triple: [*:0]const u8, T: **const Target, ErrorMessage: *[*:0]const u8) LLVMBool;
+    extern fn LLVMGetTargetFromTriple(Triple: [*:0]const u8, T: **const Target, ErrorMessage: *[*:0]const u8) Bool;
 };
 
 extern fn LLVMInitializeAArch64TargetInfo() void;
@@ -486,6 +508,7 @@ pub const ObjectFormatType = extern enum(c_int) {
     Unknown,
     COFF,
     ELF,
+    GOFF,
     MachO,
     Wasm,
     XCOFF,
@@ -506,97 +529,99 @@ extern fn ZigLLVMWriteArchive(
 ) bool;
 
 pub const OSType = extern enum(c_int) {
-    UnknownOS = 0,
-    Ananas = 1,
-    CloudABI = 2,
-    Darwin = 3,
-    DragonFly = 4,
-    FreeBSD = 5,
-    Fuchsia = 6,
-    IOS = 7,
-    KFreeBSD = 8,
-    Linux = 9,
-    Lv2 = 10,
-    MacOSX = 11,
-    NetBSD = 12,
-    OpenBSD = 13,
-    Solaris = 14,
-    Win32 = 15,
-    Haiku = 16,
-    Minix = 17,
-    RTEMS = 18,
-    NaCl = 19,
-    CNK = 20,
-    AIX = 21,
-    CUDA = 22,
-    NVCL = 23,
-    AMDHSA = 24,
-    PS4 = 25,
-    ELFIAMCU = 26,
-    TvOS = 27,
-    WatchOS = 28,
-    Mesa3D = 29,
-    Contiki = 30,
-    AMDPAL = 31,
-    HermitCore = 32,
-    Hurd = 33,
-    WASI = 34,
-    Emscripten = 35,
+    UnknownOS,
+    Ananas,
+    CloudABI,
+    Darwin,
+    DragonFly,
+    FreeBSD,
+    Fuchsia,
+    IOS,
+    KFreeBSD,
+    Linux,
+    Lv2,
+    MacOSX,
+    NetBSD,
+    OpenBSD,
+    Solaris,
+    Win32,
+    ZOS,
+    Haiku,
+    Minix,
+    RTEMS,
+    NaCl,
+    AIX,
+    CUDA,
+    NVCL,
+    AMDHSA,
+    PS4,
+    ELFIAMCU,
+    TvOS,
+    WatchOS,
+    Mesa3D,
+    Contiki,
+    AMDPAL,
+    HermitCore,
+    Hurd,
+    WASI,
+    Emscripten,
 };
 
 pub const ArchType = extern enum(c_int) {
-    UnknownArch = 0,
-    arm = 1,
-    armeb = 2,
-    aarch64 = 3,
-    aarch64_be = 4,
-    aarch64_32 = 5,
-    arc = 6,
-    avr = 7,
-    bpfel = 8,
-    bpfeb = 9,
-    hexagon = 10,
-    mips = 11,
-    mipsel = 12,
-    mips64 = 13,
-    mips64el = 14,
-    msp430 = 15,
-    ppc = 16,
-    ppc64 = 17,
-    ppc64le = 18,
-    r600 = 19,
-    amdgcn = 20,
-    riscv32 = 21,
-    riscv64 = 22,
-    sparc = 23,
-    sparcv9 = 24,
-    sparcel = 25,
-    systemz = 26,
-    tce = 27,
-    tcele = 28,
-    thumb = 29,
-    thumbeb = 30,
-    x86 = 31,
-    x86_64 = 32,
-    xcore = 33,
-    nvptx = 34,
-    nvptx64 = 35,
-    le32 = 36,
-    le64 = 37,
-    amdil = 38,
-    amdil64 = 39,
-    hsail = 40,
-    hsail64 = 41,
-    spir = 42,
-    spir64 = 43,
-    kalimba = 44,
-    shave = 45,
-    lanai = 46,
-    wasm32 = 47,
-    wasm64 = 48,
-    renderscript32 = 49,
-    renderscript64 = 50,
-    ve = 51,
+    UnknownArch,
+    arm,
+    armeb,
+    aarch64,
+    aarch64_be,
+    aarch64_32,
+    arc,
+    avr,
+    bpfel,
+    bpfeb,
+    csky,
+    hexagon,
+    mips,
+    mipsel,
+    mips64,
+    mips64el,
+    msp430,
+    ppc,
+    ppcle,
+    ppc64,
+    ppc64le,
+    r600,
+    amdgcn,
+    riscv32,
+    riscv64,
+    sparc,
+    sparcv9,
+    sparcel,
+    systemz,
+    tce,
+    tcele,
+    thumb,
+    thumbeb,
+    x86,
+    x86_64,
+    xcore,
+    nvptx,
+    nvptx64,
+    le32,
+    le64,
+    amdil,
+    amdil64,
+    hsail,
+    hsail64,
+    spir,
+    spir64,
+    kalimba,
+    shave,
+    lanai,
+    wasm32,
+    wasm64,
+    renderscript32,
+    renderscript64,
+    ve,
 };
 
 pub const ParseCommandLineOptions = ZigLLVMParseCommandLineOptions;

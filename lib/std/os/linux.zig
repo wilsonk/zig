@@ -26,6 +26,7 @@ pub usingnamespace switch (builtin.arch) {
     .riscv64 => @import("linux/riscv64.zig"),
     .sparcv9 => @import("linux/sparc64.zig"),
     .mips, .mipsel => @import("linux/mips.zig"),
+    .powerpc => @import("linux/powerpc.zig"),
     .powerpc64, .powerpc64le => @import("linux/powerpc64.zig"),
     else => struct {},
 };
@@ -126,7 +127,7 @@ pub fn fork() usize {
 /// It is advised to avoid this function and use clone instead, because
 /// the compiler is not aware of how vfork affects control flow and you may
 /// see different results in optimized builds.
-pub inline fn vfork() usize {
+pub fn vfork() callconv(.Inline) usize {
     return @call(.{ .modifier = .always_inline }, syscall0, .{.vfork});
 }
 
@@ -634,6 +635,37 @@ pub fn tgkill(tgid: pid_t, tid: pid_t, sig: i32) usize {
     return syscall2(.tgkill, @bitCast(usize, @as(isize, tgid)), @bitCast(usize, @as(isize, tid)), @bitCast(usize, @as(isize, sig)));
 }
 
+pub fn link(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: i32) usize {
+    if (@hasField(SYS, "link")) {
+        return syscall3(
+            .link,
+            @ptrToInt(oldpath),
+            @ptrToInt(newpath),
+            @bitCast(usize, @as(isize, flags)),
+        );
+    } else {
+        return syscall5(
+            .linkat,
+            @bitCast(usize, @as(isize, AT_FDCWD)),
+            @ptrToInt(oldpath),
+            @bitCast(usize, @as(isize, AT_FDCWD)),
+            @ptrToInt(newpath),
+            @bitCast(usize, @as(isize, flags)),
+        );
+    }
+}
+
+pub fn linkat(oldfd: fd_t, oldpath: [*:0]const u8, newfd: fd_t, newpath: [*:0]const u8, flags: i32) usize {
+    return syscall5(
+        .linkat,
+        @bitCast(usize, @as(isize, oldfd)),
+        @ptrToInt(oldpath),
+        @bitCast(usize, @as(isize, newfd)),
+        @ptrToInt(newpath),
+        @bitCast(usize, @as(isize, flags)),
+    );
+}
+
 pub fn unlink(path: [*:0]const u8) usize {
     if (@hasField(SYS, "unlink")) {
         return syscall1(.unlink, @ptrToInt(path));
@@ -946,7 +978,7 @@ pub fn getsockopt(fd: i32, level: u32, optname: u32, noalias optval: [*]u8, noal
     return syscall5(.getsockopt, @bitCast(usize, @as(isize, fd)), level, optname, @ptrToInt(optval), @ptrToInt(optlen));
 }
 
-pub fn sendmsg(fd: i32, msg: *msghdr_const, flags: u32) usize {
+pub fn sendmsg(fd: i32, msg: *const msghdr_const, flags: u32) usize {
     if (builtin.arch == .i386) {
         return socketcall(SC_sendmsg, &[3]usize{ @bitCast(usize, @as(isize, fd)), @ptrToInt(msg), flags });
     }

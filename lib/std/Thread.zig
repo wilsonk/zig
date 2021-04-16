@@ -70,16 +70,8 @@ else switch (std.Target.current.os.tag) {
 /// Signals the processor that it is inside a busy-wait spin-loop ("spin lock").
 pub fn spinLoopHint() void {
     switch (std.Target.current.cpu.arch) {
-        .i386, .x86_64 => asm volatile ("pause"
-            :
-            :
-            : "memory"
-        ),
-        .arm, .aarch64 => asm volatile ("yield"
-            :
-            :
-            : "memory"
-        ),
+        .i386, .x86_64 => asm volatile ("pause" ::: "memory"),
+        .arm, .aarch64 => asm volatile ("yield" ::: "memory"),
         else => {},
     }
 }
@@ -90,12 +82,11 @@ pub fn spinLoopHint() void {
 pub fn getCurrentId() Id {
     if (use_pthreads) {
         return c.pthread_self();
-    } else
-        return switch (std.Target.current.os.tag) {
-            .linux => os.linux.gettid(),
-            .windows => windows.kernel32.GetCurrentThreadId(),
-            else => @compileError("Unsupported OS"),
-        };
+    } else return switch (std.Target.current.os.tag) {
+        .linux => os.linux.gettid(),
+        .windows => windows.kernel32.GetCurrentThreadId(),
+        else => @compileError("Unsupported OS"),
+    };
 }
 
 /// Returns the handle of this thread.
@@ -174,18 +165,32 @@ pub const SpawnError = error{
     Unexpected,
 };
 
-/// caller must call wait on the returned thread
-/// fn startFn(@TypeOf(context)) T
-/// where T is u8, noreturn, void, or !void
-/// caller must call wait on the returned thread
-pub fn spawn(context: anytype, comptime startFn: anytype) SpawnError!*Thread {
+// Given `T`, the type of the thread startFn, extract the expected type for the
+// context parameter.
+fn SpawnContextType(comptime T: type) type {
+    const TI = @typeInfo(T);
+    if (TI != .Fn)
+        @compileError("expected function type, found " ++ @typeName(T));
+
+    if (TI.Fn.args.len != 1)
+        @compileError("expected function with single argument, found " ++ @typeName(T));
+
+    return TI.Fn.args[0].arg_type orelse
+        @compileError("cannot use a generic function as thread startFn");
+}
+
+/// Spawns a new thread executing startFn, returning an handle for it.
+/// Caller must call wait on the returned thread.
+/// The `startFn` function must take a single argument of type T and return a
+/// value of type u8, noreturn, void or !void.
+/// The `context` parameter is of type T and is passed to the spawned thread.
+pub fn spawn(comptime startFn: anytype, context: SpawnContextType(@TypeOf(startFn))) SpawnError!*Thread {
     if (builtin.single_threaded) @compileError("cannot spawn thread when building in single-threaded mode");
     // TODO compile-time call graph analysis to determine stack upper bound
     // https://github.com/ziglang/zig/issues/157
     const default_stack_size = 16 * 1024 * 1024;
 
     const Context = @TypeOf(context);
-    comptime assert(@typeInfo(@TypeOf(startFn)).Fn.args[0].arg_type.? == Context);
 
     if (std.Target.current.os.tag == .windows) {
         const WinThread = struct {
@@ -357,7 +362,7 @@ pub fn spawn(context: anytype, comptime startFn: anytype) SpawnError!*Thread {
             os.EAGAIN => return error.SystemResources,
             os.EPERM => unreachable,
             os.EINVAL => unreachable,
-            else => return os.unexpectedErrno(@intCast(usize, err)),
+            else => return os.unexpectedErrno(err),
         }
 
         return thread_obj;
@@ -496,31 +501,42 @@ pub const CpuCountError = error{
 };
 
 pub fn cpuCount() CpuCountError!usize {
-    if (std.Target.current.os.tag == .linux) {
-        const cpu_set = try os.sched_getaffinity(0);
-        return @as(usize, os.CPU_COUNT(cpu_set)); // TODO should not need this usize cast
+    switch (std.Target.current.os.tag) {
+        .linux => {
+            const cpu_set = try os.sched_getaffinity(0);
+            return @as(usize, os.CPU_COUNT(cpu_set)); // TODO should not need this usize cast
+        },
+        .windows => {
+            return os.windows.peb().NumberOfProcessors;
+        },
+        .openbsd => {
+            var count: c_int = undefined;
+            var count_size: usize = @sizeOf(c_int);
+            const mib = [_]c_int{ os.CTL_HW, os.HW_NCPUONLINE };
+            os.sysctl(&mib, &count, &count_size, null, 0) catch |err| switch (err) {
+                error.NameTooLong, error.UnknownName => unreachable,
+                else => |e| return e,
+            };
+            return @intCast(usize, count);
+        },
+        .haiku => {
+            var count: u32 = undefined;
+            var system_info: os.system_info = undefined;
+            const rc = os.system.get_system_info(&system_info);
+            count = system_info.cpu_count;
+            return @intCast(usize, count);
+        },
+        else => {
+            var count: c_int = undefined;
+            var count_len: usize = @sizeOf(c_int);
+            const name = if (comptime std.Target.current.isDarwin()) "hw.logicalcpu" else "hw.ncpu";
+            os.sysctlbynameZ(name, &count, &count_len, null, 0) catch |err| switch (err) {
+                error.NameTooLong, error.UnknownName => unreachable,
+                else => |e| return e,
+            };
+            return @intCast(usize, count);
+        },
     }
-    if (std.Target.current.os.tag == .windows) {
-        return os.windows.peb().NumberOfProcessors;
-    }
-    if (std.Target.current.os.tag == .openbsd) {
-        var count: c_int = undefined;
-        var count_size: usize = @sizeOf(c_int);
-        const mib = [_]c_int{ os.CTL_HW, os.HW_NCPUONLINE };
-        os.sysctl(&mib, &count, &count_size, null, 0) catch |err| switch (err) {
-            error.NameTooLong, error.UnknownName => unreachable,
-            else => |e| return e,
-        };
-        return @intCast(usize, count);
-    }
-    var count: c_int = undefined;
-    var count_len: usize = @sizeOf(c_int);
-    const name = if (comptime std.Target.current.isDarwin()) "hw.logicalcpu" else "hw.ncpu";
-    os.sysctlbynameZ(name, &count, &count_len, null, 0) catch |err| switch (err) {
-        error.NameTooLong, error.UnknownName => unreachable,
-        else => |e| return e,
-    };
-    return @intCast(usize, count);
 }
 
 pub fn getCurrentThreadId() u64 {
@@ -546,6 +562,9 @@ pub fn getCurrentThreadId() u64 {
         },
         .openbsd => {
             return @bitCast(u32, c.getthrid());
+        },
+        .haiku => {
+            return @bitCast(u32, c.find_thread(null));
         },
         else => {
             @compileError("getCurrentThreadId not implemented for this platform");

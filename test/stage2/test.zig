@@ -255,7 +255,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    exit(y - 6);
             \\}
             \\
-            \\inline fn add(a: usize, b: usize, c: usize) usize {
+            \\fn add(a: usize, b: usize, c: usize) callconv(.Inline) usize {
             \\    return a + b + c;
             \\}
             \\
@@ -355,7 +355,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    const z = @TypeOf(true, 1);
             \\    unreachable;
             \\}
-        , &[_][]const u8{":2:29: error: incompatible types: 'bool' and 'comptime_int'"});
+        , &[_][]const u8{":2:15: error: incompatible types: 'bool' and 'comptime_int'"});
     }
 
     {
@@ -620,6 +620,43 @@ pub fn addCases(ctx: *TestContext) !void {
         ,
             "hello\nhello\nhello\nhello\n",
         );
+
+        // inline while requires the condition to be comptime known.
+        case.addError(
+            \\export fn _start() noreturn {
+            \\    var i: u32 = 0;
+            \\    inline while (i < 4) : (i += 1) print();
+            \\    assert(i == 4);
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\fn print() void {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (1),
+            \\          [arg1] "{rdi}" (1),
+            \\          [arg2] "{rsi}" (@ptrToInt("hello\n")),
+            \\          [arg3] "{rdx}" (6)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    return;
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        , &[_][]const u8{":3:21: error: unable to resolve comptime value"});
 
         // Labeled blocks (no conditional branch)
         case.addCompareOutput(
@@ -904,6 +941,32 @@ pub fn addCases(ctx: *TestContext) !void {
             "",
         );
 
+        // Array access to a global array.
+        case.addCompareOutput(
+            \\const hello = "hello".*;
+            \\export fn _start() noreturn {
+            \\    assert(hello[1] == 'e');
+            \\
+            \\    exit();
+            \\}
+            \\
+            \\pub fn assert(ok: bool) void {
+            \\    if (!ok) unreachable; // assertion failure
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+
         // 64bit set stack
         case.addCompareOutput(
             \\export fn _start() noreturn {
@@ -1001,11 +1064,61 @@ pub fn addCases(ctx: *TestContext) !void {
             .path = "print.zig",
         });
     }
+    {
+        var case = ctx.exe("import private", linux_x64);
+        case.addError(
+            \\export fn _start() noreturn {
+            \\    @import("print.zig").print();
+            \\    exit();
+            \\}
+            \\
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (@as(usize, 0))
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            &.{":2:25: error: 'print' is private"},
+        );
+        try case.files.append(.{
+            .src =
+            \\fn print() void {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (@as(usize, 1)),
+            \\          [arg1] "{rdi}" (@as(usize, 1)),
+            \\          [arg2] "{rsi}" (@ptrToInt("Hello, World!\n")),
+            \\          [arg3] "{rdx}" (@as(usize, 14))
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    return;
+            \\}
+            ,
+            .path = "print.zig",
+        });
+    }
 
     ctx.compileError("function redefinition", linux_x64,
+        \\// dummy comment
         \\fn entry() void {}
         \\fn entry() void {}
-    , &[_][]const u8{":2:4: error: redefinition of 'entry'"});
+    , &[_][]const u8{
+        ":3:4: error: redefinition of 'entry'",
+        ":2:1: note: previous definition here",
+    });
+
+    ctx.compileError("global variable redefinition", linux_x64,
+        \\// dummy comment
+        \\var foo = false;
+        \\var foo = true;
+    , &[_][]const u8{
+        ":3:5: error: redefinition of 'foo'",
+        ":2:1: note: previous definition here",
+    });
 
     ctx.compileError("compileError", linux_x64,
         \\export fn _start() noreturn {
@@ -1070,7 +1183,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\}
             \\fn x() void {}
         , &[_][]const u8{
-            ":11:8: error: found compile log statement",
+            ":9:5: error: found compile log statement",
             ":4:5: note: also here",
         });
     }
@@ -1088,7 +1201,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = foo;
             \\}
             \\extern var foo;
-        , &[_][]const u8{":4:1: error: unable to infer variable type"});
+        , &[_][]const u8{":4:8: error: unable to infer variable type"});
     }
 
     {
@@ -1194,12 +1307,12 @@ pub fn addCases(ctx: *TestContext) !void {
             \\comptime {
             \\    foo: while (true) {}
             \\}
-        , &[_][]const u8{":2:5: error: unused while label"});
+        , &[_][]const u8{":2:5: error: unused while loop label"});
         case.addError(
             \\comptime {
             \\    foo: for ("foo") |_| {}
             \\}
-        , &[_][]const u8{":2:5: error: unused for label"});
+        , &[_][]const u8{":2:5: error: unused for loop label"});
         case.addError(
             \\comptime {
             \\    blk: {blk: {}}
@@ -1228,7 +1341,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    exit(y - 6);
             \\}
             \\
-            \\inline fn add(a: usize, b: usize, c: usize) usize {
+            \\fn add(a: usize, b: usize, c: usize) callconv(.Inline) usize {
             \\    if (a == 10) @compileError("bad");
             \\    return a + b + c;
             \\}
@@ -1251,7 +1364,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    exit(y - 6);
             \\}
             \\
-            \\inline fn add(a: usize, b: usize, c: usize) usize {
+            \\fn add(a: usize, b: usize, c: usize) callconv(.Inline) usize {
             \\    if (a == 10) @compileError("bad");
             \\    return a + b + c;
             \\}
@@ -1277,7 +1390,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    exit(y - 21);
             \\}
             \\
-            \\inline fn fibonacci(n: usize) usize {
+            \\fn fibonacci(n: usize) callconv(.Inline) usize {
             \\    if (n <= 2) return n;
             \\    return fibonacci(n - 2) + fibonacci(n - 1);
             \\}
@@ -1294,13 +1407,16 @@ pub fn addCases(ctx: *TestContext) !void {
         ,
             "",
         );
+        // This additionally tests that the compile error reports the correct source location.
+        // Without storing source locations relative to the owner decl, the compile error
+        // here would be off by 2 bytes (from the "7" -> "999").
         case.addError(
             \\export fn _start() noreturn {
             \\    const y = fibonacci(999);
             \\    exit(y - 21);
             \\}
             \\
-            \\inline fn fibonacci(n: usize) usize {
+            \\fn fibonacci(n: usize) callconv(.Inline) usize {
             \\    if (n <= 2) return n;
             \\    return fibonacci(n - 2) + fibonacci(n - 1);
             \\}
@@ -1314,7 +1430,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    );
             \\    unreachable;
             \\}
-        , &[_][]const u8{":8:10: error: evaluation exceeded 1000 backwards branches"});
+        , &[_][]const u8{":8:21: error: evaluation exceeded 1000 backwards branches"});
     }
     {
         var case = ctx.exe("orelse at comptime", linux_x64);
@@ -1384,6 +1500,171 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    asm volatile ("syscall"
             \\        :
             \\        : [number] "{rax}" (231), // exit_group
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+    }
+    {
+        var case = ctx.exe("passing u0 to function", linux_x64);
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    doNothing(0);
+            \\    exit();
+            \\}
+            \\fn doNothing(arg: u0) void {}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+    }
+    {
+        var case = ctx.exe("catch at comptime", linux_x64);
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const i: anyerror!u64 = 0;
+            \\    const caught = i catch 5;
+            \\    assert(caught == 0);
+            \\    exit();
+            \\}
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable;
+            \\}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const i: anyerror!u64 = error.B;
+            \\    const caught = i catch 5;
+            \\    assert(caught == 5);
+            \\    exit();
+            \\}
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable;
+            \\}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        ,
+            "",
+        );
+
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const a: anyerror!comptime_int = 42;
+            \\    const b: *const comptime_int = &(a catch unreachable);
+            \\    assert(b.* == 42);
+            \\
+            \\    exit();
+            \\}
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable; // assertion failure
+            \\}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        , "");
+
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const a: anyerror!u32 = error.B;
+            \\    _ = &(a catch |err| assert(err == error.B));
+            \\    exit();
+            \\}
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable;
+            \\}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        , "");
+
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const a: anyerror!u32 = error.Bar;
+            \\    a catch |err| assert(err == error.Bar);
+            \\
+            \\    exit();
+            \\}
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable;
+            \\}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
+            \\          [arg1] "{rdi}" (0)
+            \\        : "rcx", "r11", "memory"
+            \\    );
+            \\    unreachable;
+            \\}
+        , "");
+    }
+    {
+        var case = ctx.exe("merge error sets", linux_x64);
+
+        case.addCompareOutput(
+            \\export fn _start() noreturn {
+            \\    const E = error{ A, B, D } || error { A, B, C };
+            \\    const a = E.A;
+            \\    const b = E.B;
+            \\    const c = E.C;
+            \\    const d = E.D;
+            \\    const E2 = error { X, Y } || @TypeOf(error.Z);
+            \\    const x = E2.X;
+            \\    const y = E2.Y;
+            \\    const z = E2.Z;
+            \\    assert(anyerror || error { Z } == anyerror);
+            \\    exit();
+            \\}
+            \\fn assert(b: bool) void {
+            \\    if (!b) unreachable;
+            \\}
+            \\fn exit() noreturn {
+            \\    asm volatile ("syscall"
+            \\        :
+            \\        : [number] "{rax}" (231),
             \\          [arg1] "{rdi}" (0)
             \\        : "rcx", "r11", "memory"
             \\    );

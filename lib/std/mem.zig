@@ -25,6 +25,14 @@ pub const page_size = switch (builtin.arch) {
     else => 4 * 1024,
 };
 
+/// The standard library currently thoroughly depends on byte size
+/// being 8 bits.  (see the use of u8 throughout allocation code as
+/// the "byte" type.)  Code which depends on this can reference this
+/// declaration.  If we ever try to port the standard library to a
+/// non-8-bit-byte platform, this will allow us to search for things
+/// which need to be updated.
+pub const byte_size_in_bits = 8;
+
 pub const Allocator = @import("mem/Allocator.zig");
 
 /// Detects and asserts if the std.mem.Allocator interface is violated by the caller
@@ -639,7 +647,10 @@ pub fn len(value: anytype) usize {
                 indexOfSentinel(info.child, sentinel, value)
             else
                 @compileError("length of pointer with no sentinel"),
-            .C => indexOfSentinel(info.child, 0, value),
+            .C => {
+                assert(value != null);
+                return indexOfSentinel(info.child, 0, value);
+            },
             .Slice => value.len,
         },
         .Struct => |info| if (info.is_tuple) {
@@ -700,7 +711,10 @@ pub fn lenZ(ptr: anytype) usize {
                 indexOfSentinel(info.child, sentinel, ptr)
             else
                 @compileError("length of pointer with no sentinel"),
-            .C => indexOfSentinel(info.child, 0, ptr),
+            .C => {
+                assert(ptr != null);
+                return indexOfSentinel(info.child, 0, ptr);
+            },
             .Slice => if (info.sentinel) |sentinel|
                 indexOfSentinel(info.child, sentinel, ptr.ptr)
             else
@@ -1359,6 +1373,20 @@ test "mem.tokenize (multibyte)" {
     testing.expect(it.next() == null);
 }
 
+test "mem.tokenize (reset)" {
+    var it = tokenize("   abc def   ghi  ", " ");
+    testing.expect(eql(u8, it.next().?, "abc"));
+    testing.expect(eql(u8, it.next().?, "def"));
+    testing.expect(eql(u8, it.next().?, "ghi"));
+
+    it.reset();
+
+    testing.expect(eql(u8, it.next().?, "abc"));
+    testing.expect(eql(u8, it.next().?, "def"));
+    testing.expect(eql(u8, it.next().?, "ghi"));
+    testing.expect(it.next() == null);
+}
+
 /// Returns an iterator that iterates over the slices of `buffer` that
 /// are separated by bytes in `delimiter`.
 /// split("abc|def||ghi", "|")
@@ -1455,6 +1483,11 @@ pub const TokenIterator = struct {
         var index: usize = self.index;
         while (index < self.buffer.len and self.isSplitByte(self.buffer[index])) : (index += 1) {}
         return self.buffer[index..];
+    }
+
+    /// Resets the iterator to the initial token.
+    pub fn reset(self: *TokenIterator) void {
+        self.index = 0;
     }
 
     fn isSplitByte(self: TokenIterator, byte: u8) bool {
