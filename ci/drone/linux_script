@@ -22,7 +22,12 @@ cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$DISTDIR" -DZIG_STATIC=ON -DCMAKE_PREFIX_PATH=/deps/local -GNinja
 
 samu install
-./zig build test -Dskip-release -Dskip-non-native -Dskip-compile-errors
+# run-translated-c tests are skipped due to: https://github.com/ziglang/zig/issues/8537
+./zig build test \
+    -Dskip-release \
+    -Dskip-non-native \
+    -Dskip-compile-errors \
+    -Dskip-run-translated-c
 
 if [ -z "$DRONE_PULL_REQUEST" ]; then
   mv ../LICENSE "$DISTDIR/"

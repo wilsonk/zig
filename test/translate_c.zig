@@ -111,7 +111,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    const A = @enumToInt(enum_Foo.A);
         \\    const B = @enumToInt(enum_Foo.B);
         \\    const C = @enumToInt(enum_Foo.C);
-        \\    var a: enum_Foo = @intToEnum(enum_Foo, B);
+        \\    var a: enum_Foo = @import("std").meta.cast(enum_Foo, B);
         \\    {
         \\        const enum_Foo = extern enum(c_int) {
         \\            A,
@@ -122,7 +122,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\        const A_2 = @enumToInt(enum_Foo.A);
         \\        const B_3 = @enumToInt(enum_Foo.B);
         \\        const C_4 = @enumToInt(enum_Foo.C);
-        \\        var a_5: enum_Foo = @intToEnum(enum_Foo, B_3);
+        \\        var a_5: enum_Foo = @import("std").meta.cast(enum_Foo, B_3);
         \\    }
         \\}
     });
@@ -1676,7 +1676,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub const e = @enumToInt(enum_unnamed_1.e);
         \\pub const f = @enumToInt(enum_unnamed_1.f);
         \\pub const g = @enumToInt(enum_unnamed_1.g);
-        \\pub export var h: enum_unnamed_1 = @intToEnum(enum_unnamed_1, e);
+        \\pub export var h: enum_unnamed_1 = @import("std").meta.cast(enum_unnamed_1, e);
         \\const enum_unnamed_2 = extern enum(c_int) {
         \\    i,
         \\    j,
@@ -2072,40 +2072,49 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\pub export fn switch_fn(arg_i: c_int) void {
         \\    var i = arg_i;
         \\    var res: c_int = 0;
-        \\    switch (i) {
-        \\        @as(c_int, 0) => {
-        \\            res = 1;
-        \\            res = 2;
-        \\            res = @as(c_int, 3) * i;
-        \\        },
-        \\        @as(c_int, 1)...@as(c_int, 3) => {
-        \\            res = 2;
-        \\            res = @as(c_int, 3) * i;
-        \\        },
-        \\        else => {
-        \\            res = @as(c_int, 3) * i;
-        \\        },
-        \\        @as(c_int, 7) => {
-        \\            {
-        \\                res = 7;
+        \\    while (true) {
+        \\        switch (i) {
+        \\            @as(c_int, 0) => {
+        \\                res = 1;
+        \\                res = 2;
+        \\                res = @as(c_int, 3) * i;
         \\                break;
-        \\            }
-        \\        },
-        \\        @as(c_int, 4), @as(c_int, 5) => {
-        \\            res = 69;
-        \\            {
-        \\                res = 5;
+        \\            },
+        \\            @as(c_int, 1)...@as(c_int, 3) => {
+        \\                res = 2;
+        \\                res = @as(c_int, 3) * i;
+        \\                break;
+        \\            },
+        \\            else => {
+        \\                res = @as(c_int, 3) * i;
+        \\                break;
+        \\            },
+        \\            @as(c_int, 7) => {
+        \\                {
+        \\                    res = 7;
+        \\                    break;
+        \\                }
+        \\            },
+        \\            @as(c_int, 4), @as(c_int, 5) => {
+        \\                res = 69;
+        \\                {
+        \\                    res = 5;
+        \\                    return;
+        \\                }
+        \\            },
+        \\            @as(c_int, 6) => {
+        \\                while (true) {
+        \\                    switch (res) {
+        \\                        @as(c_int, 9) => break,
+        \\                        else => {},
+        \\                    }
+        \\                    break;
+        \\                }
+        \\                res = 1;
         \\                return;
-        \\            }
-        \\        },
-        \\        @as(c_int, 6) => {
-        \\            switch (res) {
-        \\                @as(c_int, 9) => {},
-        \\                else => {},
-        \\            }
-        \\            res = 1;
-        \\            return;
-        \\        },
+        \\            },
+        \\        }
+        \\        break;
         \\    }
         \\}
     });
@@ -2299,7 +2308,7 @@ pub fn addCases(cases: *tests.TranslateCContext) void {
         \\    var a = arg_a;
         \\    var b = arg_b;
         \\    var c = arg_c;
-        \\    var d: enum_Foo = @intToEnum(enum_Foo, FooA);
+        \\    var d: enum_Foo = @import("std").meta.cast(enum_Foo, FooA);
         \\    var e: c_int = @boolToInt((a != 0) and (b != 0));
         \\    var f: c_int = @boolToInt((b != 0) and (c != null));
         \\    var g: c_int = @boolToInt((a != 0) and (c != null));

@@ -2161,8 +2161,8 @@ fn transCCast(
         return Tag.as.create(c.arena, .{ .lhs = dst_node, .rhs = bool_to_int });
     }
     if (cIsEnum(dst_type)) {
-        // @intToEnum(dest_type, val)
-        return Tag.int_to_enum.create(c.arena, .{ .lhs = dst_node, .rhs = expr });
+        // import("std").meta.cast(dest_type, val)
+        return Tag.std_meta_cast.create(c.arena, .{ .lhs = dst_node, .rhs = expr });
     }
     if (cIsEnum(src_type) and !cIsEnum(dst_type)) {
         // @enumToInt(val)
@@ -2357,7 +2357,6 @@ fn transInitListExprVector(
     expr: *const clang.InitListExpr,
     ty: *const clang.Type,
 ) TransError!Node {
-
     const qt = getExprQualType(c, @ptrCast(*const clang.Expr, expr));
     const vector_type = try transQualType(c, scope, qt, loc);
     const init_count = expr.getNumInits();
@@ -2700,9 +2699,19 @@ fn transSwitch(
     scope: *Scope,
     stmt: *const clang.SwitchStmt,
 ) TransError!Node {
+    var loop_scope = Scope{
+        .parent = scope,
+        .id = .loop,
+    };
+
+    var block_scope = try Scope.Block.init(c, &loop_scope, false);
+    defer block_scope.deinit();
+
+    const base_scope = &block_scope.base;
+
     var cond_scope = Scope.Condition{
         .base = .{
-            .parent = scope,
+            .parent = base_scope,
             .id = .condition,
         },
     };
@@ -2725,8 +2734,8 @@ fn transSwitch(
             .CaseStmtClass => {
                 var items = std.ArrayList(Node).init(c.gpa);
                 defer items.deinit();
-                const sub = try transCaseStmt(c, scope, it[0], &items);
-                const res = try transSwitchProngStmt(c, scope, sub, it, end_it);
+                const sub = try transCaseStmt(c, base_scope, it[0], &items);
+                const res = try transSwitchProngStmt(c, base_scope, sub, it, end_it);
 
                 if (items.items.len == 0) {
                     has_default = true;
@@ -2751,7 +2760,7 @@ fn transSwitch(
                     else => break,
                 };
 
-                const res = try transSwitchProngStmt(c, scope, sub, it, end_it);
+                const res = try transSwitchProngStmt(c, base_scope, sub, it, end_it);
 
                 const switch_else = try Tag.switch_else.create(c.arena, res);
                 try cases.append(switch_else);
@@ -2765,10 +2774,15 @@ fn transSwitch(
         try cases.append(else_prong);
     }
 
-    return Tag.@"switch".create(c.arena, .{
+    const switch_node = try Tag.@"switch".create(c.arena, .{
         .cond = switch_expr,
         .cases = try c.arena.dupe(Node, cases.items),
     });
+    try block_scope.statements.append(switch_node);
+    try block_scope.statements.append(Tag.@"break".init());
+    const while_body = try block_scope.complete(c);
+
+    return Tag.while_true.create(c.arena, while_body);
 }
 
 /// Collects all items for this case, returns the first statement after the labels.
@@ -2818,7 +2832,7 @@ fn transSwitchProngStmt(
     parent_end_it: clang.CompoundStmt.ConstBodyIterator,
 ) TransError!Node {
     switch (stmt.getStmtClass()) {
-        .BreakStmtClass => return Tag.empty_block.init(),
+        .BreakStmtClass => return Tag.@"break".init(),
         .ReturnStmtClass => return transStmt(c, scope, stmt, .unused),
         .CaseStmtClass, .DefaultStmtClass => unreachable,
         else => {
@@ -2847,7 +2861,10 @@ fn transSwitchProngStmtInline(
                 try block.statements.append(result);
                 return;
             },
-            .BreakStmtClass => return,
+            .BreakStmtClass => {
+                try block.statements.append(Tag.@"break".init());
+                return;
+            },
             .CaseStmtClass => {
                 var sub = @ptrCast(*const clang.CaseStmt, it[0]).getSubStmt();
                 while (true) switch (sub.getStmtClass()) {
@@ -2897,7 +2914,7 @@ fn transSwitchProngStmtInline(
 
 fn transConstantExpr(c: *Context, scope: *Scope, expr: *const clang.Expr, used: ResultUsed) TransError!Node {
     var result: clang.ExprEvalResult = undefined;
-    if (!expr.evaluateAsConstantExpr(&result, .EvaluateForCodeGen, c.clang_context))
+    if (!expr.evaluateAsConstantExpr(&result, .Normal, c.clang_context))
         return fail(c, error.UnsupportedTranslation, expr.getBeginLoc(), "invalid constant expression", .{});
 
     switch (result.Val.getKind()) {
