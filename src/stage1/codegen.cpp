@@ -204,6 +204,9 @@ static ZigLLVM_CallingConv get_llvm_cc(CodeGen *g, CallingConvention cc) {
         case CallingConventionSignal:
             assert(g->zig_target->arch == ZigLLVM_avr);
             return ZigLLVM_AVR_SIGNAL;
+        case CallingConventionSysV:
+            assert(g->zig_target->arch == ZigLLVM_x86_64);
+            return ZigLLVM_X86_64_SysV;
     }
     zig_unreachable();
 }
@@ -348,6 +351,7 @@ static bool cc_want_sret_attr(CallingConvention cc) {
         case CallingConventionAPCS:
         case CallingConventionAAPCS:
         case CallingConventionAAPCSVFP:
+        case CallingConventionSysV:
             return true;
         case CallingConventionAsync:
         case CallingConventionUnspecified:
@@ -4876,6 +4880,9 @@ static LLVMValueRef ir_render_asm_gen(CodeGen *g, IrExecutableGen *executable, I
                 type_ref = get_llvm_type(g, wider_type);
                 value_ref = gen_widen_or_shorten(g, false, type, wider_type, value_ref);
             }
+        } else if (handle_is_ptr(g, type)) {
+            ZigType *gen_type = get_pointer_to_type(g, type, true);
+            type_ref = get_llvm_type(g, gen_type);
         }
 
         param_types[param_index] = type_ref;
@@ -7436,7 +7443,10 @@ static LLVMValueRef gen_const_val(CodeGen *g, ZigValue *const_val, const char *n
         case ZigTypeIdFloat:
             switch (type_entry->data.floating.bit_count) {
                 case 16:
-                    return LLVMConstReal(get_llvm_type(g, type_entry), zig_f16_to_double(const_val->data.x_f16));
+                    {
+                        LLVMValueRef as_int = LLVMConstInt(LLVMInt16Type(), const_val->data.x_f16.v, false);
+                        return LLVMConstBitCast(as_int, get_llvm_type(g, type_entry));
+                    }
                 case 32:
                     return LLVMConstReal(get_llvm_type(g, type_entry), const_val->data.x_f32);
                 case 64:
@@ -9074,6 +9084,7 @@ Buf *codegen_generate_builtin_source(CodeGen *g) {
     static_assert(CallingConventionAPCS == 11, "");
     static_assert(CallingConventionAAPCS == 12, "");
     static_assert(CallingConventionAAPCSVFP == 13, "");
+    static_assert(CallingConventionSysV == 14, "");
 
     static_assert(BuiltinPtrSizeOne == 0, "");
     static_assert(BuiltinPtrSizeMany == 1, "");
@@ -9287,7 +9298,6 @@ static void init(CodeGen *g) {
 
     char *layout_str = LLVMCopyStringRepOfTargetData(g->target_data_ref);
     LLVMSetDataLayout(g->module, layout_str);
-
 
     assert(g->pointer_size_bytes == LLVMPointerSize(g->target_data_ref));
     g->is_big_endian = (LLVMByteOrder(g->target_data_ref) == LLVMBigEndian);
