@@ -825,7 +825,16 @@ static AstNode *ast_parse_fn_proto(ParseContext *pc) {
     AstNode *return_type = nullptr;
     if (anytype == nullptr) {
         exmark = eat_token_if(pc, TokenIdBang);
-        return_type = ast_expect(pc, ast_parse_type_expr);
+        return_type = ast_parse_type_expr(pc);
+        if (return_type == nullptr) {
+            Token *next = peek_token(pc);
+            ast_error(
+                pc,
+                next,
+                "expected return type (use 'void' to return nothing), found: '%s'",
+                token_name(next->id)
+            );
+        }
     }
 
     AstNode *res = ast_create_node(pc, NodeTypeFnProto, first);
@@ -946,10 +955,7 @@ static AstNode *ast_parse_statement(ParseContext *pc) {
 
     Token *suspend = eat_token_if(pc, TokenIdKeywordSuspend);
     if (suspend != nullptr) {
-        AstNode *statement = nullptr;
-        if (eat_token_if(pc, TokenIdSemicolon) == nullptr)
-            statement = ast_expect(pc, ast_parse_block_expr_statement);
-
+        AstNode *statement = ast_expect(pc, ast_parse_block_expr_statement);
         AstNode *res = ast_create_node(pc, NodeTypeSuspend, suspend);
         res->data.suspend.block = statement;
         return res;

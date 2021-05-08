@@ -14,6 +14,7 @@ const process = std.process;
 const Target = std.Target;
 const CrossTarget = std.zig.CrossTarget;
 const macos = @import("system/macos.zig");
+const linux = @import("system/linux.zig");
 pub const windows = @import("system/windows.zig");
 
 pub const getSDKPath = macos.getSDKPath;
@@ -347,6 +348,15 @@ pub const NativeTargetInfo = struct {
                         ),
                     }
                 }
+            },
+            .arm, .armeb => {
+                // XXX What do we do if the target has the noarm feature?
+                //     What do we do if the user specifies +thumb_mode?
+            },
+            .thumb, .thumbeb => {
+                result.target.cpu.features.addFeature(
+                    @enumToInt(std.Target.arm.Feature.thumb_mode),
+                );
             },
             else => {},
         }
@@ -911,15 +921,19 @@ pub const NativeTargetInfo = struct {
             .x86_64, .i386 => {
                 return @import("system/x86.zig").detectNativeCpuAndFeatures(cpu_arch, os, cross_target);
             },
-            else => {
-                // This architecture does not have CPU model & feature detection yet.
-                // See https://github.com/ziglang/zig/issues/4591
-                return null;
-            },
+            else => {},
         }
+
+        // This architecture does not have CPU model & feature detection yet.
+        // See https://github.com/ziglang/zig/issues/4591
+        if (std.Target.current.os.tag != .linux)
+            return null;
+
+        return linux.detectNativeCpuAndFeatures();
     }
 };
 
 test {
     _ = @import("system/macos.zig");
+    _ = @import("system/linux.zig");
 }

@@ -53,7 +53,7 @@ const TLSVariant = enum {
 };
 
 const tls_variant = switch (builtin.arch) {
-    .arm, .armeb, .aarch64, .aarch64_be, .riscv32, .riscv64, .mips, .mipsel, .powerpc, .powerpc64, .powerpc64le => TLSVariant.VariantI,
+    .arm, .armeb, .thumb, .aarch64, .aarch64_be, .riscv32, .riscv64, .mips, .mipsel, .powerpc, .powerpc64, .powerpc64le => TLSVariant.VariantI,
     .x86_64, .i386, .sparcv9 => TLSVariant.VariantII,
     else => @compileError("undefined tls_variant for this architecture"),
 };
@@ -62,7 +62,7 @@ const tls_variant = switch (builtin.arch) {
 const tls_tcb_size = switch (builtin.arch) {
     // ARM EABI mandates enough space for two pointers: the first one points to
     // the DTV while the second one is unspecified but reserved
-    .arm, .armeb, .aarch64, .aarch64_be => 2 * @sizeOf(usize),
+    .arm, .armeb, .thumb, .aarch64, .aarch64_be => 2 * @sizeOf(usize),
     // One pointer-sized word that points either to the DTV or the TCB itself
     else => @sizeOf(usize),
 };
@@ -150,7 +150,7 @@ pub fn setThreadPointer(addr: usize) void {
                 : [addr] "r" (addr)
             );
         },
-        .arm => {
+        .arm, .thumb => {
             const rc = std.os.linux.syscall1(.set_tls, addr);
             assert(rc == 0);
         },
@@ -248,7 +248,7 @@ fn initTLS() void {
         tls_data = @intToPtr([*]u8, img_base + phdr.p_vaddr)[0..phdr.p_filesz];
         tls_data_alloc_size = phdr.p_memsz;
     } else {
-        tls_align_factor = @alignOf(*usize);
+        tls_align_factor = @alignOf(usize);
         tls_data = &[_]u8{};
         tls_data_alloc_size = 0;
     }
@@ -308,7 +308,7 @@ fn initTLS() void {
 }
 
 fn alignPtrCast(comptime T: type, ptr: [*]u8) callconv(.Inline) *T {
-    return @ptrCast(*T, @alignCast(@alignOf(*T), ptr));
+    return @ptrCast(*T, @alignCast(@alignOf(T), ptr));
 }
 
 /// Initializes all the fields of the static TLS area and returns the computed
