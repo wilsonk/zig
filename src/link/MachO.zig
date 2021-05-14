@@ -442,6 +442,7 @@ pub fn flushModule(self: *MachO, comp: *Compilation) !void {
                 const text_segment = self.load_commands.items[self.text_segment_cmd_index.?].Segment;
                 const main_cmd = &self.load_commands.items[self.main_cmd_index.?].Main;
                 main_cmd.entryoff = addr - text_segment.inner.vmaddr;
+                main_cmd.stacksize = self.base.options.stack_size_override orelse 0;
                 self.load_commands_dirty = true;
             }
             try self.writeRebaseInfoTable();
@@ -687,10 +688,7 @@ fn linkWithLLD(self: *MachO, comp: *Compilation) !void {
                 try argv.append("zig");
                 try argv.append("ld");
 
-                try argv.ensureCapacity(input_files.items.len);
-                for (input_files.items) |f| {
-                    argv.appendAssumeCapacity(f);
-                }
+                try argv.appendSlice(input_files.items);
 
                 try argv.append("-o");
                 try argv.append(full_out_path);
@@ -698,7 +696,9 @@ fn linkWithLLD(self: *MachO, comp: *Compilation) !void {
                 Compilation.dump_argv(argv.items);
             }
 
-            try zld.link(input_files.items, full_out_path);
+            try zld.link(input_files.items, full_out_path, .{
+                .stack_size = self.base.options.stack_size_override,
+            });
 
             break :outer;
         }
@@ -1193,7 +1193,9 @@ pub fn updateDecl(self: *MachO, module: *Module, decl: *Module.Decl) !void {
         const need_realloc = code.len > capacity or !mem.isAlignedGeneric(u64, symbol.n_value, required_alignment);
         if (need_realloc) {
             const vaddr = try self.growTextBlock(&decl.link.macho, code.len, required_alignment);
-            log.debug("growing {s} from 0x{x} to 0x{x}", .{ decl.name, symbol.n_value, vaddr });
+
+            log.debug("growing {s} and moving from 0x{x} to 0x{x}", .{ decl.name, symbol.n_value, vaddr });
+
             if (vaddr != symbol.n_value) {
                 log.debug(" (writing new offset table entry)", .{});
                 self.offset_table.items[decl.link.macho.offset_table_index] = .{
@@ -1203,6 +1205,8 @@ pub fn updateDecl(self: *MachO, module: *Module, decl: *Module.Decl) !void {
                 };
                 try self.writeOffsetTableEntry(decl.link.macho.offset_table_index);
             }
+
+            symbol.n_value = vaddr;
         } else if (code.len < decl.link.macho.size) {
             self.shrinkTextBlock(&decl.link.macho, code.len);
         }
@@ -1219,7 +1223,9 @@ pub fn updateDecl(self: *MachO, module: *Module, decl: *Module.Decl) !void {
         const decl_name = mem.spanZ(decl.name);
         const name_str_index = try self.makeString(decl_name);
         const addr = try self.allocateTextBlock(&decl.link.macho, code.len, required_alignment);
+
         log.debug("allocated text block for {s} at 0x{x}", .{ decl_name, addr });
+
         errdefer self.freeTextBlock(&decl.link.macho);
 
         symbol.* = .{
@@ -1363,15 +1369,32 @@ pub fn updateDeclExports(
                 continue;
             }
         }
-        const n_desc = switch (exp.options.linkage) {
-            .Internal => macho.REFERENCE_FLAG_PRIVATE_DEFINED,
-            .Strong => blk: {
-                if (mem.eql(u8, exp.options.name, "_start")) {
+
+        var n_type: u8 = macho.N_SECT | macho.N_EXT;
+        var n_desc: u16 = 0;
+
+        switch (exp.options.linkage) {
+            .Internal => {
+                // Symbol should be hidden, or in MachO lingo, private extern.
+                // We should also mark the symbol as Weak: n_desc == N_WEAK_DEF.
+                // TODO work out when to add N_WEAK_REF.
+                n_type |= macho.N_PEXT;
+                n_desc |= macho.N_WEAK_DEF;
+            },
+            .Strong => {
+                // Check if the export is _main, and note if os.
+                // Otherwise, don't do anything since we already have all the flags
+                // set that we need for global (strong) linkage.
+                // n_type == N_SECT | N_EXT
+                if (mem.eql(u8, exp.options.name, "_main")) {
                     self.entry_addr = decl_sym.n_value;
                 }
-                break :blk macho.REFERENCE_FLAG_DEFINED;
             },
-            .Weak => macho.N_WEAK_REF,
+            .Weak => {
+                // Weak linkage is specified as part of n_desc field.
+                // Symbol's n_type is like for a symbol with strong linkage.
+                n_desc |= macho.N_WEAK_DEF;
+            },
             .LinkOnce => {
                 try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
                 module.failed_exports.putAssumeCapacityNoClobber(
@@ -1380,8 +1403,8 @@ pub fn updateDeclExports(
                 );
                 continue;
             },
-        };
-        const n_type = decl_sym.n_type | macho.N_EXT;
+        }
+
         if (exp.link.macho.sym_index) |i| {
             const sym = &self.globals.items[i];
             sym.* = .{

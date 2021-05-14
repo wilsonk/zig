@@ -9,6 +9,7 @@ const build_options = @import("build_options");
 const enable_qemu: bool = build_options.enable_qemu;
 const enable_wine: bool = build_options.enable_wine;
 const enable_wasmtime: bool = build_options.enable_wasmtime;
+const enable_darling: bool = build_options.enable_darling;
 const glibc_multi_install_dir: ?[]const u8 = build_options.glibc_multi_install_dir;
 const ThreadPool = @import("ThreadPool.zig");
 const CrossTarget = std.zig.CrossTarget;
@@ -705,14 +706,14 @@ pub const TestContext = struct {
                     defer file.close();
                     const out = try file.reader().readAllAlloc(arena, 5 * 1024 * 1024);
 
-                    std.testing.expectEqualStrings(expected_output, out);
+                    try std.testing.expectEqualStrings(expected_output, out);
                 },
                 .CompareObjectFile => |expected_output| {
                     var file = try tmp.dir.openFile(bin_name, .{ .read = true });
                     defer file.close();
                     const out = try file.reader().readAllAlloc(arena, 5 * 1024 * 1024);
 
-                    std.testing.expectEqualStrings(expected_output, out);
+                    try std.testing.expectEqualStrings(expected_output, out);
                 },
                 .Error => |case_error_list| {
                     var test_node = update_node.start("assert", 0);
@@ -899,6 +900,16 @@ pub const TestContext = struct {
                             } else {
                                 return; // wasmtime not available; pass test.
                             },
+
+                            .darling => |darling_bin_name| if (enable_darling) {
+                                try argv.append(darling_bin_name);
+                                // Since we use relative to cwd here, we invoke darling with
+                                // "shell" subcommand.
+                                try argv.append("shell");
+                                try argv.append(exe_path);
+                            } else {
+                                return; // Darling not available; pass test.
+                            },
                         }
 
                         try comp.makeBinFileExecutable();
@@ -939,7 +950,7 @@ pub const TestContext = struct {
                             return error.ZigTestFailed;
                         },
                     }
-                    std.testing.expectEqualStrings(expected_stdout, exec_result.stdout);
+                    try std.testing.expectEqualStrings(expected_stdout, exec_result.stdout);
                     // We allow stderr to have garbage in it because wasmtime prints a
                     // warning about --invoke even though we don't pass it.
                     //std.testing.expectEqualStrings("", exec_result.stderr);
