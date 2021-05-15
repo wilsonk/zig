@@ -74,6 +74,7 @@ enum CallingConvention {
     CallingConventionC,
     CallingConventionNaked,
     CallingConventionAsync,
+    CallingConventionInline,
     CallingConventionInterrupt,
     CallingConventionSignal,
     CallingConventionStdcall,
@@ -83,6 +84,7 @@ enum CallingConvention {
     CallingConventionAPCS,
     CallingConventionAAPCS,
     CallingConventionAAPCSVFP,
+    CallingConventionSysV
 };
 
 // This one corresponds to the builtin.zig enum.
@@ -338,9 +340,22 @@ struct ConstArgTuple {
 };
 
 enum ConstValSpecial {
+    // The value is only available at runtime. However there may be runtime hints
+    // narrowing the possible values down via the `data.rh_*` fields.
     ConstValSpecialRuntime,
+    // The value is comptime-known and resolved. The `data.x_*` fields can be
+    // accessed.
     ConstValSpecialStatic,
+    // The value is comptime-known to be `undefined`.
     ConstValSpecialUndef,
+    // The value is comptime-known, but not yet resolved. The lazy value system
+    // helps avoid dependency loops by providing answers to certain questions
+    // about values without forcing them to be resolved. For example, the
+    // equation `@sizeOf(Foo) == 0` can be resolved without forcing the struct
+    // layout of `Foo` because we can know whether `Foo` is zero bits without
+    // performing field layout.
+    // A `ZigValue` can be converted from Lazy to Static/Undef by calling the
+    // appropriate resolve function.
     ConstValSpecialLazy,
 };
 
@@ -377,6 +392,8 @@ enum LazyValueId {
     LazyValueIdAlignOf,
     LazyValueIdSizeOf,
     LazyValueIdPtrType,
+    LazyValueIdPtrTypeSimple,
+    LazyValueIdPtrTypeSimpleConst,
     LazyValueIdOptType,
     LazyValueIdSliceType,
     LazyValueIdFnType,
@@ -453,6 +470,13 @@ struct LazyValuePtrType {
     bool is_allowzero;
 };
 
+struct LazyValuePtrTypeSimple {
+    LazyValue base;
+
+    IrAnalyze *ira;
+    IrInstGen *elem_type;
+};
+
 struct LazyValueOptType {
     LazyValue base;
 
@@ -484,6 +508,8 @@ struct LazyValueErrUnionType {
 
 struct ZigValue {
     ZigType *type;
+    // This field determines how the value is stored. It must be checked
+    // before accessing the `data` union.
     ConstValSpecial special;
     uint32_t llvm_align;
     ConstParent parent;
@@ -688,17 +714,10 @@ enum NodeType {
     NodeTypeAnyTypeField,
 };
 
-enum FnInline {
-    FnInlineAuto,
-    FnInlineAlways,
-    FnInlineNever,
-};
-
 struct AstNodeFnProto {
     Buf *name;
     ZigList<AstNode *> params;
     AstNode *return_type;
-    Token *return_anytype_token;
     AstNode *fn_def_node;
     // populated if this is an extern declaration
     Buf *lib_name;
@@ -710,13 +729,12 @@ struct AstNodeFnProto {
     AstNode *callconv_expr;
     Buf doc_comments;
 
-    FnInline fn_inline;
-
     VisibMod visib_mod;
     bool auto_err_set;
     bool is_var_args;
     bool is_extern;
     bool is_export;
+    bool is_noinline;
 };
 
 struct AstNodeFnDef {
@@ -782,6 +800,7 @@ struct AstNodeVariableDeclaration {
 };
 
 struct AstNodeTestDecl {
+    // nullptr if the test declaration has no name
     Buf *name;
 
     AstNode *body;
@@ -803,7 +822,6 @@ enum BinOpType {
     BinOpTypeAssignBitAnd,
     BinOpTypeAssignBitXor,
     BinOpTypeAssignBitOr,
-    BinOpTypeAssignMergeErrorSets,
     BinOpTypeBoolOr,
     BinOpTypeBoolAnd,
     BinOpTypeCmpEq,
@@ -1704,7 +1722,6 @@ struct ZigFn {
 
     LLVMValueRef valgrind_client_request_array;
 
-    FnInline fn_inline;
     FnAnalState anal_state;
 
     uint32_t align_bytes;
@@ -1713,6 +1730,7 @@ struct ZigFn {
     bool calls_or_awaits_errorable_fn;
     bool is_cold;
     bool is_test;
+    bool is_noinline;
 };
 
 uint32_t fn_table_entry_hash(ZigFn*);
@@ -1796,7 +1814,6 @@ enum BuiltinFnId {
     BuiltinFnIdIntToPtr,
     BuiltinFnIdPtrToInt,
     BuiltinFnIdTagName,
-    BuiltinFnIdTagType,
     BuiltinFnIdFieldParentPtr,
     BuiltinFnIdByteOffsetOf,
     BuiltinFnIdBitOffsetOf,
@@ -1808,6 +1825,7 @@ enum BuiltinFnId {
     BuiltinFnIdThis,
     BuiltinFnIdSetAlignStack,
     BuiltinFnIdExport,
+    BuiltinFnIdExtern,
     BuiltinFnIdErrorReturnTrace,
     BuiltinFnIdAtomicRmw,
     BuiltinFnIdAtomicLoad,
@@ -2059,6 +2077,7 @@ struct CodeGen {
     ZigType *compile_var_import;
     ZigType *root_import;
     ZigType *start_import;
+    ZigType *std_builtin_import;
 
     struct {
         ZigType *entry_bool;
@@ -2121,10 +2140,6 @@ struct CodeGen {
     Buf llvm_ir_file_output_path;
     Buf analysis_json_output_path;
     Buf docs_output_path;
-    Buf *cache_dir;
-    Buf *c_artifact_dir;
-    const char **libc_include_dir_list;
-    size_t libc_include_dir_len;
 
     Buf *builtin_zig_path;
     Buf *zig_std_special_dir; // Cannot be overridden; derived from zig_lib_dir.
@@ -2176,12 +2191,16 @@ struct CodeGen {
     bool is_test_build;
     bool is_single_threaded;
     bool have_pic;
+    bool have_pie;
+    bool have_lto;
     bool link_mode_dynamic;
     bool dll_export_fns;
     bool have_stack_probing;
+    bool red_zone;
     bool function_sections;
     bool test_is_evented;
     bool valgrind_enabled;
+    bool tsan_enabled;
 
     Buf *root_out_name;
     Buf *test_filter;
@@ -2447,6 +2466,8 @@ enum ReduceOp {
     ReduceOp_xor,
     ReduceOp_min,
     ReduceOp_max,
+    ReduceOp_add,
+    ReduceOp_mul,
 };
 
 // synchronized with the code in define_builtin_compile_vars
@@ -2595,13 +2616,13 @@ enum IrInstSrcId {
     IrInstSrcIdEnumToInt,
     IrInstSrcIdIntToErr,
     IrInstSrcIdErrToInt,
-    IrInstSrcIdCheckSwitchProngs,
+    IrInstSrcIdCheckSwitchProngsUnderYes,
+    IrInstSrcIdCheckSwitchProngsUnderNo,
     IrInstSrcIdCheckStatementIsVoid,
     IrInstSrcIdTypeName,
     IrInstSrcIdDeclRef,
     IrInstSrcIdPanic,
     IrInstSrcIdTagName,
-    IrInstSrcIdTagType,
     IrInstSrcIdFieldParentPtr,
     IrInstSrcIdByteOffsetOf,
     IrInstSrcIdBitOffsetOf,
@@ -2610,13 +2631,17 @@ enum IrInstSrcId {
     IrInstSrcIdHasField,
     IrInstSrcIdSetEvalBranchQuota,
     IrInstSrcIdPtrType,
+    IrInstSrcIdPtrTypeSimple,
+    IrInstSrcIdPtrTypeSimpleConst,
     IrInstSrcIdAlignCast,
     IrInstSrcIdImplicitCast,
     IrInstSrcIdResolveResult,
     IrInstSrcIdResetResult,
     IrInstSrcIdSetAlignStack,
-    IrInstSrcIdArgType,
+    IrInstSrcIdArgTypeAllowVarFalse,
+    IrInstSrcIdArgTypeAllowVarTrue,
     IrInstSrcIdExport,
+    IrInstSrcIdExtern,
     IrInstSrcIdErrorReturnTrace,
     IrInstSrcIdErrorUnion,
     IrInstSrcIdAtomicRmw,
@@ -2734,6 +2759,7 @@ enum IrInstGenId {
     IrInstGenIdConst,
     IrInstGenIdWasmMemorySize,
     IrInstGenIdWasmMemoryGrow,
+    IrInstGenIdExtern,
 };
 
 // Common fields between IrInstSrc and IrInstGen. This allows future passes
@@ -3275,6 +3301,12 @@ struct IrInstSrcArrayType {
 
     IrInstSrc *size;
     IrInstSrc *sentinel;
+    IrInstSrc *child_type;
+};
+
+struct IrInstSrcPtrTypeSimple {
+    IrInstSrc base;
+
     IrInstSrc *child_type;
 };
 
@@ -4004,7 +4036,6 @@ struct IrInstSrcCheckSwitchProngs {
     IrInstSrcCheckSwitchProngsRange *ranges;
     size_t range_count;
     AstNode* else_prong;
-    bool have_underscore_prong;
 };
 
 struct IrInstSrcCheckStatementIsVoid {
@@ -4048,12 +4079,6 @@ struct IrInstGenTagName {
     IrInstGen base;
 
     IrInstGen *target;
-};
-
-struct IrInstSrcTagType {
-    IrInstSrc base;
-
-    IrInstSrc *target;
 };
 
 struct IrInstSrcFieldParentPtr {
@@ -4134,7 +4159,6 @@ struct IrInstSrcArgType {
 
     IrInstSrc *fn_type;
     IrInstSrc *arg_index;
-    bool allow_var;
 };
 
 struct IrInstSrcExport {
@@ -4142,6 +4166,21 @@ struct IrInstSrcExport {
 
     IrInstSrc *target;
     IrInstSrc *options;
+};
+
+struct IrInstSrcExtern {
+    IrInstSrc base;
+
+    IrInstSrc *type;
+    IrInstSrc *options;
+};
+
+struct IrInstGenExtern {
+    IrInstGen base;
+
+    Buf *name;
+    GlobalLinkageId linkage;
+    bool is_thread_local;
 };
 
 enum IrInstErrorReturnTraceOptional {

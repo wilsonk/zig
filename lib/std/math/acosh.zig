@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -66,34 +66,34 @@ fn acosh64(x: f64) f64 {
 }
 
 test "math.acosh" {
-    expect(acosh(@as(f32, 1.5)) == acosh32(1.5));
-    expect(acosh(@as(f64, 1.5)) == acosh64(1.5));
+    try expect(acosh(@as(f32, 1.5)) == acosh32(1.5));
+    try expect(acosh(@as(f64, 1.5)) == acosh64(1.5));
 }
 
 test "math.acosh32" {
     const epsilon = 0.000001;
 
-    expect(math.approxEq(f32, acosh32(1.5), 0.962424, epsilon));
-    expect(math.approxEq(f32, acosh32(37.45), 4.315976, epsilon));
-    expect(math.approxEq(f32, acosh32(89.123), 5.183133, epsilon));
-    expect(math.approxEq(f32, acosh32(123123.234375), 12.414088, epsilon));
+    try expect(math.approxEqAbs(f32, acosh32(1.5), 0.962424, epsilon));
+    try expect(math.approxEqAbs(f32, acosh32(37.45), 4.315976, epsilon));
+    try expect(math.approxEqAbs(f32, acosh32(89.123), 5.183133, epsilon));
+    try expect(math.approxEqAbs(f32, acosh32(123123.234375), 12.414088, epsilon));
 }
 
 test "math.acosh64" {
     const epsilon = 0.000001;
 
-    expect(math.approxEq(f64, acosh64(1.5), 0.962424, epsilon));
-    expect(math.approxEq(f64, acosh64(37.45), 4.315976, epsilon));
-    expect(math.approxEq(f64, acosh64(89.123), 5.183133, epsilon));
-    expect(math.approxEq(f64, acosh64(123123.234375), 12.414088, epsilon));
+    try expect(math.approxEqAbs(f64, acosh64(1.5), 0.962424, epsilon));
+    try expect(math.approxEqAbs(f64, acosh64(37.45), 4.315976, epsilon));
+    try expect(math.approxEqAbs(f64, acosh64(89.123), 5.183133, epsilon));
+    try expect(math.approxEqAbs(f64, acosh64(123123.234375), 12.414088, epsilon));
 }
 
 test "math.acosh32.special" {
-    expect(math.isNan(acosh32(math.nan(f32))));
-    expect(math.isSignalNan(acosh32(0.5)));
+    try expect(math.isNan(acosh32(math.nan(f32))));
+    try expect(math.isSignalNan(acosh32(0.5)));
 }
 
 test "math.acosh64.special" {
-    expect(math.isNan(acosh64(math.nan(f64))));
-    expect(math.isSignalNan(acosh64(0.5)));
+    try expect(math.isNan(acosh64(math.nan(f64))));
+    try expect(math.isSignalNan(acosh64(0.5)));
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -10,6 +10,7 @@ const std = @import("../std.zig");
 const assert = std.debug.assert;
 const math = std.math;
 const mem = std.mem;
+const utils = std.crypto.utils;
 
 /// GHASH is a universal hash function that features multiplication
 /// by a fixed parameter within a Galois field.
@@ -94,7 +95,7 @@ pub const Ghash = struct {
         }
     }
 
-    inline fn clmul_pclmul(x: u64, y: u64) u64 {
+    fn clmul_pclmul(x: u64, y: u64) callconv(.Inline) u64 {
         const Vector = std.meta.Vector;
         const product = asm (
             \\ vpclmulqdq $0x00, %[x], %[y], %[out]
@@ -105,7 +106,7 @@ pub const Ghash = struct {
         return product[0];
     }
 
-    inline fn clmul_pmull(x: u64, y: u64) u64 {
+    fn clmul_pmull(x: u64, y: u64) callconv(.Inline) u64 {
         const Vector = std.meta.Vector;
         const product = asm (
             \\ pmull %[out].1q, %[x].1d, %[y].1d
@@ -305,7 +306,7 @@ pub const Ghash = struct {
         mem.writeIntBig(u64, out[0..8], st.y1);
         mem.writeIntBig(u64, out[8..16], st.y0);
 
-        mem.secureZero(u8, @ptrCast([*]u8, st)[0..@sizeOf(Ghash)]);
+        utils.secureZero(u8, @ptrCast([*]u8, st)[0..@sizeOf(Ghash)]);
     }
 
     pub fn create(out: *[mac_length]u8, msg: []const u8, key: *const [key_length]u8) void {
@@ -325,11 +326,11 @@ test "ghash" {
     st.update(&m);
     var out: [16]u8 = undefined;
     st.final(&out);
-    htest.assertEqual("889295fa746e8b174bf4ec80a65dea41", &out);
+    try htest.assertEqual("889295fa746e8b174bf4ec80a65dea41", &out);
 
     st = Ghash.init(&key);
     st.update(m[0..100]);
     st.update(m[100..]);
     st.final(&out);
-    htest.assertEqual("889295fa746e8b174bf4ec80a65dea41", &out);
+    try htest.assertEqual("889295fa746e8b174bf4ec80a65dea41", &out);
 }

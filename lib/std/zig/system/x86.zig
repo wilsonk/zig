@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -19,11 +19,11 @@ fn setFeature(cpu: *Target.Cpu, feature: Target.x86.Feature, enabled: bool) void
     if (enabled) cpu.features.addFeature(idx) else cpu.features.removeFeature(idx);
 }
 
-inline fn bit(input: u32, offset: u5) bool {
+fn bit(input: u32, offset: u5) callconv(.Inline) bool {
     return (input >> offset) & 1 != 0;
 }
 
-inline fn hasMask(input: u32, mask: u32) bool {
+fn hasMask(input: u32, mask: u32) callconv(.Inline) bool {
     return (input & mask) == mask;
 }
 
@@ -309,6 +309,10 @@ fn detectAMDProcessor(cpu: *Target.Cpu, family: u32, model: u32) void {
                 cpu.model = &Target.x86.cpu.znver2;
                 return;
             }
+            return;
+        },
+        25 => {
+            cpu.model = &Target.x86.cpu.znver3;
             return;
         },
         else => {

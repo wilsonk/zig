@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -20,6 +20,7 @@ pub const off_t = c_long;
 pub const mode_t = c_uint;
 pub const uid_t = u32;
 pub const gid_t = u32;
+pub const suseconds_t = c_long;
 
 pub const ENOTSUP = EOPNOTSUPP;
 pub const EWOULDBLOCK = EAGAIN;
@@ -152,7 +153,7 @@ pub const PATH_MAX = 1024;
 
 pub const ino_t = c_ulong;
 
-pub const Stat = extern struct {
+pub const libc_stat = extern struct {
     ino: ino_t,
     nlink: c_uint,
     dev: c_uint,
@@ -172,15 +173,15 @@ pub const Stat = extern struct {
     lspare: i32,
     qspare1: i64,
     qspare2: i64,
-    pub fn atime(self: Stat) timespec {
+    pub fn atime(self: @This()) timespec {
         return self.atim;
     }
 
-    pub fn mtime(self: Stat) timespec {
+    pub fn mtime(self: @This()) timespec {
         return self.mtim;
     }
 
-    pub fn ctime(self: Stat) timespec {
+    pub fn ctime(self: @This()) timespec {
         return self.ctim;
     }
 };
@@ -188,6 +189,13 @@ pub const Stat = extern struct {
 pub const timespec = extern struct {
     tv_sec: c_long,
     tv_nsec: c_long,
+};
+
+pub const timeval = extern struct {
+    /// seconds
+    tv_sec: time_t,
+    /// microseconds
+    tv_usec: suseconds_t,
 };
 
 pub const CTL_UNSPEC = 0;
@@ -372,6 +380,14 @@ pub const sockaddr = extern struct {
     sa_data: [14]u8,
 };
 
+pub const sockaddr_storage = extern struct {
+    len: u8,
+    family: sa_family_t,
+    __pad1: [5]u8,
+    __align: i64,
+    __pad2: [112]u8,
+};
+
 pub const Kevent = extern struct {
     ident: usize,
     filter: c_short,
@@ -530,12 +546,16 @@ pub const sigset_t = extern struct {
 };
 pub const sig_atomic_t = c_int;
 pub const Sigaction = extern struct {
-    __sigaction_u: extern union {
-        __sa_handler: ?fn (c_int) callconv(.C) void,
-        __sa_sigaction: ?fn (c_int, [*c]siginfo_t, ?*c_void) callconv(.C) void,
+    pub const handler_fn = fn (c_int) callconv(.C) void;
+    pub const sigaction_fn = fn (c_int, *const siginfo_t, ?*const c_void) callconv(.C) void;
+
+    /// signal handler
+    handler: extern union {
+        handler: ?handler_fn,
+        sigaction: ?sigaction_fn,
     },
-    sa_flags: c_int,
-    sa_mask: sigset_t,
+    flags: c_uint,
+    mask: sigset_t,
 };
 pub const sig_t = [*c]fn (c_int) callconv(.C) void;
 
@@ -628,7 +648,7 @@ pub const socklen_t = c_uint;
 pub const sockaddr_storage = extern struct {
     ss_len: u8,
     ss_family: sa_family_t,
-    __ss_pad1: [6]u8,
+    __ss_pad1: [5]u8,
     __ss_align: i64,
     __ss_pad2: [112]u8,
 };
@@ -720,4 +740,37 @@ pub const Flock = extern struct {
     l_pid: pid_t,
     l_type: c_short,
     l_whence: c_short,
+};
+
+pub const rlimit_resource = extern enum(c_int) {
+    CPU = 0,
+    FSIZE = 1,
+    DATA = 2,
+    STACK = 3,
+    CORE = 4,
+    RSS = 5,
+    MEMLOCK = 6,
+    NPROC = 7,
+    NOFILE = 8,
+    SBSIZE = 9,
+    AS = 10,
+    VMEM = 10,
+    POSIXLOCKS = 11,
+
+    _,
+};
+
+pub const rlim_t = i64;
+
+/// No limit
+pub const RLIM_INFINITY: rlim_t = (1 << 63) - 1;
+
+pub const RLIM_SAVED_MAX = RLIM_INFINITY;
+pub const RLIM_SAVED_CUR = RLIM_INFINITY;
+
+pub const rlimit = extern struct {
+    /// Soft limit
+    cur: rlim_t,
+    /// Hard limit
+    max: rlim_t,
 };

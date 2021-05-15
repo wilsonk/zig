@@ -91,13 +91,13 @@ pub const CompareOutputContext = struct {
         const b = self.b;
 
         const write_src = b.addWriteFiles();
-        for (case.sources.span()) |src_file| {
+        for (case.sources.items) |src_file| {
             write_src.add(src_file.filename, src_file.source);
         }
 
         switch (case.special) {
             Special.Asm => {
-                const annotated_case_name = fmt.allocPrint(self.b.allocator, "assemble-and-link {}", .{
+                const annotated_case_name = fmt.allocPrint(self.b.allocator, "assemble-and-link {s}", .{
                     case.name,
                 }) catch unreachable;
                 if (self.test_filter) |filter| {
@@ -105,7 +105,7 @@ pub const CompareOutputContext = struct {
                 }
 
                 const exe = b.addExecutable("test", null);
-                exe.addAssemblyFileFromWriteFileStep(write_src, case.sources.span()[0].filename);
+                exe.addAssemblyFileFromWriteFileStep(write_src, case.sources.items[0].filename);
 
                 const run = exe.run();
                 run.addArgs(case.cli_args);
@@ -116,7 +116,7 @@ pub const CompareOutputContext = struct {
             },
             Special.None => {
                 for (self.modes) |mode| {
-                    const annotated_case_name = fmt.allocPrint(self.b.allocator, "{} {} ({})", .{
+                    const annotated_case_name = fmt.allocPrint(self.b.allocator, "{s} {s} ({s})", .{
                         "compare-output",
                         case.name,
                         @tagName(mode),
@@ -125,7 +125,7 @@ pub const CompareOutputContext = struct {
                         if (mem.indexOf(u8, annotated_case_name, filter) == null) continue;
                     }
 
-                    const basename = case.sources.span()[0].filename;
+                    const basename = case.sources.items[0].filename;
                     const exe = b.addExecutableFromWriteFileStep("test", write_src, basename);
                     exe.setBuildMode(mode);
                     if (case.link_libc) {
@@ -141,12 +141,12 @@ pub const CompareOutputContext = struct {
                 }
             },
             Special.RuntimeSafety => {
-                const annotated_case_name = fmt.allocPrint(self.b.allocator, "safety {}", .{case.name}) catch unreachable;
+                const annotated_case_name = fmt.allocPrint(self.b.allocator, "safety {s}", .{case.name}) catch unreachable;
                 if (self.test_filter) |filter| {
                     if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
                 }
 
-                const basename = case.sources.span()[0].filename;
+                const basename = case.sources.items[0].filename;
                 const exe = b.addExecutableFromWriteFileStep("test", write_src, basename);
                 if (case.link_libc) {
                     exe.linkSystemLibrary("c");

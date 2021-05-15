@@ -270,8 +270,10 @@ const char* ir_inst_src_type_str(IrInstSrcId id) {
             return "SrcIntToErr";
         case IrInstSrcIdErrToInt:
             return "SrcErrToInt";
-        case IrInstSrcIdCheckSwitchProngs:
-            return "SrcCheckSwitchProngs";
+        case IrInstSrcIdCheckSwitchProngsUnderNo:
+            return "SrcCheckSwitchProngsUnderNo";
+        case IrInstSrcIdCheckSwitchProngsUnderYes:
+            return "SrcCheckSwitchProngsUnderYes";
         case IrInstSrcIdCheckStatementIsVoid:
             return "SrcCheckStatementIsVoid";
         case IrInstSrcIdTypeName:
@@ -282,8 +284,6 @@ const char* ir_inst_src_type_str(IrInstSrcId id) {
             return "SrcPanic";
         case IrInstSrcIdTagName:
             return "SrcTagName";
-        case IrInstSrcIdTagType:
-            return "SrcTagType";
         case IrInstSrcIdFieldParentPtr:
             return "SrcFieldParentPtr";
         case IrInstSrcIdByteOffsetOf:
@@ -300,6 +300,10 @@ const char* ir_inst_src_type_str(IrInstSrcId id) {
             return "SrcSetEvalBranchQuota";
         case IrInstSrcIdPtrType:
             return "SrcPtrType";
+        case IrInstSrcIdPtrTypeSimple:
+            return "SrcPtrTypeSimple";
+        case IrInstSrcIdPtrTypeSimpleConst:
+            return "SrcPtrTypeSimpleConst";
         case IrInstSrcIdAlignCast:
             return "SrcAlignCast";
         case IrInstSrcIdImplicitCast:
@@ -310,10 +314,14 @@ const char* ir_inst_src_type_str(IrInstSrcId id) {
             return "SrcResetResult";
         case IrInstSrcIdSetAlignStack:
             return "SrcSetAlignStack";
-        case IrInstSrcIdArgType:
-            return "SrcArgType";
+        case IrInstSrcIdArgTypeAllowVarFalse:
+            return "SrcArgTypeAllowVarFalse";
+        case IrInstSrcIdArgTypeAllowVarTrue:
+            return "SrcArgTypeAllowVarTrue";
         case IrInstSrcIdExport:
             return "SrcExport";
+        case IrInstSrcIdExtern:
+            return "SrcExtern";
         case IrInstSrcIdErrorReturnTrace:
             return "SrcErrorReturnTrace";
         case IrInstSrcIdErrorUnion:
@@ -544,6 +552,8 @@ const char* ir_inst_gen_type_str(IrInstGenId id) {
             return "GenWasmMemorySize";
         case IrInstGenIdWasmMemoryGrow:
             return "GenWasmMemoryGrow";
+        case IrInstGenIdExtern:
+            return "GenExtrern";
     }
     zig_unreachable();
 }
@@ -1611,6 +1621,8 @@ static const char *reduce_op_str(ReduceOp op) {
         case ReduceOp_xor: return "Xor";
         case ReduceOp_min: return "Min";
         case ReduceOp_max: return "Max";
+        case ReduceOp_add: return "Add";
+        case ReduceOp_mul: return "Mul";
     }
     zig_unreachable();
 }
@@ -2183,7 +2195,9 @@ static void ir_print_err_to_int(IrPrintGen *irp, IrInstGenErrToInt *instruction)
     ir_print_other_inst_gen(irp, instruction->target);
 }
 
-static void ir_print_check_switch_prongs(IrPrintSrc *irp, IrInstSrcCheckSwitchProngs *instruction) {
+static void ir_print_check_switch_prongs(IrPrintSrc *irp, IrInstSrcCheckSwitchProngs *instruction,
+        bool have_underscore_prong)
+{
     fprintf(irp->f, "@checkSwitchProngs(");
     ir_print_other_inst_src(irp, instruction->target_value);
     fprintf(irp->f, ",");
@@ -2196,6 +2210,8 @@ static void ir_print_check_switch_prongs(IrPrintSrc *irp, IrInstSrcCheckSwitchPr
     }
     const char *have_else_str = instruction->else_prong != nullptr ? "yes" : "no";
     fprintf(irp->f, ")else:%s", have_else_str);
+    const char *have_under_str = have_underscore_prong ? "yes" : "no";
+    fprintf(irp->f, " _:%s", have_under_str);
 }
 
 static void ir_print_check_statement_is_void(IrPrintSrc *irp, IrInstSrcCheckStatementIsVoid *instruction) {
@@ -2230,6 +2246,15 @@ static void ir_print_ptr_type(IrPrintSrc *irp, IrInstSrcPtrType *instruction) {
     const char *volatile_str = instruction->is_volatile ? "volatile " : "";
     fprintf(irp->f, ":%" PRIu32 ":%" PRIu32 " %s%s", instruction->bit_offset_start, instruction->host_int_bytes,
             const_str, volatile_str);
+    ir_print_other_inst_src(irp, instruction->child_type);
+}
+
+static void ir_print_ptr_type_simple(IrPrintSrc *irp, IrInstSrcPtrTypeSimple *instruction,
+        bool is_const)
+{
+    fprintf(irp->f, "&");
+    const char *const_str = is_const ? "const " : "";
+    fprintf(irp->f, "*%s", const_str);
     ir_print_other_inst_src(irp, instruction->child_type);
 }
 
@@ -2340,23 +2365,35 @@ static void ir_print_set_align_stack(IrPrintSrc *irp, IrInstSrcSetAlignStack *in
     fprintf(irp->f, ")");
 }
 
-static void ir_print_arg_type(IrPrintSrc *irp, IrInstSrcArgType *instruction) {
+static void ir_print_arg_type(IrPrintSrc *irp, IrInstSrcArgType *instruction, bool allow_var) {
     fprintf(irp->f, "@ArgType(");
     ir_print_other_inst_src(irp, instruction->fn_type);
     fprintf(irp->f, ",");
     ir_print_other_inst_src(irp, instruction->arg_index);
-    fprintf(irp->f, ")");
-}
-
-static void ir_print_enum_tag_type(IrPrintSrc *irp, IrInstSrcTagType *instruction) {
-    fprintf(irp->f, "@TagType(");
-    ir_print_other_inst_src(irp, instruction->target);
+    fprintf(irp->f, ",");
+    if (allow_var) {
+        fprintf(irp->f, "allow_var=true");
+    } else {
+        fprintf(irp->f, "allow_var=false");
+    }
     fprintf(irp->f, ")");
 }
 
 static void ir_print_export(IrPrintSrc *irp, IrInstSrcExport *instruction) {
     fprintf(irp->f, "@export(");
     ir_print_other_inst_src(irp, instruction->target);
+    fprintf(irp->f, ",");
+    ir_print_other_inst_src(irp, instruction->options);
+    fprintf(irp->f, ")");
+}
+
+static void ir_print_extern(IrPrintGen *irp, IrInstGenExtern *instruction) {
+    fprintf(irp->f, "@extern(...)");
+}
+
+static void ir_print_extern(IrPrintSrc *irp, IrInstSrcExtern *instruction) {
+    fprintf(irp->f, "@extern(");
+    ir_print_other_inst_src(irp, instruction->type);
     fprintf(irp->f, ",");
     ir_print_other_inst_src(irp, instruction->options);
     fprintf(irp->f, ")");
@@ -2875,8 +2912,11 @@ static void ir_print_inst_src(IrPrintSrc *irp, IrInstSrc *instruction, bool trai
         case IrInstSrcIdErrToInt:
             ir_print_err_to_int(irp, (IrInstSrcErrToInt *)instruction);
             break;
-        case IrInstSrcIdCheckSwitchProngs:
-            ir_print_check_switch_prongs(irp, (IrInstSrcCheckSwitchProngs *)instruction);
+        case IrInstSrcIdCheckSwitchProngsUnderNo:
+            ir_print_check_switch_prongs(irp, (IrInstSrcCheckSwitchProngs *)instruction, false);
+            break;
+        case IrInstSrcIdCheckSwitchProngsUnderYes:
+            ir_print_check_switch_prongs(irp, (IrInstSrcCheckSwitchProngs *)instruction, true);
             break;
         case IrInstSrcIdCheckStatementIsVoid:
             ir_print_check_statement_is_void(irp, (IrInstSrcCheckStatementIsVoid *)instruction);
@@ -2889,6 +2929,12 @@ static void ir_print_inst_src(IrPrintSrc *irp, IrInstSrc *instruction, bool trai
             break;
         case IrInstSrcIdPtrType:
             ir_print_ptr_type(irp, (IrInstSrcPtrType *)instruction);
+            break;
+        case IrInstSrcIdPtrTypeSimple:
+            ir_print_ptr_type_simple(irp, (IrInstSrcPtrTypeSimple *)instruction, false);
+            break;
+        case IrInstSrcIdPtrTypeSimpleConst:
+            ir_print_ptr_type_simple(irp, (IrInstSrcPtrTypeSimple *)instruction, true);
             break;
         case IrInstSrcIdDeclRef:
             ir_print_decl_ref(irp, (IrInstSrcDeclRef *)instruction);
@@ -2932,14 +2978,17 @@ static void ir_print_inst_src(IrPrintSrc *irp, IrInstSrc *instruction, bool trai
         case IrInstSrcIdSetAlignStack:
             ir_print_set_align_stack(irp, (IrInstSrcSetAlignStack *)instruction);
             break;
-        case IrInstSrcIdArgType:
-            ir_print_arg_type(irp, (IrInstSrcArgType *)instruction);
+        case IrInstSrcIdArgTypeAllowVarFalse:
+            ir_print_arg_type(irp, (IrInstSrcArgType *)instruction, false);
             break;
-        case IrInstSrcIdTagType:
-            ir_print_enum_tag_type(irp, (IrInstSrcTagType *)instruction);
+        case IrInstSrcIdArgTypeAllowVarTrue:
+            ir_print_arg_type(irp, (IrInstSrcArgType *)instruction, true);
             break;
         case IrInstSrcIdExport:
             ir_print_export(irp, (IrInstSrcExport *)instruction);
+            break;
+        case IrInstSrcIdExtern:
+            ir_print_extern(irp, (IrInstSrcExtern*)instruction);
             break;
         case IrInstSrcIdErrorReturnTrace:
             ir_print_error_return_trace(irp, (IrInstSrcErrorReturnTrace *)instruction);
@@ -3292,6 +3341,10 @@ static void ir_print_inst_gen(IrPrintGen *irp, IrInstGen *instruction, bool trai
         case IrInstGenIdWasmMemoryGrow:
             ir_print_wasm_memory_grow(irp, (IrInstGenWasmMemoryGrow *)instruction);
             break;
+        case IrInstGenIdExtern:
+            ir_print_extern(irp, (IrInstGenExtern *)instruction);
+            break;
+
     }
     fprintf(irp->f, "\n");
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -131,7 +131,7 @@ pub const Token = struct {
         Keyword_error,
         Keyword_pragma,
 
-        pub fn symbol(id: @TagType(Id)) []const u8 {
+        pub fn symbol(id: std.meta.TagType(Id)) []const u8 {
             return switch (id) {
                 .Invalid => "Invalid",
                 .Eof => "Eof",
@@ -347,7 +347,7 @@ pub const Token = struct {
 pub const Tokenizer = struct {
     buffer: []const u8,
     index: usize = 0,
-    prev_tok_id: @TagType(Token.Id) = .Invalid,
+    prev_tok_id: std.meta.TagType(Token.Id) = .Invalid,
     pp_directive: bool = false,
 
     pub fn next(self: *Tokenizer) Token {
@@ -401,7 +401,9 @@ pub const Tokenizer = struct {
             Zero,
             IntegerLiteralOct,
             IntegerLiteralBinary,
+            IntegerLiteralBinaryFirst,
             IntegerLiteralHex,
+            IntegerLiteralHexFirst,
             IntegerLiteral,
             IntegerSuffix,
             IntegerSuffixU,
@@ -446,7 +448,7 @@ pub const Tokenizer = struct {
                     'L' => {
                         state = .L;
                     },
-                    'a'...'t', 'v'...'z', 'A'...'K', 'M'...'T', 'V'...'Z', '_' => {
+                    'a'...'t', 'v'...'z', 'A'...'K', 'M'...'T', 'V'...'Z', '_', '$' => {
                         state = .Identifier;
                     },
                     '=' => {
@@ -776,7 +778,7 @@ pub const Tokenizer = struct {
                     },
                 },
                 .Identifier => switch (c) {
-                    'a'...'z', 'A'...'Z', '_', '0'...'9' => {},
+                    'a'...'z', 'A'...'Z', '_', '0'...'9', '$' => {},
                     else => {
                         result.id = Token.getKeyword(self.buffer[result.start..self.index], self.prev_tok_id == .Hash and !self.pp_directive) orelse .Identifier;
                         if (self.prev_tok_id == .Hash)
@@ -1046,10 +1048,10 @@ pub const Tokenizer = struct {
                         state = .IntegerLiteralOct;
                     },
                     'b', 'B' => {
-                        state = .IntegerLiteralBinary;
+                        state = .IntegerLiteralBinaryFirst;
                     },
                     'x', 'X' => {
-                        state = .IntegerLiteralHex;
+                        state = .IntegerLiteralHexFirst;
                     },
                     '.' => {
                         state = .FloatFraction;
@@ -1066,11 +1068,31 @@ pub const Tokenizer = struct {
                         self.index -= 1;
                     },
                 },
+                .IntegerLiteralBinaryFirst => switch (c) {
+                    '0'...'7' => state = .IntegerLiteralBinary,
+                    else => {
+                        result.id = .Invalid;
+                        break;
+                    },
+                },
                 .IntegerLiteralBinary => switch (c) {
                     '0', '1' => {},
                     else => {
                         state = .IntegerSuffix;
                         self.index -= 1;
+                    },
+                },
+                .IntegerLiteralHexFirst => switch (c) {
+                    '0'...'9', 'a'...'f', 'A'...'F' => state = .IntegerLiteralHex,
+                    '.' => {
+                        state = .FloatFractionHex;
+                    },
+                    'p', 'P' => {
+                        state = .FloatExponent;
+                    },
+                    else => {
+                        result.id = .Invalid;
+                        break;
                     },
                 },
                 .IntegerLiteralHex => switch (c) {
@@ -1238,6 +1260,8 @@ pub const Tokenizer = struct {
                 .MultiLineCommentAsterisk,
                 .FloatExponent,
                 .MacroString,
+                .IntegerLiteralBinaryFirst,
+                .IntegerLiteralHexFirst,
                 => result.id = .Invalid,
 
                 .FloatExponentDigits => result.id = if (counter == 0) .Invalid else .{ .FloatLiteral = .none },
@@ -1286,7 +1310,7 @@ pub const Tokenizer = struct {
 };
 
 test "operators" {
-    expectTokens(
+    try expectTokens(
         \\ ! != | || |= = ==
         \\ ( ) { } [ ] . .. ...
         \\ ^ ^= + ++ += - -- -=
@@ -1355,7 +1379,7 @@ test "operators" {
 }
 
 test "keywords" {
-    expectTokens(
+    try expectTokens(
         \\auto break case char const continue default do 
         \\double else enum extern float for goto if int 
         \\long register return short signed sizeof static 
@@ -1418,7 +1442,7 @@ test "keywords" {
 }
 
 test "preprocessor keywords" {
-    expectTokens(
+    try expectTokens(
         \\#include <test>
         \\#define #include <1
         \\#ifdef
@@ -1454,7 +1478,7 @@ test "preprocessor keywords" {
 }
 
 test "line continuation" {
-    expectTokens(
+    try expectTokens(
         \\#define foo \
         \\  bar
         \\"foo\
@@ -1485,7 +1509,7 @@ test "line continuation" {
 }
 
 test "string prefix" {
-    expectTokens(
+    try expectTokens(
         \\"foo"
         \\u"foo"
         \\u8"foo"
@@ -1519,10 +1543,11 @@ test "string prefix" {
 }
 
 test "num suffixes" {
-    expectTokens(
+    try expectTokens(
         \\ 1.0f 1.0L 1.0 .0 1.
         \\ 0l 0lu 0ll 0llu 0
         \\ 1u 1ul 1ull 1
+        \\ 0x 0b
         \\
     , &[_]Token.Id{
         .{ .FloatLiteral = .f },
@@ -1542,19 +1567,22 @@ test "num suffixes" {
         .{ .IntegerLiteral = .llu },
         .{ .IntegerLiteral = .none },
         .Nl,
+        .Invalid,
+        .Invalid,
+        .Nl,
     });
 }
 
-fn expectTokens(source: []const u8, expected_tokens: []const Token.Id) void {
+fn expectTokens(source: []const u8, expected_tokens: []const Token.Id) !void {
     var tokenizer = Tokenizer{
         .buffer = source,
     };
     for (expected_tokens) |expected_token_id| {
         const token = tokenizer.next();
         if (!std.meta.eql(token.id, expected_token_id)) {
-            std.debug.panic("expected {}, found {}\n", .{ @tagName(expected_token_id), @tagName(token.id) });
+            std.debug.panic("expected {s}, found {s}\n", .{ @tagName(expected_token_id), @tagName(token.id) });
         }
     }
     const last_token = tokenizer.next();
-    std.testing.expect(last_token.id == .Eof);
+    try std.testing.expect(last_token.id == .Eof);
 }

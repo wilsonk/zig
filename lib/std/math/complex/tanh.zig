@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -113,14 +113,14 @@ test "complex.ctanh32" {
     const a = Complex(f32).new(5, 3);
     const c = tanh(a);
 
-    testing.expect(math.approxEq(f32, c.re, 0.999913, epsilon));
-    testing.expect(math.approxEq(f32, c.im, -0.000025, epsilon));
+    try testing.expect(math.approxEqAbs(f32, c.re, 0.999913, epsilon));
+    try testing.expect(math.approxEqAbs(f32, c.im, -0.000025, epsilon));
 }
 
 test "complex.ctanh64" {
     const a = Complex(f64).new(5, 3);
     const c = tanh(a);
 
-    testing.expect(math.approxEq(f64, c.re, 0.999913, epsilon));
-    testing.expect(math.approxEq(f64, c.im, -0.000025, epsilon));
+    try testing.expect(math.approxEqAbs(f64, c.re, 0.999913, epsilon));
+    try testing.expect(math.approxEqAbs(f64, c.im, -0.000025, epsilon));
 }

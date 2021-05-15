@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -24,6 +24,11 @@ pub const STD_OUTPUT_HANDLE = maxInt(DWORD) - 11 + 1;
 /// The standard error device. Initially, this is the active console screen buffer, CONOUT$.
 pub const STD_ERROR_HANDLE = maxInt(DWORD) - 12 + 1;
 
+pub const WINAPI: builtin.CallingConvention = if (builtin.arch == .i386)
+    .Stdcall
+else
+    .C;
+
 pub const BOOL = c_int;
 pub const BOOLEAN = BYTE;
 pub const BYTE = u8;
@@ -32,6 +37,7 @@ pub const UCHAR = u8;
 pub const FLOAT = f32;
 pub const HANDLE = *c_void;
 pub const HCRYPTPROV = ULONG_PTR;
+pub const ATOM = u16;
 pub const HBRUSH = *opaque {};
 pub const HCURSOR = *opaque {};
 pub const HICON = *opaque {};
@@ -60,6 +66,7 @@ pub const SIZE_T = usize;
 pub const TCHAR = if (UNICODE) WCHAR else u8;
 pub const UINT = c_uint;
 pub const ULONG_PTR = usize;
+pub const LONG_PTR = isize;
 pub const DWORD_PTR = ULONG_PTR;
 pub const UNICODE = false;
 pub const WCHAR = u16;
@@ -78,8 +85,8 @@ pub const HLOCAL = HANDLE;
 pub const LANGID = c_ushort;
 
 pub const WPARAM = usize;
-pub const LPARAM = ?*c_void;
-pub const LRESULT = ?*c_void;
+pub const LPARAM = LONG_PTR;
+pub const LRESULT = LONG_PTR;
 
 pub const va_list = *opaque {};
 
@@ -764,11 +771,23 @@ pub const FILE_FLAG_SESSION_AWARE = 0x00800000;
 pub const FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
 pub const FILE_FLAG_WRITE_THROUGH = 0x80000000;
 
+pub const RECT = extern struct {
+    left: LONG,
+    top: LONG,
+    right: LONG,
+    bottom: LONG,
+};
+
 pub const SMALL_RECT = extern struct {
     Left: SHORT,
     Top: SHORT,
     Right: SHORT,
     Bottom: SHORT,
+};
+
+pub const POINT = extern struct {
+    x: LONG,
+    y: LONG,
 };
 
 pub const COORD = extern struct {
@@ -807,7 +826,8 @@ pub const FILE_NOTIFY_INFORMATION = extern struct {
     NextEntryOffset: DWORD,
     Action: DWORD,
     FileNameLength: DWORD,
-    FileName: [1]WCHAR,
+    // Flexible array member
+    // FileName: [1]WCHAR,
 };
 
 pub const FILE_ACTION_ADDED = 0x00000001;
@@ -1149,7 +1169,7 @@ pub const EXCEPTION_POINTERS = extern struct {
     ContextRecord: PCONTEXT,
 };
 
-pub const VECTORED_EXCEPTION_HANDLER = fn (ExceptionInfo: *EXCEPTION_POINTERS) callconv(.Stdcall) c_long;
+pub const VECTORED_EXCEPTION_HANDLER = fn (ExceptionInfo: *EXCEPTION_POINTERS) callconv(WINAPI) c_long;
 
 pub const OBJECT_ATTRIBUTES = extern struct {
     Length: ULONG,
@@ -1295,11 +1315,13 @@ pub const PEB = extern struct {
     ImageSubSystemMinorVersion: ULONG,
     // note: there is padding here on 64 bit
     ActiveProcessAffinityMask: KAFFINITY,
-    GdiHandleBuffer: [switch (@sizeOf(usize)) {
-        4 => 0x22,
-        8 => 0x3C,
-        else => unreachable,
-    }]ULONG,
+    GdiHandleBuffer: [
+        switch (@sizeOf(usize)) {
+            4 => 0x22,
+            8 => 0x3C,
+            else => unreachable,
+        }
+    ]ULONG,
 
     // Fields appended in 5.0 (Windows 2000):
     PostProcessInitRoutine: PVOID,
@@ -1596,3 +1618,34 @@ pub const MOUNTMGR_MOUNT_POINTS = extern struct {
     MountPoints: [1]MOUNTMGR_MOUNT_POINT,
 };
 pub const IOCTL_MOUNTMGR_QUERY_POINTS: ULONG = 0x6d0008;
+
+pub const OBJECT_INFORMATION_CLASS = extern enum {
+    ObjectBasicInformation = 0,
+    ObjectNameInformation = 1,
+    ObjectTypeInformation = 2,
+    ObjectTypesInformation = 3,
+    ObjectHandleFlagInformation = 4,
+    ObjectSessionInformation = 5,
+    MaxObjectInfoClass,
+};
+
+pub const OBJECT_NAME_INFORMATION = extern struct {
+    Name: UNICODE_STRING,
+};
+pub const POBJECT_NAME_INFORMATION = *OBJECT_NAME_INFORMATION;
+
+pub const SRWLOCK = usize;
+pub const SRWLOCK_INIT: SRWLOCK = 0;
+pub const CONDITION_VARIABLE = usize;
+pub const CONDITION_VARIABLE_INIT: CONDITION_VARIABLE = 0;
+
+pub const FILE_SKIP_COMPLETION_PORT_ON_SUCCESS = 0x1;
+pub const FILE_SKIP_SET_EVENT_ON_HANDLE = 0x2;
+
+pub const CTRL_C_EVENT: DWORD = 0;
+pub const CTRL_BREAK_EVENT: DWORD = 1;
+pub const CTRL_CLOSE_EVENT: DWORD = 2;
+pub const CTRL_LOGOFF_EVENT: DWORD = 5;
+pub const CTRL_SHUTDOWN_EVENT: DWORD = 6;
+
+pub const HANDLER_ROUTINE = fn (dwCtrlType: DWORD) callconv(.C) BOOL;

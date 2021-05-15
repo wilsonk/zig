@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -167,7 +167,7 @@ pub fn WriteStream(comptime OutStream: type, comptime max_depth: usize) type {
                         self.popState();
                         return;
                     }
-                    if (value < 4503599627370496 and (!info.is_signed or value > -4503599627370496)) {
+                    if (value < 4503599627370496 and (info.signedness == .unsigned or value > -4503599627370496)) {
                         try self.stream.print("{}", .{value});
                         self.popState();
                         return;
@@ -238,7 +238,7 @@ pub fn writeStream(
 test "json write stream" {
     var out_buf: [1024]u8 = undefined;
     var slice_stream = std.io.fixedBufferStream(&out_buf);
-    const out = slice_stream.outStream();
+    const out = slice_stream.writer();
 
     var arena_allocator = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_allocator.deinit();
@@ -288,12 +288,12 @@ test "json write stream" {
         \\ "float": 3.5e+00
         \\}
     ;
-    std.testing.expect(std.mem.eql(u8, expected, result));
+    try std.testing.expect(std.mem.eql(u8, expected, result));
 }
 
 fn getJsonObject(allocator: *std.mem.Allocator) !std.json.Value {
     var value = std.json.Value{ .Object = std.json.ObjectMap.init(allocator) };
-    _ = try value.Object.put("one", std.json.Value{ .Integer = @intCast(i64, 1) });
-    _ = try value.Object.put("two", std.json.Value{ .Float = 2.0 });
+    try value.Object.put("one", std.json.Value{ .Integer = @intCast(i64, 1) });
+    try value.Object.put("two", std.json.Value{ .Float = 2.0 });
     return value;
 }

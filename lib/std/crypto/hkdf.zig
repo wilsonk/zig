@@ -1,3 +1,9 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2015-2021 Zig Contributors
+// This file is part of [zig](https://ziglang.org/), which is MIT licensed.
+// The MIT license requires this copyright notice to be included in all copies
+// and substantial portions of the software.
+
 const std = @import("../std.zig");
 const assert = std.debug.assert;
 const hmac = std.crypto.auth.hmac;
@@ -14,14 +20,14 @@ pub const HkdfSha512 = Hkdf(hmac.sha2.HmacSha512);
 pub fn Hkdf(comptime Hmac: type) type {
     return struct {
         /// Return a master key from a salt and initial keying material.
-        fn extract(salt: []const u8, ikm: []const u8) [Hmac.mac_length]u8 {
+        pub fn extract(salt: []const u8, ikm: []const u8) [Hmac.mac_length]u8 {
             var prk: [Hmac.mac_length]u8 = undefined;
             Hmac.create(&prk, ikm, salt);
             return prk;
         }
 
         /// Derive a subkey from a master key `prk` and a subkey description `ctx`.
-        fn expand(out: []u8, ctx: []const u8, prk: [Hmac.mac_length]u8) void {
+        pub fn expand(out: []u8, ctx: []const u8, prk: [Hmac.mac_length]u8) void {
             assert(out.len < Hmac.mac_length * 255); // output size is too large for the Hkdf construction
             var i: usize = 0;
             var counter = [1]u8{1};
@@ -59,8 +65,8 @@ test "Hkdf" {
     const context = [_]u8{ 0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9 };
     const kdf = HkdfSha256;
     const prk = kdf.extract(&salt, &ikm);
-    htest.assertEqual("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", &prk);
+    try htest.assertEqual("077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", &prk);
     var out: [42]u8 = undefined;
     kdf.expand(&out, &context, prk);
-    htest.assertEqual("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865", &out);
+    try htest.assertEqual("3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865", &out);
 }

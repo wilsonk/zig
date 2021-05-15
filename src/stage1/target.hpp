@@ -86,6 +86,7 @@ bool target_is_glibc(const ZigTarget *target);
 bool target_is_musl(const ZigTarget *target);
 bool target_is_wasm(const ZigTarget *target);
 bool target_is_riscv(const ZigTarget *target);
+bool target_is_sparc(const ZigTarget *target);
 bool target_is_android(const ZigTarget *target);
 bool target_has_debug_info(const ZigTarget *target);
 const char *target_arch_musl_name(ZigLLVM_ArchType arch);
@@ -97,6 +98,7 @@ size_t target_libc_count(void);
 void target_libc_enum(size_t index, ZigTarget *out_target);
 bool target_libc_needs_crti_crtn(const ZigTarget *target);
 
+unsigned target_fn_ptr_align(const ZigTarget *target);
 unsigned target_fn_align(const ZigTarget *target);
 
 #endif

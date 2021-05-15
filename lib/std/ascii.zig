@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -230,6 +230,20 @@ pub fn isSpace(c: u8) bool {
     return inTable(c, tIndex.Space);
 }
 
+/// All the values for which isSpace() returns true. This may be used with
+/// e.g. std.mem.trim() to trim whiteSpace.
+pub const spaces = [_]u8{ ' ', '\t', '\n', '\r', control_code.VT, control_code.FF };
+
+test "spaces" {
+    const testing = std.testing;
+    for (spaces) |space| try testing.expect(isSpace(space));
+
+    var i: u8 = 0;
+    while (isASCII(i)) : (i += 1) {
+        if (isSpace(i)) try testing.expect(std.mem.indexOfScalar(u8, &spaces, i) != null);
+    }
+}
+
 pub fn isUpper(c: u8) bool {
     return inTable(c, tIndex.Upper);
 }
@@ -265,13 +279,13 @@ pub fn toLower(c: u8) u8 {
 test "ascii character classes" {
     const testing = std.testing;
 
-    testing.expect('C' == toUpper('c'));
-    testing.expect(':' == toUpper(':'));
-    testing.expect('\xab' == toUpper('\xab'));
-    testing.expect('c' == toLower('C'));
-    testing.expect(isAlpha('c'));
-    testing.expect(!isAlpha('5'));
-    testing.expect(isSpace(' '));
+    try testing.expect('C' == toUpper('c'));
+    try testing.expect(':' == toUpper(':'));
+    try testing.expect('\xab' == toUpper('\xab'));
+    try testing.expect('c' == toLower('C'));
+    try testing.expect(isAlpha('c'));
+    try testing.expect(!isAlpha('5'));
+    try testing.expect(isSpace(' '));
 }
 
 /// Allocates a lower case copy of `ascii_string`.
@@ -287,7 +301,7 @@ pub fn allocLowerString(allocator: *std.mem.Allocator, ascii_string: []const u8)
 test "allocLowerString" {
     const result = try allocLowerString(std.testing.allocator, "aBcDeFgHiJkLmNOPqrst0234+💩!");
     defer std.testing.allocator.free(result);
-    std.testing.expect(std.mem.eql(u8, "abcdefghijklmnopqrst0234+💩!", result));
+    try std.testing.expect(std.mem.eql(u8, "abcdefghijklmnopqrst0234+💩!", result));
 }
 
 /// Allocates an upper case copy of `ascii_string`.
@@ -303,7 +317,7 @@ pub fn allocUpperString(allocator: *std.mem.Allocator, ascii_string: []const u8)
 test "allocUpperString" {
     const result = try allocUpperString(std.testing.allocator, "aBcDeFgHiJkLmNOPqrst0234+💩!");
     defer std.testing.allocator.free(result);
-    std.testing.expect(std.mem.eql(u8, "ABCDEFGHIJKLMNOPQRST0234+💩!", result));
+    try std.testing.expect(std.mem.eql(u8, "ABCDEFGHIJKLMNOPQRST0234+💩!", result));
 }
 
 /// Compares strings `a` and `b` case insensitively and returns whether they are equal.
@@ -316,9 +330,27 @@ pub fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
 }
 
 test "eqlIgnoreCase" {
-    std.testing.expect(eqlIgnoreCase("HEl💩Lo!", "hel💩lo!"));
-    std.testing.expect(!eqlIgnoreCase("hElLo!", "hello! "));
-    std.testing.expect(!eqlIgnoreCase("hElLo!", "helro!"));
+    try std.testing.expect(eqlIgnoreCase("HEl💩Lo!", "hel💩lo!"));
+    try std.testing.expect(!eqlIgnoreCase("hElLo!", "hello! "));
+    try std.testing.expect(!eqlIgnoreCase("hElLo!", "helro!"));
+}
+
+pub fn startsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    return if (needle.len > haystack.len) false else eqlIgnoreCase(haystack[0..needle.len], needle);
+}
+
+test "ascii.startsWithIgnoreCase" {
+    try std.testing.expect(startsWithIgnoreCase("boB", "Bo"));
+    try std.testing.expect(!startsWithIgnoreCase("Needle in hAyStAcK", "haystack"));
+}
+
+pub fn endsWithIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    return if (needle.len > haystack.len) false else eqlIgnoreCase(haystack[haystack.len - needle.len ..], needle);
+}
+
+test "ascii.endsWithIgnoreCase" {
+    try std.testing.expect(endsWithIgnoreCase("Needle in HaYsTaCk", "haystack"));
+    try std.testing.expect(!endsWithIgnoreCase("BoB", "Bo"));
 }
 
 /// Finds `substr` in `container`, ignoring case, starting at `start_index`.
@@ -340,10 +372,30 @@ pub fn indexOfIgnoreCase(container: []const u8, substr: []const u8) ?usize {
 }
 
 test "indexOfIgnoreCase" {
-    std.testing.expect(indexOfIgnoreCase("one Two Three Four", "foUr").? == 14);
-    std.testing.expect(indexOfIgnoreCase("one two three FouR", "gOur") == null);
-    std.testing.expect(indexOfIgnoreCase("foO", "Foo").? == 0);
-    std.testing.expect(indexOfIgnoreCase("foo", "fool") == null);
+    try std.testing.expect(indexOfIgnoreCase("one Two Three Four", "foUr").? == 14);
+    try std.testing.expect(indexOfIgnoreCase("one two three FouR", "gOur") == null);
+    try std.testing.expect(indexOfIgnoreCase("foO", "Foo").? == 0);
+    try std.testing.expect(indexOfIgnoreCase("foo", "fool") == null);
 
-    std.testing.expect(indexOfIgnoreCase("FOO foo", "fOo").? == 0);
+    try std.testing.expect(indexOfIgnoreCase("FOO foo", "fOo").? == 0);
+}
+
+/// Compares two slices of numbers lexicographically. O(n).
+pub fn orderIgnoreCase(lhs: []const u8, rhs: []const u8) std.math.Order {
+    const n = std.math.min(lhs.len, rhs.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        switch (std.math.order(toLower(lhs[i]), toLower(rhs[i]))) {
+            .eq => continue,
+            .lt => return .lt,
+            .gt => return .gt,
+        }
+    }
+    return std.math.order(lhs.len, rhs.len);
+}
+
+/// Returns true if lhs < rhs, false otherwise
+/// TODO rename "IgnoreCase" to "Insensitive" in this entire file.
+pub fn lessThanIgnoreCase(lhs: []const u8, rhs: []const u8) bool {
+    return orderIgnoreCase(lhs, rhs) == .lt;
 }

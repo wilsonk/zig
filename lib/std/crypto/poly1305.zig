@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
 const std = @import("../std.zig");
+const utils = std.crypto.utils;
 const mem = std.mem;
 
 pub const Poly1305 = struct {
@@ -38,7 +39,7 @@ pub const Poly1305 = struct {
         };
     }
 
-    fn blocks(st: *Poly1305, m: []const u8, last: comptime bool) void {
+    fn blocks(st: *Poly1305, m: []const u8, comptime last: bool) void {
         const hibit: u64 = if (last) 0 else 1 << 40;
         const r0 = st.r[0];
         const r1 = st.r[1];
@@ -195,7 +196,7 @@ pub const Poly1305 = struct {
         mem.writeIntLittle(u64, out[0..8], st.h[0]);
         mem.writeIntLittle(u64, out[8..16], st.h[1]);
 
-        std.mem.secureZero(u8, @ptrCast([*]u8, st)[0..@sizeOf(Poly1305)]);
+        utils.secureZero(u8, @ptrCast([*]u8, st)[0..@sizeOf(Poly1305)]);
     }
 
     pub fn create(out: *[mac_length]u8, msg: []const u8, key: *const [key_length]u8) void {
@@ -215,5 +216,5 @@ test "poly1305 rfc7439 vector1" {
     var mac: [16]u8 = undefined;
     Poly1305.create(mac[0..], msg, key);
 
-    std.testing.expectEqualSlices(u8, expected_mac, &mac);
+    try std.testing.expectEqualSlices(u8, expected_mac, &mac);
 }

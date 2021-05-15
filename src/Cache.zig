@@ -11,6 +11,7 @@ const testing = std.testing;
 const mem = std.mem;
 const fmt = std.fmt;
 const Allocator = std.mem.Allocator;
+const Compilation = @import("Compilation.zig");
 
 /// Be sure to call `Manifest.deinit` after successful initialization.
 pub fn obtain(cache: *const Cache) Manifest {
@@ -26,6 +27,7 @@ pub fn obtain(cache: *const Cache) Manifest {
 /// This is 128 bits - Even with 2^54 cache entries, the probably of a collision would be under 10^-6
 pub const bin_digest_len = 16;
 pub const hex_digest_len = bin_digest_len * 2;
+pub const BinDigest = [bin_digest_len]u8;
 
 const manifest_file_size_max = 50 * 1024 * 1024;
 
@@ -41,7 +43,7 @@ pub const File = struct {
     path: ?[]const u8,
     max_file_size: ?usize,
     stat: fs.File.Stat,
-    bin_digest: [bin_digest_len]u8,
+    bin_digest: BinDigest,
     contents: ?[]const u8,
 
     pub fn deinit(self: *File, allocator: *Allocator) void {
@@ -60,6 +62,8 @@ pub const File = struct {
 pub const HashHelper = struct {
     hasher: Hasher = hasher_init,
 
+    const EmitLoc = Compilation.EmitLoc;
+
     /// Record a slice of bytes as an dependency of the process being cached
     pub fn addBytes(hh: *HashHelper, bytes: []const u8) void {
         hh.hasher.update(mem.asBytes(&bytes.len));
@@ -69,6 +73,15 @@ pub const HashHelper = struct {
     pub fn addOptionalBytes(hh: *HashHelper, optional_bytes: ?[]const u8) void {
         hh.add(optional_bytes != null);
         hh.addBytes(optional_bytes orelse return);
+    }
+
+    pub fn addEmitLoc(hh: *HashHelper, emit_loc: EmitLoc) void {
+        hh.addBytes(emit_loc.basename);
+    }
+
+    pub fn addOptionalEmitLoc(hh: *HashHelper, optional_emit_loc: ?EmitLoc) void {
+        hh.add(optional_emit_loc != null);
+        hh.addEmitLoc(optional_emit_loc orelse return);
     }
 
     pub fn addListOfBytes(hh: *HashHelper, list_of_bytes: []const []const u8) void {
@@ -128,20 +141,24 @@ pub const HashHelper = struct {
         return copy.final();
     }
 
-    pub fn peekBin(hh: HashHelper) [bin_digest_len]u8 {
+    pub fn peekBin(hh: HashHelper) BinDigest {
         var copy = hh;
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         copy.hasher.final(&bin_digest);
         return bin_digest;
     }
 
     /// Returns a hex encoded hash of the inputs, mutating the state of the hasher.
     pub fn final(hh: *HashHelper) [hex_digest_len]u8 {
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         hh.hasher.final(&bin_digest);
 
         var out_digest: [hex_digest_len]u8 = undefined;
-        _ = std.fmt.bufPrint(&out_digest, "{x}", .{bin_digest}) catch unreachable;
+        _ = std.fmt.bufPrint(
+            &out_digest,
+            "{s}",
+            .{std.fmt.fmtSliceHexLower(&bin_digest)},
+        ) catch unreachable;
         return out_digest;
     }
 };
@@ -166,6 +183,9 @@ pub const Manifest = struct {
     manifest_dirty: bool,
     files: std.ArrayListUnmanaged(File) = .{},
     hex_digest: [hex_digest_len]u8,
+    /// Populated when hit() returns an error because of one
+    /// of the files listed in the manifest.
+    failed_file_index: ?usize = null,
 
     /// Add a file as a dependency of process being cached. When `hit` is
     /// called, the file's contents will be checked to ensure that it matches
@@ -201,6 +221,24 @@ pub const Manifest = struct {
         return idx;
     }
 
+    pub fn hashCSource(self: *Manifest, c_source: Compilation.CSourceFile) !void {
+        _ = try self.addFile(c_source.src_path, null);
+        // Hash the extra flags, with special care to call addFile for file parameters.
+        // TODO this logic can likely be improved by utilizing clang_options_data.zig.
+        const file_args = [_][]const u8{"-include"};
+        var arg_i: usize = 0;
+        while (arg_i < c_source.extra_flags.len) : (arg_i += 1) {
+            const arg = c_source.extra_flags[arg_i];
+            self.hash.addBytes(arg);
+            for (file_args) |file_arg| {
+                if (mem.eql(u8, file_arg, arg) and arg_i + 1 < c_source.extra_flags.len) {
+                    arg_i += 1;
+                    _ = try self.addFile(c_source.extra_flags[arg_i], null);
+                }
+            }
+        }
+    }
+
     pub fn addOptionalFile(self: *Manifest, optional_file_path: ?[]const u8) !void {
         self.hash.add(optional_file_path != null);
         const file_path = optional_file_path orelse return;
@@ -227,13 +265,19 @@ pub const Manifest = struct {
     pub fn hit(self: *Manifest) !bool {
         assert(self.manifest_file == null);
 
+        self.failed_file_index = null;
+
         const ext = ".txt";
         var manifest_file_path: [self.hex_digest.len + ext.len]u8 = undefined;
 
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         self.hash.hasher.final(&bin_digest);
 
-        _ = std.fmt.bufPrint(&self.hex_digest, "{x}", .{bin_digest}) catch unreachable;
+        _ = std.fmt.bufPrint(
+            &self.hex_digest,
+            "{s}",
+            .{std.fmt.fmtSliceHexLower(&bin_digest)},
+        ) catch unreachable;
 
         self.hash.hasher = hasher_init;
         self.hash.hasher.update(&bin_digest);
@@ -268,7 +312,7 @@ pub const Manifest = struct {
             };
         }
 
-        const file_contents = try self.manifest_file.?.inStream().readAllAlloc(self.cache.gpa, manifest_file_size_max);
+        const file_contents = try self.manifest_file.?.reader().readAllAlloc(self.cache.gpa, manifest_file_size_max);
         defer self.cache.gpa.free(file_contents);
 
         const input_file_count = self.files.items.len;
@@ -300,7 +344,7 @@ pub const Manifest = struct {
             cache_hash_file.stat.size = fmt.parseInt(u64, size, 10) catch return error.InvalidFormat;
             cache_hash_file.stat.inode = fmt.parseInt(fs.File.INode, inode, 10) catch return error.InvalidFormat;
             cache_hash_file.stat.mtime = fmt.parseInt(i64, mtime_nsec_str, 10) catch return error.InvalidFormat;
-            std.fmt.hexToBytes(&cache_hash_file.bin_digest, digest_str) catch return error.InvalidFormat;
+            _ = std.fmt.hexToBytes(&cache_hash_file.bin_digest, digest_str) catch return error.InvalidFormat;
 
             if (file_path.len == 0) {
                 return error.InvalidFormat;
@@ -321,7 +365,10 @@ pub const Manifest = struct {
             };
             defer this_file.close();
 
-            const actual_stat = try this_file.stat();
+            const actual_stat = this_file.stat() catch |err| {
+                self.failed_file_index = idx;
+                return err;
+            };
             const size_match = actual_stat.size == cache_hash_file.stat.size;
             const mtime_match = actual_stat.mtime == cache_hash_file.stat.mtime;
             const inode_match = actual_stat.inode == cache_hash_file.stat.inode;
@@ -336,8 +383,11 @@ pub const Manifest = struct {
                     cache_hash_file.stat.inode = 0;
                 }
 
-                var actual_digest: [bin_digest_len]u8 = undefined;
-                try hashFile(this_file, &actual_digest);
+                var actual_digest: BinDigest = undefined;
+                hashFile(this_file, &actual_digest) catch |err| {
+                    self.failed_file_index = idx;
+                    return err;
+                };
 
                 if (!mem.eql(u8, &cache_hash_file.bin_digest, &actual_digest)) {
                     cache_hash_file.bin_digest = actual_digest;
@@ -362,7 +412,10 @@ pub const Manifest = struct {
             self.manifest_dirty = true;
             while (idx < input_file_count) : (idx += 1) {
                 const ch_file = &self.files.items[idx];
-                try self.populateFileHash(ch_file);
+                self.populateFileHash(ch_file) catch |err| {
+                    self.failed_file_index = idx;
+                    return err;
+                };
             }
             return false;
         }
@@ -370,7 +423,7 @@ pub const Manifest = struct {
         return true;
     }
 
-    pub fn unhit(self: *Manifest, bin_digest: [bin_digest_len]u8, input_file_count: usize) void {
+    pub fn unhit(self: *Manifest, bin_digest: BinDigest, input_file_count: usize) void {
         // Reset the hash.
         self.hash.hasher = hasher_init;
         self.hash.hasher.update(&bin_digest);
@@ -490,7 +543,7 @@ pub const Manifest = struct {
             .target, .target_must_resolve, .prereq => {},
             else => |err| {
                 try err.printError(error_buf.writer());
-                std.log.err("failed parsing {}: {}", .{ dep_file_basename, error_buf.items });
+                std.log.err("failed parsing {s}: {s}", .{ dep_file_basename, error_buf.items });
                 return error.InvalidDepFile;
             },
         }
@@ -502,7 +555,7 @@ pub const Manifest = struct {
                 .prereq => |bytes| try self.addFilePost(bytes),
                 else => |err| {
                     try err.printError(error_buf.writer());
-                    std.log.err("failed parsing {}: {}", .{ dep_file_basename, error_buf.items });
+                    std.log.err("failed parsing {s}: {s}", .{ dep_file_basename, error_buf.items });
                     return error.InvalidDepFile;
                 },
             }
@@ -519,11 +572,15 @@ pub const Manifest = struct {
         // cache_release is called we still might be working on creating
         // the artifacts to cache.
 
-        var bin_digest: [bin_digest_len]u8 = undefined;
+        var bin_digest: BinDigest = undefined;
         self.hash.hasher.final(&bin_digest);
 
         var out_digest: [hex_digest_len]u8 = undefined;
-        _ = std.fmt.bufPrint(&out_digest, "{x}", .{bin_digest}) catch unreachable;
+        _ = std.fmt.bufPrint(
+            &out_digest,
+            "{s}",
+            .{std.fmt.fmtSliceHexLower(&bin_digest)},
+        ) catch unreachable;
 
         return out_digest;
     }
@@ -539,7 +596,11 @@ pub const Manifest = struct {
         var encoded_digest: [hex_digest_len]u8 = undefined;
 
         for (self.files.items) |file| {
-            _ = std.fmt.bufPrint(&encoded_digest, "{x}", .{file.bin_digest}) catch unreachable;
+            _ = std.fmt.bufPrint(
+                &encoded_digest,
+                "{s}",
+                .{std.fmt.fmtSliceHexLower(&file.bin_digest)},
+            ) catch unreachable;
             try writer.print("{d} {d} {d} {s} {s}\n", .{
                 file.stat.size,
                 file.stat.inode,
@@ -558,9 +619,11 @@ pub const Manifest = struct {
     /// The `Manifest` remains safe to deinit.
     /// Don't forget to call `writeManifest` before this!
     pub fn toOwnedLock(self: *Manifest) Lock {
-        const manifest_file = self.manifest_file.?;
+        const lock: Lock = .{
+            .manifest_file = self.manifest_file.?,
+        };
         self.manifest_file = null;
-        return Lock{ .manifest_file = manifest_file };
+        return lock;
     }
 
     /// Releases the manifest file and frees any memory the Manifest was using.
@@ -650,6 +713,7 @@ test "cache file and then recall it" {
         // https://github.com/ziglang/zig/issues/5437
         return error.SkipZigTest;
     }
+
     const cwd = fs.cwd();
 
     const temp_file = "test.txt";
@@ -682,7 +746,7 @@ test "cache file and then recall it" {
             _ = try ch.addFile(temp_file, null);
 
             // There should be nothing in the cache
-            testing.expectEqual(false, try ch.hit());
+            try testing.expectEqual(false, try ch.hit());
 
             digest1 = ch.final();
             try ch.writeManifest();
@@ -697,13 +761,13 @@ test "cache file and then recall it" {
             _ = try ch.addFile(temp_file, null);
 
             // Cache hit! We just "built" the same file
-            testing.expect(try ch.hit());
+            try testing.expect(try ch.hit());
             digest2 = ch.final();
 
             try ch.writeManifest();
         }
 
-        testing.expectEqual(digest1, digest2);
+        try testing.expectEqual(digest1, digest2);
     }
 
     try cwd.deleteTree(temp_manifest_dir);
@@ -715,11 +779,11 @@ test "give problematic timestamp" {
     // to make it problematic, we make it only accurate to the second
     fs_clock = @divTrunc(fs_clock, std.time.ns_per_s);
     fs_clock *= std.time.ns_per_s;
-    testing.expect(isProblematicTimestamp(fs_clock));
+    try testing.expect(isProblematicTimestamp(fs_clock));
 }
 
 test "give nonproblematic timestamp" {
-    testing.expect(!isProblematicTimestamp(std.time.nanoTimestamp() - std.time.ns_per_s));
+    try testing.expect(!isProblematicTimestamp(std.time.nanoTimestamp() - std.time.ns_per_s));
 }
 
 test "check that changing a file makes cache fail" {
@@ -762,9 +826,9 @@ test "check that changing a file makes cache fail" {
             const temp_file_idx = try ch.addFile(temp_file, 100);
 
             // There should be nothing in the cache
-            testing.expectEqual(false, try ch.hit());
+            try testing.expectEqual(false, try ch.hit());
 
-            testing.expect(mem.eql(u8, original_temp_file_contents, ch.files.items[temp_file_idx].contents.?));
+            try testing.expect(mem.eql(u8, original_temp_file_contents, ch.files.items[temp_file_idx].contents.?));
 
             digest1 = ch.final();
 
@@ -781,17 +845,17 @@ test "check that changing a file makes cache fail" {
             const temp_file_idx = try ch.addFile(temp_file, 100);
 
             // A file that we depend on has been updated, so the cache should not contain an entry for it
-            testing.expectEqual(false, try ch.hit());
+            try testing.expectEqual(false, try ch.hit());
 
             // The cache system does not keep the contents of re-hashed input files.
-            testing.expect(ch.files.items[temp_file_idx].contents == null);
+            try testing.expect(ch.files.items[temp_file_idx].contents == null);
 
             digest2 = ch.final();
 
             try ch.writeManifest();
         }
 
-        testing.expect(!mem.eql(u8, digest1[0..], digest2[0..]));
+        try testing.expect(!mem.eql(u8, digest1[0..], digest2[0..]));
     }
 
     try cwd.deleteTree(temp_manifest_dir);
@@ -823,7 +887,7 @@ test "no file inputs" {
         ch.hash.addBytes("1234");
 
         // There should be nothing in the cache
-        testing.expectEqual(false, try ch.hit());
+        try testing.expectEqual(false, try ch.hit());
 
         digest1 = ch.final();
 
@@ -835,12 +899,12 @@ test "no file inputs" {
 
         ch.hash.addBytes("1234");
 
-        testing.expect(try ch.hit());
+        try testing.expect(try ch.hit());
         digest2 = ch.final();
         try ch.writeManifest();
     }
 
-    testing.expectEqual(digest1, digest2);
+    try testing.expectEqual(digest1, digest2);
 }
 
 test "Manifest with files added after initial hash work" {
@@ -881,7 +945,7 @@ test "Manifest with files added after initial hash work" {
             _ = try ch.addFile(temp_file1, null);
 
             // There should be nothing in the cache
-            testing.expectEqual(false, try ch.hit());
+            try testing.expectEqual(false, try ch.hit());
 
             _ = try ch.addFilePost(temp_file2);
 
@@ -895,12 +959,12 @@ test "Manifest with files added after initial hash work" {
             ch.hash.addBytes("1234");
             _ = try ch.addFile(temp_file1, null);
 
-            testing.expect(try ch.hit());
+            try testing.expect(try ch.hit());
             digest2 = ch.final();
 
             try ch.writeManifest();
         }
-        testing.expect(mem.eql(u8, &digest1, &digest2));
+        try testing.expect(mem.eql(u8, &digest1, &digest2));
 
         // Modify the file added after initial hash
         const ts2 = std.time.nanoTimestamp();
@@ -918,7 +982,7 @@ test "Manifest with files added after initial hash work" {
             _ = try ch.addFile(temp_file1, null);
 
             // A file that we depend on has been updated, so the cache should not contain an entry for it
-            testing.expectEqual(false, try ch.hit());
+            try testing.expectEqual(false, try ch.hit());
 
             _ = try ch.addFilePost(temp_file2);
 
@@ -927,7 +991,7 @@ test "Manifest with files added after initial hash work" {
             try ch.writeManifest();
         }
 
-        testing.expect(!mem.eql(u8, &digest1, &digest3));
+        try testing.expect(!mem.eql(u8, &digest1, &digest3));
     }
 
     try cwd.deleteTree(temp_manifest_dir);

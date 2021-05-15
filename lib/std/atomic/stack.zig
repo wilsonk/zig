@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -110,24 +110,24 @@ test "std.atomic.stack" {
         {
             var i: usize = 0;
             while (i < put_thread_count) : (i += 1) {
-                expect(startPuts(&context) == 0);
+                try expect(startPuts(&context) == 0);
             }
         }
         context.puts_done = true;
         {
             var i: usize = 0;
             while (i < put_thread_count) : (i += 1) {
-                expect(startGets(&context) == 0);
+                try expect(startGets(&context) == 0);
             }
         }
     } else {
         var putters: [put_thread_count]*std.Thread = undefined;
         for (putters) |*t| {
-            t.* = try std.Thread.spawn(&context, startPuts);
+            t.* = try std.Thread.spawn(startPuts, &context);
         }
         var getters: [put_thread_count]*std.Thread = undefined;
         for (getters) |*t| {
-            t.* = try std.Thread.spawn(&context, startGets);
+            t.* = try std.Thread.spawn(startGets, &context);
         }
 
         for (putters) |t|

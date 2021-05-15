@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
-const builtin = @import("builtin");
+const std = @import("std");
+const builtin = std.builtin;
 
 fn __clzsi2_generic(a: i32) callconv(.C) i32 {
     @setRuntimeSafety(builtin.is_test);
@@ -25,7 +26,7 @@ fn __clzsi2_generic(a: i32) callconv(.C) i32 {
 }
 
 fn __clzsi2_thumb1() callconv(.Naked) void {
-    @setRuntimeSafety(builtin.is_test);
+    @setRuntimeSafety(false);
 
     // Similar to the generic version with the last two rounds replaced by a LUT
     asm volatile (
@@ -59,7 +60,7 @@ fn __clzsi2_thumb1() callconv(.Naked) void {
 }
 
 fn __clzsi2_arm32() callconv(.Naked) void {
-    @setRuntimeSafety(builtin.is_test);
+    @setRuntimeSafety(false);
 
     asm volatile (
         \\ // Assumption: n != 0
@@ -107,13 +108,21 @@ fn __clzsi2_arm32() callconv(.Naked) void {
     unreachable;
 }
 
-pub const __clzsi2 = blk: {
-    if (builtin.arch.isARM()) {
-        break :blk __clzsi2_arm32;
-    } else if (builtin.arch.isThumb()) {
-        break :blk __clzsi2_thumb1;
-    } else {
-        break :blk __clzsi2_generic;
+pub const __clzsi2 = impl: {
+    switch (std.Target.current.cpu.arch) {
+        .arm, .armeb, .thumb, .thumbeb => {
+            const use_thumb1 =
+                (std.Target.current.cpu.arch.isThumb() or
+                std.Target.arm.featureSetHas(std.Target.current.cpu.features, .noarm)) and
+                !std.Target.arm.featureSetHas(std.Target.current.cpu.features, .thumb2);
+
+            if (use_thumb1) break :impl __clzsi2_thumb1
+            // From here on we're either targeting Thumb2 or ARM.
+            else if (!std.Target.current.cpu.arch.isThumb()) break :impl __clzsi2_arm32
+            // Use the generic implementation otherwise.
+            else break :impl __clzsi2_generic;
+        },
+        else => break :impl __clzsi2_generic,
     }
 };
 

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
 const magic = 0xeb9f;
 const version = 1;
 
-pub const ext = @import("ext.zig");
+pub const ext = @import("btf_ext.zig");
 
 /// All offsets are in bytes relative to the end of this header
 pub const Header = packed struct {
@@ -92,7 +92,7 @@ pub const IntInfo = packed struct {
 };
 
 test "IntInfo is 32 bits" {
-    std.testing.expectEqual(@bitSizeOf(IntInfo), 32);
+    try std.testing.expectEqual(@bitSizeOf(IntInfo), 32);
 }
 
 /// Enum kind is followed by this struct

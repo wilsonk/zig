@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -57,11 +57,11 @@ pub const TranslateCStep = struct {
     }
 
     pub fn addIncludeDir(self: *TranslateCStep, include_dir: []const u8) void {
-        self.include_dirs.append(include_dir) catch unreachable;
+        self.include_dirs.append(self.builder.dupePath(include_dir)) catch unreachable;
     }
 
     pub fn addCheckFile(self: *TranslateCStep, expected_matches: []const []const u8) *CheckFileStep {
-        return CheckFileStep.create(self.builder, .{ .translate_c = self }, expected_matches);
+        return CheckFileStep.create(self.builder, .{ .translate_c = self }, self.builder.dupeStrings(expected_matches));
     }
 
     fn make(step: *Step) !void {
@@ -86,7 +86,7 @@ pub const TranslateCStep = struct {
 
         try argv_list.append(self.source.getPath(self.builder));
 
-        const output_path_nl = try self.builder.execFromStep(argv_list.span(), &self.step);
+        const output_path_nl = try self.builder.execFromStep(argv_list.items, &self.step);
         const output_path = mem.trimRight(u8, output_path_nl, "\r\n");
 
         self.out_basename = fs.path.basename(output_path);

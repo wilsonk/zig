@@ -1,5 +1,5 @@
 const std = @import("std");
-const llvm = @import("llvm.zig");
+const llvm = @import("codegen/llvm/bindings.zig");
 
 pub const ArchOsAbi = struct {
     arch: std.Target.Cpu.Arch,
@@ -14,6 +14,7 @@ pub const available_libcs = [_]ArchOsAbi{
     .{ .arch = .aarch64, .os = .linux, .abi = .gnu },
     .{ .arch = .aarch64, .os = .linux, .abi = .musl },
     .{ .arch = .aarch64, .os = .windows, .abi = .gnu },
+    .{ .arch = .aarch64, .os = .macos, .abi = .gnu },
     .{ .arch = .armeb, .os = .linux, .abi = .gnueabi },
     .{ .arch = .armeb, .os = .linux, .abi = .gnueabihf },
     .{ .arch = .armeb, .os = .linux, .abi = .musleabi },
@@ -23,7 +24,13 @@ pub const available_libcs = [_]ArchOsAbi{
     .{ .arch = .arm, .os = .linux, .abi = .gnueabihf },
     .{ .arch = .arm, .os = .linux, .abi = .musleabi },
     .{ .arch = .arm, .os = .linux, .abi = .musleabihf },
+    .{ .arch = .thumb, .os = .linux, .abi = .gnueabi },
+    .{ .arch = .thumb, .os = .linux, .abi = .gnueabihf },
+    .{ .arch = .thumb, .os = .linux, .abi = .musleabi },
+    .{ .arch = .thumb, .os = .linux, .abi = .musleabihf },
     .{ .arch = .arm, .os = .windows, .abi = .gnu },
+    .{ .arch = .csky, .os = .linux, .abi = .gnueabi },
+    .{ .arch = .csky, .os = .linux, .abi = .gnueabihf },
     .{ .arch = .i386, .os = .linux, .abi = .gnu },
     .{ .arch = .i386, .os = .linux, .abi = .musl },
     .{ .arch = .i386, .os = .windows, .abi = .gnu },
@@ -58,8 +65,11 @@ pub const available_libcs = [_]ArchOsAbi{
 };
 
 pub fn libCGenericName(target: std.Target) [:0]const u8 {
-    if (target.os.tag == .windows)
-        return "mingw";
+    switch (target.os.tag) {
+        .windows => return "mingw",
+        .macos, .ios, .tvos, .watchos => return "darwin",
+        else => {},
+    }
     switch (target.abi) {
         .gnu,
         .gnuabin32,
@@ -67,6 +77,7 @@ pub fn libCGenericName(target: std.Target) [:0]const u8 {
         .gnueabi,
         .gnueabihf,
         .gnux32,
+        .gnuilp32,
         => return "glibc",
         .musl,
         .musleabi,
@@ -90,7 +101,7 @@ pub fn libCGenericName(target: std.Target) [:0]const u8 {
 pub fn archMuslName(arch: std.Target.Cpu.Arch) [:0]const u8 {
     switch (arch) {
         .aarch64, .aarch64_be => return "aarch64",
-        .arm, .armeb => return "arm",
+        .arm, .armeb, .thumb, .thumbeb => return "arm",
         .mips, .mipsel => return "mips",
         .mips64el, .mips64 => return "mips64",
         .powerpc => return "powerpc",
@@ -99,6 +110,7 @@ pub fn archMuslName(arch: std.Target.Cpu.Arch) [:0]const u8 {
         .i386 => return "i386",
         .x86_64 => return "x86_64",
         .riscv64 => return "riscv64",
+        .wasm32, .wasm64 => return "wasm",
         else => unreachable,
     }
 }
@@ -123,10 +135,7 @@ pub fn cannotDynamicLink(target: std.Target) bool {
 /// Similarly on FreeBSD and NetBSD we always link system libc
 /// since this is the stable syscall interface.
 pub fn osRequiresLibC(target: std.Target) bool {
-    return switch (target.os.tag) {
-        .freebsd, .netbsd, .dragonfly, .openbsd, .macos, .ios, .watchos, .tvos => true,
-        else => false,
-    };
+    return target.os.requiresLibC();
 }
 
 pub fn libcNeedsLibUnwind(target: std.Target) bool {
@@ -187,7 +196,7 @@ pub fn supportsStackProbing(target: std.Target) bool {
 
 pub fn osToLLVM(os_tag: std.Target.Os.Tag) llvm.OSType {
     return switch (os_tag) {
-        .freestanding, .other => .UnknownOS,
+        .freestanding, .other, .opencl, .glsl450, .vulkan => .UnknownOS,
         .windows, .uefi => .Win32,
         .ananas => .Ananas,
         .cloudabi => .CloudABI,
@@ -202,11 +211,11 @@ pub fn osToLLVM(os_tag: std.Target.Os.Tag) llvm.OSType {
         .netbsd => .NetBSD,
         .openbsd => .OpenBSD,
         .solaris => .Solaris,
+        .zos => .ZOS,
         .haiku => .Haiku,
         .minix => .Minix,
         .rtems => .RTEMS,
         .nacl => .NaCl,
-        .cnk => .CNK,
         .aix => .AIX,
         .cuda => .CUDA,
         .nvcl => .NVCL,
@@ -236,6 +245,7 @@ pub fn archToLLVM(arch_tag: std.Target.Cpu.Arch) llvm.ArchType {
         .avr => .avr,
         .bpfel => .bpfel,
         .bpfeb => .bpfeb,
+        .csky => .csky,
         .hexagon => .hexagon,
         .mips => .mips,
         .mipsel => .mipsel,
@@ -243,6 +253,7 @@ pub fn archToLLVM(arch_tag: std.Target.Cpu.Arch) llvm.ArchType {
         .mips64el => .mips64el,
         .msp430 => .msp430,
         .powerpc => .ppc,
+        .powerpcle => .ppcle,
         .powerpc64 => .ppc64,
         .powerpc64le => .ppc64le,
         .r600 => .r600,
@@ -278,7 +289,7 @@ pub fn archToLLVM(arch_tag: std.Target.Cpu.Arch) llvm.ArchType {
         .renderscript32 => .renderscript32,
         .renderscript64 => .renderscript64,
         .ve => .ve,
-        .spu_2 => .UnknownArch,
+        .spu_2, .spirv32, .spirv64 => .UnknownArch,
     };
 }
 
@@ -320,8 +331,6 @@ pub fn is_libc_lib_name(target: std.Target, name: []const u8) bool {
             return true;
         if (eqlIgnoreCase(ignore_case, name, "dl"))
             return true;
-        if (eqlIgnoreCase(ignore_case, name, "util"))
-            return true;
     }
 
     if (target.os.tag.isDarwin() and eqlIgnoreCase(ignore_case, name, "System"))
@@ -340,4 +349,55 @@ pub fn is_libcpp_lib_name(target: std.Target, name: []const u8) bool {
 
 pub fn hasDebugInfo(target: std.Target) bool {
     return !target.cpu.arch.isWasm();
+}
+
+pub fn defaultCompilerRtOptimizeMode(target: std.Target) std.builtin.Mode {
+    if (target.cpu.arch.isWasm() and target.os.tag == .freestanding) {
+        return .ReleaseSmall;
+    } else {
+        return .ReleaseFast;
+    }
+}
+
+pub fn hasRedZone(target: std.Target) bool {
+    return switch (target.cpu.arch) {
+        .x86_64,
+        .i386,
+        .powerpc,
+        .powerpc64,
+        .powerpc64le,
+        .aarch64,
+        .aarch64_be,
+        .aarch64_32,
+        => true,
+
+        else => false,
+    };
+}
+
+pub fn libcFullLinkFlags(target: std.Target) []const []const u8 {
+    // The linking order of these is significant and should match the order other
+    // c compilers such as gcc or clang use.
+    return switch (target.os.tag) {
+        .netbsd, .openbsd => &[_][]const u8{
+            "-lm",
+            "-lpthread",
+            "-lc",
+            "-lutil",
+        },
+        else => &[_][]const u8{
+            "-lm",
+            "-lpthread",
+            "-lc",
+            "-ldl",
+            "-lrt",
+            "-lutil",
+        },
+    };
+}
+
+pub fn clangMightShellOutForAssembly(target: std.Target) bool {
+    // Clang defaults to using the system assembler over the internal one
+    // when targeting a non-BSD OS.
+    return target.cpu.arch.isSPARC();
 }

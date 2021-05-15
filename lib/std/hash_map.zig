@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -17,6 +17,17 @@ const Allocator = mem.Allocator;
 const Wyhash = std.hash.Wyhash;
 
 pub fn getAutoHashFn(comptime K: type) (fn (K) u64) {
+    comptime {
+        assert(@hasDecl(std, "StringHashMap")); // detect when the following message needs updated
+        if (K == []const u8) {
+            @compileError("std.auto_hash.autoHash does not allow slices here (" ++
+                @typeName(K) ++
+                ") because the intent is unclear. " ++
+                "Consider using std.StringHashMap for hashing the contents of []const u8. " ++
+                "Alternatively, consider using std.auto_hash.hash or providing your own hash function instead.");
+        }
+    }
+
     return struct {
         fn hash(key: K) u64 {
             if (comptime trait.hasUniqueRepresentation(K)) {
@@ -39,20 +50,20 @@ pub fn getAutoEqlFn(comptime K: type) (fn (K, K) bool) {
 }
 
 pub fn AutoHashMap(comptime K: type, comptime V: type) type {
-    return HashMap(K, V, getAutoHashFn(K), getAutoEqlFn(K), DefaultMaxLoadPercentage);
+    return HashMap(K, V, getAutoHashFn(K), getAutoEqlFn(K), default_max_load_percentage);
 }
 
 pub fn AutoHashMapUnmanaged(comptime K: type, comptime V: type) type {
-    return HashMapUnmanaged(K, V, getAutoHashFn(K), getAutoEqlFn(K), DefaultMaxLoadPercentage);
+    return HashMapUnmanaged(K, V, getAutoHashFn(K), getAutoEqlFn(K), default_max_load_percentage);
 }
 
 /// Builtin hashmap for strings as keys.
 pub fn StringHashMap(comptime V: type) type {
-    return HashMap([]const u8, V, hashString, eqlString, DefaultMaxLoadPercentage);
+    return HashMap([]const u8, V, hashString, eqlString, default_max_load_percentage);
 }
 
 pub fn StringHashMapUnmanaged(comptime V: type) type {
-    return HashMapUnmanaged([]const u8, V, hashString, eqlString, DefaultMaxLoadPercentage);
+    return HashMapUnmanaged([]const u8, V, hashString, eqlString, default_max_load_percentage);
 }
 
 pub fn eqlString(a: []const u8, b: []const u8) bool {
@@ -63,7 +74,10 @@ pub fn hashString(s: []const u8) u64 {
     return std.hash.Wyhash.hash(0, s);
 }
 
-pub const DefaultMaxLoadPercentage = 80;
+/// Deprecated use `default_max_load_percentage`
+pub const DefaultMaxLoadPercentage = default_max_load_percentage;
+
+pub const default_max_load_percentage = 80;
 
 /// General purpose hash table.
 /// No order is guaranteed and any modification invalidates live iterators.
@@ -78,13 +92,13 @@ pub fn HashMap(
     comptime V: type,
     comptime hashFn: fn (key: K) u64,
     comptime eqlFn: fn (a: K, b: K) bool,
-    comptime MaxLoadPercentage: u64,
+    comptime max_load_percentage: u64,
 ) type {
     return struct {
         unmanaged: Unmanaged,
         allocator: *Allocator,
 
-        pub const Unmanaged = HashMapUnmanaged(K, V, hashFn, eqlFn, MaxLoadPercentage);
+        pub const Unmanaged = HashMapUnmanaged(K, V, hashFn, eqlFn, max_load_percentage);
         pub const Entry = Unmanaged.Entry;
         pub const Hash = Unmanaged.Hash;
         pub const Iterator = Unmanaged.Iterator;
@@ -240,9 +254,9 @@ pub fn HashMapUnmanaged(
     comptime V: type,
     hashFn: fn (key: K) u64,
     eqlFn: fn (a: K, b: K) bool,
-    comptime MaxLoadPercentage: u64,
+    comptime max_load_percentage: u64,
 ) type {
-    comptime assert(MaxLoadPercentage > 0 and MaxLoadPercentage < 100);
+    comptime assert(max_load_percentage > 0 and max_load_percentage < 100);
 
     return struct {
         const Self = @This();
@@ -263,12 +277,12 @@ pub fn HashMapUnmanaged(
         // Having a countdown to grow reduces the number of instructions to
         // execute when determining if the hashmap has enough capacity already.
         /// Number of available slots before a grow is needed to satisfy the
-        /// `MaxLoadPercentage`.
+        /// `max_load_percentage`.
         available: Size = 0,
 
         // This is purely empirical and not a /very smart magic constant™/.
         /// Capacity of the first grow when bootstrapping the hashmap.
-        const MinimalCapacity = 8;
+        const minimal_capacity = 8;
 
         // This hashmap is specially designed for sizes that fit in a u32.
         const Size = u32;
@@ -290,29 +304,32 @@ pub fn HashMapUnmanaged(
         /// Metadata for a slot. It can be in three states: empty, used or
         /// tombstone. Tombstones indicate that an entry was previously used,
         /// they are a simple way to handle removal.
-        /// To this state, we add 6 bits from the slot's key hash. These are
+        /// To this state, we add 7 bits from the slot's key hash. These are
         /// used as a fast way to disambiguate between entries without
         /// having to use the equality function. If two fingerprints are
         /// different, we know that we don't have to compare the keys at all.
-        /// The 6 bits are the highest ones from a 64 bit hash. This way, not
+        /// The 7 bits are the highest ones from a 64 bit hash. This way, not
         /// only we use the `log2(capacity)` lowest bits from the hash to determine
-        /// a slot index, but we use 6 more bits to quickly resolve collisions
-        /// when multiple elements with different hashes end up wanting to be in / the same slot.
+        /// a slot index, but we use 7 more bits to quickly resolve collisions
+        /// when multiple elements with different hashes end up wanting to be in the same slot.
         /// Not using the equality function means we don't have to read into
-        /// the entries array, avoiding a likely cache miss.
+        /// the entries array, likely avoiding a cache miss and a potentially
+        /// costly function call.
         const Metadata = packed struct {
-            const FingerPrint = u6;
+            const FingerPrint = u7;
 
+            const free: FingerPrint = 0;
+            const tombstone: FingerPrint = 1;
+
+            fingerprint: FingerPrint = free,
             used: u1 = 0,
-            tombstone: u1 = 0,
-            fingerprint: FingerPrint = 0,
 
             pub fn isUsed(self: Metadata) bool {
                 return self.used == 1;
             }
 
             pub fn isTombstone(self: Metadata) bool {
-                return self.tombstone == 1;
+                return !self.isUsed() and self.fingerprint == tombstone;
             }
 
             pub fn takeFingerprint(hash: Hash) FingerPrint {
@@ -323,14 +340,12 @@ pub fn HashMapUnmanaged(
 
             pub fn fill(self: *Metadata, fp: FingerPrint) void {
                 self.used = 1;
-                self.tombstone = 0;
                 self.fingerprint = fp;
             }
 
             pub fn remove(self: *Metadata) void {
                 self.used = 0;
-                self.tombstone = 1;
-                self.fingerprint = 0;
+                self.fingerprint = tombstone;
             }
         };
 
@@ -371,7 +386,7 @@ pub fn HashMapUnmanaged(
             found_existing: bool,
         };
 
-        pub const Managed = HashMap(K, V, hashFn, eqlFn, MaxLoadPercentage);
+        pub const Managed = HashMap(K, V, hashFn, eqlFn, max_load_percentage);
 
         pub fn promote(self: Self, allocator: *Allocator) Managed {
             return .{
@@ -381,11 +396,7 @@ pub fn HashMapUnmanaged(
         }
 
         fn isUnderMaxLoadPercentage(size: Size, cap: Size) bool {
-            return size * 100 < MaxLoadPercentage * cap;
-        }
-
-        pub fn init(allocator: *Allocator) Self {
-            return .{};
+            return size * 100 < max_load_percentage * cap;
         }
 
         pub fn deinit(self: *Self, allocator: *Allocator) void {
@@ -414,7 +425,7 @@ pub fn HashMapUnmanaged(
         }
 
         fn capacityForSize(size: Size) Size {
-            var new_cap = @truncate(u32, (@as(u64, size) * 100) / MaxLoadPercentage + 1);
+            var new_cap = @truncate(u32, (@as(u64, size) * 100) / max_load_percentage + 1);
             new_cap = math.ceilPowerOfTwo(u32, new_cap) catch unreachable;
             return new_cap;
         }
@@ -428,7 +439,7 @@ pub fn HashMapUnmanaged(
             if (self.metadata) |_| {
                 self.initMetadatas();
                 self.size = 0;
-                self.available = 0;
+                self.available = @truncate(u32, (self.capacity() * max_load_percentage) / 100);
             }
         }
 
@@ -468,41 +479,12 @@ pub fn HashMapUnmanaged(
             self.putAssumeCapacityNoClobber(key, value);
         }
 
+        /// Asserts there is enough capacity to store the new key-value pair.
+        /// Clobbers any existing data. To detect if a put would clobber
+        /// existing data, see `getOrPutAssumeCapacity`.
         pub fn putAssumeCapacity(self: *Self, key: K, value: V) void {
-            const hash = hashFn(key);
-            const mask = self.capacity() - 1;
-            const fingerprint = Metadata.takeFingerprint(hash);
-            var idx = @truncate(usize, hash & mask);
-
-            var first_tombstone_idx: usize = self.capacity(); // invalid index
-            var metadata = self.metadata.? + idx;
-            while (metadata[0].isUsed() or metadata[0].isTombstone()) {
-                if (metadata[0].isUsed() and metadata[0].fingerprint == fingerprint) {
-                    const entry = &self.entries()[idx];
-                    if (eqlFn(entry.key, key)) {
-                        return;
-                    }
-                } else if (first_tombstone_idx == self.capacity() and metadata[0].isTombstone()) {
-                    first_tombstone_idx = idx;
-                }
-
-                idx = (idx + 1) & mask;
-                metadata = self.metadata.? + idx;
-            }
-
-            if (first_tombstone_idx < self.capacity()) {
-                // Cheap try to lower probing lengths after deletions. Recycle a tombstone.
-                idx = first_tombstone_idx;
-                metadata = self.metadata.? + idx;
-            } else {
-                // We're using a slot previously free.
-                self.available -= 1;
-            }
-
-            metadata[0].fill(fingerprint);
-            const entry = &self.entries()[idx];
-            entry.* = .{ .key = key, .value = undefined };
-            self.size += 1;
+            const gop = self.getOrPutAssumeCapacity(key);
+            gop.entry.value = value;
         }
 
         /// Insert an entry in the map. Assumes it is not already present,
@@ -581,7 +563,6 @@ pub fn HashMapUnmanaged(
         }
 
         /// Insert an entry if the associated key is not already present, otherwise update preexisting value.
-        /// Returns true if the key was already present.
         pub fn put(self: *Self, allocator: *Allocator, key: K, value: V) !void {
             const result = try self.getOrPut(allocator, key);
             result.entry.value = value;
@@ -731,9 +712,9 @@ pub fn HashMapUnmanaged(
         }
 
         // This counts the number of occupied slots, used + tombstones, which is
-        // what has to stay under the MaxLoadPercentage of capacity.
+        // what has to stay under the max_load_percentage of capacity.
         fn load(self: *const Self) Size {
-            const max_load = (self.capacity() * MaxLoadPercentage) / 100;
+            const max_load = (self.capacity() * max_load_percentage) / 100;
             assert(max_load >= self.available);
             return @truncate(Size, max_load - self.available);
         }
@@ -752,7 +733,7 @@ pub fn HashMapUnmanaged(
             const new_cap = capacityForSize(self.size);
             try other.allocate(allocator, new_cap);
             other.initMetadatas();
-            other.available = @truncate(u32, (new_cap * MaxLoadPercentage) / 100);
+            other.available = @truncate(u32, (new_cap * max_load_percentage) / 100);
 
             var i: Size = 0;
             var metadata = self.metadata.?;
@@ -770,7 +751,7 @@ pub fn HashMapUnmanaged(
         }
 
         fn grow(self: *Self, allocator: *Allocator, new_capacity: Size) !void {
-            const new_cap = std.math.max(new_capacity, MinimalCapacity);
+            const new_cap = std.math.max(new_capacity, minimal_capacity);
             assert(new_cap > self.capacity());
             assert(std.math.isPowerOfTwo(new_cap));
 
@@ -778,7 +759,7 @@ pub fn HashMapUnmanaged(
             defer map.deinit(allocator);
             try map.allocate(allocator, new_cap);
             map.initMetadatas();
-            map.available = @truncate(u32, (new_cap * MaxLoadPercentage) / 100);
+            map.available = @truncate(u32, (new_cap * max_load_percentage) / 100);
 
             if (self.size != 0) {
                 const old_capacity = self.capacity();
@@ -844,15 +825,15 @@ test "std.hash_map basic usage" {
     while (it.next()) |kv| {
         sum += kv.key;
     }
-    expect(sum == total);
+    try expect(sum == total);
 
     i = 0;
     sum = 0;
     while (i < count) : (i += 1) {
-        expectEqual(map.get(i).?, i);
+        try expectEqual(map.get(i).?, i);
         sum += map.get(i).?;
     }
-    expectEqual(total, sum);
+    try expectEqual(total, sum);
 }
 
 test "std.hash_map ensureCapacity" {
@@ -861,13 +842,13 @@ test "std.hash_map ensureCapacity" {
 
     try map.ensureCapacity(20);
     const initial_capacity = map.capacity();
-    testing.expect(initial_capacity >= 20);
+    try testing.expect(initial_capacity >= 20);
     var i: i32 = 0;
     while (i < 20) : (i += 1) {
-        testing.expect(map.fetchPutAssumeCapacity(i, i + 10) == null);
+        try testing.expect(map.fetchPutAssumeCapacity(i, i + 10) == null);
     }
     // shouldn't resize from putAssumeCapacity
-    testing.expect(initial_capacity == map.capacity());
+    try testing.expect(initial_capacity == map.capacity());
 }
 
 test "std.hash_map ensureCapacity with tombstones" {
@@ -890,17 +871,22 @@ test "std.hash_map clearRetainingCapacity" {
     map.clearRetainingCapacity();
 
     try map.put(1, 1);
-    expectEqual(map.get(1).?, 1);
-    expectEqual(map.count(), 1);
+    try expectEqual(map.get(1).?, 1);
+    try expectEqual(map.count(), 1);
+
+    map.clearRetainingCapacity();
+    map.putAssumeCapacity(1, 1);
+    try expectEqual(map.get(1).?, 1);
+    try expectEqual(map.count(), 1);
 
     const cap = map.capacity();
-    expect(cap > 0);
+    try expect(cap > 0);
 
     map.clearRetainingCapacity();
     map.clearRetainingCapacity();
-    expectEqual(map.count(), 0);
-    expectEqual(map.capacity(), cap);
-    expect(!map.contains(1));
+    try expectEqual(map.count(), 0);
+    try expectEqual(map.capacity(), cap);
+    try expect(!map.contains(1));
 }
 
 test "std.hash_map grow" {
@@ -913,19 +899,19 @@ test "std.hash_map grow" {
     while (i < growTo) : (i += 1) {
         try map.put(i, i);
     }
-    expectEqual(map.count(), growTo);
+    try expectEqual(map.count(), growTo);
 
     i = 0;
     var it = map.iterator();
     while (it.next()) |kv| {
-        expectEqual(kv.key, kv.value);
+        try expectEqual(kv.key, kv.value);
         i += 1;
     }
-    expectEqual(i, growTo);
+    try expectEqual(i, growTo);
 
     i = 0;
     while (i < growTo) : (i += 1) {
-        expectEqual(map.get(i).?, i);
+        try expectEqual(map.get(i).?, i);
     }
 }
 
@@ -936,7 +922,7 @@ test "std.hash_map clone" {
     var a = try map.clone();
     defer a.deinit();
 
-    expectEqual(a.count(), 0);
+    try expectEqual(a.count(), 0);
 
     try a.put(1, 1);
     try a.put(2, 2);
@@ -945,10 +931,10 @@ test "std.hash_map clone" {
     var b = try a.clone();
     defer b.deinit();
 
-    expectEqual(b.count(), 3);
-    expectEqual(b.get(1), 1);
-    expectEqual(b.get(2), 2);
-    expectEqual(b.get(3), 3);
+    try expectEqual(b.count(), 3);
+    try expectEqual(b.get(1), 1);
+    try expectEqual(b.get(2), 2);
+    try expectEqual(b.get(3), 3);
 }
 
 test "std.hash_map ensureCapacity with existing elements" {
@@ -956,12 +942,12 @@ test "std.hash_map ensureCapacity with existing elements" {
     defer map.deinit();
 
     try map.put(0, 0);
-    expectEqual(map.count(), 1);
-    expectEqual(map.capacity(), @TypeOf(map).Unmanaged.MinimalCapacity);
+    try expectEqual(map.count(), 1);
+    try expectEqual(map.capacity(), @TypeOf(map).Unmanaged.minimal_capacity);
 
     try map.ensureCapacity(65);
-    expectEqual(map.count(), 1);
-    expectEqual(map.capacity(), 128);
+    try expectEqual(map.count(), 1);
+    try expectEqual(map.capacity(), 128);
 }
 
 test "std.hash_map ensureCapacity satisfies max load factor" {
@@ -969,7 +955,7 @@ test "std.hash_map ensureCapacity satisfies max load factor" {
     defer map.deinit();
 
     try map.ensureCapacity(127);
-    expectEqual(map.capacity(), 256);
+    try expectEqual(map.capacity(), 256);
 }
 
 test "std.hash_map remove" {
@@ -987,19 +973,19 @@ test "std.hash_map remove" {
             _ = map.remove(i);
         }
     }
-    expectEqual(map.count(), 10);
+    try expectEqual(map.count(), 10);
     var it = map.iterator();
     while (it.next()) |kv| {
-        expectEqual(kv.key, kv.value);
-        expect(kv.key % 3 != 0);
+        try expectEqual(kv.key, kv.value);
+        try expect(kv.key % 3 != 0);
     }
 
     i = 0;
     while (i < 16) : (i += 1) {
         if (i % 3 == 0) {
-            expect(!map.contains(i));
+            try expect(!map.contains(i));
         } else {
-            expectEqual(map.get(i).?, i);
+            try expectEqual(map.get(i).?, i);
         }
     }
 }
@@ -1016,14 +1002,14 @@ test "std.hash_map reverse removes" {
     i = 16;
     while (i > 0) : (i -= 1) {
         _ = map.remove(i - 1);
-        expect(!map.contains(i - 1));
+        try expect(!map.contains(i - 1));
         var j: u32 = 0;
         while (j < i - 1) : (j += 1) {
-            expectEqual(map.get(j).?, j);
+            try expectEqual(map.get(j).?, j);
         }
     }
 
-    expectEqual(map.count(), 0);
+    try expectEqual(map.count(), 0);
 }
 
 test "std.hash_map multiple removes on same metadata" {
@@ -1039,17 +1025,17 @@ test "std.hash_map multiple removes on same metadata" {
     _ = map.remove(15);
     _ = map.remove(14);
     _ = map.remove(13);
-    expect(!map.contains(7));
-    expect(!map.contains(15));
-    expect(!map.contains(14));
-    expect(!map.contains(13));
+    try expect(!map.contains(7));
+    try expect(!map.contains(15));
+    try expect(!map.contains(14));
+    try expect(!map.contains(13));
 
     i = 0;
     while (i < 13) : (i += 1) {
         if (i == 7) {
-            expect(!map.contains(i));
+            try expect(!map.contains(i));
         } else {
-            expectEqual(map.get(i).?, i);
+            try expectEqual(map.get(i).?, i);
         }
     }
 
@@ -1059,7 +1045,7 @@ test "std.hash_map multiple removes on same metadata" {
     try map.put(7, 7);
     i = 0;
     while (i < 16) : (i += 1) {
-        expectEqual(map.get(i).?, i);
+        try expectEqual(map.get(i).?, i);
     }
 }
 
@@ -1085,12 +1071,12 @@ test "std.hash_map put and remove loop in random order" {
         for (keys.items) |key| {
             try map.put(key, key);
         }
-        expectEqual(map.count(), size);
+        try expectEqual(map.count(), size);
 
         for (keys.items) |key| {
             _ = map.remove(key);
         }
-        expectEqual(map.count(), 0);
+        try expectEqual(map.count(), 0);
     }
 }
 
@@ -1129,12 +1115,12 @@ test "std.hash_map put" {
 
     var i: u32 = 0;
     while (i < 16) : (i += 1) {
-        _ = try map.put(i, i);
+        try map.put(i, i);
     }
 
     i = 0;
     while (i < 16) : (i += 1) {
-        expectEqual(map.get(i).?, i);
+        try expectEqual(map.get(i).?, i);
     }
 
     i = 0;
@@ -1144,8 +1130,38 @@ test "std.hash_map put" {
 
     i = 0;
     while (i < 16) : (i += 1) {
-        expectEqual(map.get(i).?, i * 16 + 1);
+        try expectEqual(map.get(i).?, i * 16 + 1);
     }
+}
+
+test "std.hash_map putAssumeCapacity" {
+    var map = AutoHashMap(u32, u32).init(std.testing.allocator);
+    defer map.deinit();
+
+    try map.ensureCapacity(20);
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        map.putAssumeCapacityNoClobber(i, i);
+    }
+
+    i = 0;
+    var sum = i;
+    while (i < 20) : (i += 1) {
+        sum += map.get(i).?;
+    }
+    try expectEqual(sum, 190);
+
+    i = 0;
+    while (i < 20) : (i += 1) {
+        map.putAssumeCapacity(i, 1);
+    }
+
+    i = 0;
+    sum = i;
+    while (i < 20) : (i += 1) {
+        sum += map.get(i).?;
+    }
+    try expectEqual(sum, 20);
 }
 
 test "std.hash_map getOrPut" {
@@ -1168,49 +1184,49 @@ test "std.hash_map getOrPut" {
         sum += map.get(i).?;
     }
 
-    expectEqual(sum, 30);
+    try expectEqual(sum, 30);
 }
 
 test "std.hash_map basic hash map usage" {
     var map = AutoHashMap(i32, i32).init(std.testing.allocator);
     defer map.deinit();
 
-    testing.expect((try map.fetchPut(1, 11)) == null);
-    testing.expect((try map.fetchPut(2, 22)) == null);
-    testing.expect((try map.fetchPut(3, 33)) == null);
-    testing.expect((try map.fetchPut(4, 44)) == null);
+    try testing.expect((try map.fetchPut(1, 11)) == null);
+    try testing.expect((try map.fetchPut(2, 22)) == null);
+    try testing.expect((try map.fetchPut(3, 33)) == null);
+    try testing.expect((try map.fetchPut(4, 44)) == null);
 
     try map.putNoClobber(5, 55);
-    testing.expect((try map.fetchPut(5, 66)).?.value == 55);
-    testing.expect((try map.fetchPut(5, 55)).?.value == 66);
+    try testing.expect((try map.fetchPut(5, 66)).?.value == 55);
+    try testing.expect((try map.fetchPut(5, 55)).?.value == 66);
 
     const gop1 = try map.getOrPut(5);
-    testing.expect(gop1.found_existing == true);
-    testing.expect(gop1.entry.value == 55);
+    try testing.expect(gop1.found_existing == true);
+    try testing.expect(gop1.entry.value == 55);
     gop1.entry.value = 77;
-    testing.expect(map.getEntry(5).?.value == 77);
+    try testing.expect(map.getEntry(5).?.value == 77);
 
     const gop2 = try map.getOrPut(99);
-    testing.expect(gop2.found_existing == false);
+    try testing.expect(gop2.found_existing == false);
     gop2.entry.value = 42;
-    testing.expect(map.getEntry(99).?.value == 42);
+    try testing.expect(map.getEntry(99).?.value == 42);
 
     const gop3 = try map.getOrPutValue(5, 5);
-    testing.expect(gop3.value == 77);
+    try testing.expect(gop3.value == 77);
 
     const gop4 = try map.getOrPutValue(100, 41);
-    testing.expect(gop4.value == 41);
+    try testing.expect(gop4.value == 41);
 
-    testing.expect(map.contains(2));
-    testing.expect(map.getEntry(2).?.value == 22);
-    testing.expect(map.get(2).? == 22);
+    try testing.expect(map.contains(2));
+    try testing.expect(map.getEntry(2).?.value == 22);
+    try testing.expect(map.get(2).? == 22);
 
     const rmv1 = map.remove(2);
-    testing.expect(rmv1.?.key == 2);
-    testing.expect(rmv1.?.value == 22);
-    testing.expect(map.remove(2) == null);
-    testing.expect(map.getEntry(2) == null);
-    testing.expect(map.get(2) == null);
+    try testing.expect(rmv1.?.key == 2);
+    try testing.expect(rmv1.?.value == 22);
+    try testing.expect(map.remove(2) == null);
+    try testing.expect(map.getEntry(2) == null);
+    try testing.expect(map.get(2) == null);
 
     map.removeAssertDiscard(3);
 }
@@ -1229,6 +1245,6 @@ test "std.hash_map clone" {
 
     i = 0;
     while (i < 10) : (i += 1) {
-        testing.expect(copy.get(i).? == i * 10);
+        try testing.expect(copy.get(i).? == i * 10);
     }
 }

@@ -13,6 +13,7 @@ pub const RunTranslatedCContext = struct {
     step: *build.Step,
     test_index: usize,
     test_filter: ?[]const u8,
+    target: std.zig.CrossTarget,
 
     const TestCase = struct {
         name: []const u8,
@@ -76,27 +77,28 @@ pub const RunTranslatedCContext = struct {
     pub fn addCase(self: *RunTranslatedCContext, case: *const TestCase) void {
         const b = self.b;
 
-        const annotated_case_name = fmt.allocPrint(self.b.allocator, "run-translated-c {}", .{case.name}) catch unreachable;
+        const annotated_case_name = fmt.allocPrint(self.b.allocator, "run-translated-c {s}", .{case.name}) catch unreachable;
         if (self.test_filter) |filter| {
             if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
         }
 
         const write_src = b.addWriteFiles();
-        for (case.sources.span()) |src_file| {
+        for (case.sources.items) |src_file| {
             write_src.add(src_file.filename, src_file.source);
         }
         const translate_c = b.addTranslateC(.{
             .write_file = .{
                 .step = write_src,
-                .basename = case.sources.span()[0].filename,
+                .basename = case.sources.items[0].filename,
             },
         });
-        translate_c.step.name = b.fmt("{} translate-c", .{annotated_case_name});
+        translate_c.step.name = b.fmt("{s} translate-c", .{annotated_case_name});
         const exe = translate_c.addExecutable();
-        exe.step.name = b.fmt("{} build-exe", .{annotated_case_name});
+        exe.setTarget(self.target);
+        exe.step.name = b.fmt("{s} build-exe", .{annotated_case_name});
         exe.linkLibC();
         const run = exe.run();
-        run.step.name = b.fmt("{} run", .{annotated_case_name});
+        run.step.name = b.fmt("{s} run", .{annotated_case_name});
         if (!case.allow_warnings) {
             run.expectStdErrEqual("");
         }

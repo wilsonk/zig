@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -51,7 +51,7 @@ pub const Builder = struct {
     default_step: *Step,
     env_map: *BufMap,
     top_level_steps: ArrayList(*TopLevelStep),
-    install_prefix: ?[]const u8,
+    install_prefix: []const u8,
     dest_dir: ?[]const u8,
     lib_dir: []const u8,
     exe_dir: []const u8,
@@ -61,6 +61,7 @@ pub const Builder = struct {
     installed_files: ArrayList(InstalledFile),
     build_root: []const u8,
     cache_root: []const u8,
+    global_cache_root: []const u8,
     release_mode: ?builtin.Mode,
     is_release: bool,
     override_lib_dir: ?[]const u8,
@@ -126,6 +127,7 @@ pub const Builder = struct {
         zig_exe: []const u8,
         build_root: []const u8,
         cache_root: []const u8,
+        global_cache_root: []const u8,
     ) !*Builder {
         const env_map = try allocator.create(BufMap);
         env_map.* = try process.getEnvMap(allocator);
@@ -135,6 +137,7 @@ pub const Builder = struct {
             .zig_exe = zig_exe,
             .build_root = build_root,
             .cache_root = try fs.path.relative(allocator, build_root, cache_root),
+            .global_cache_root = global_cache_root,
             .verbose = false,
             .verbose_tokenize = false,
             .verbose_ast = false,
@@ -153,7 +156,7 @@ pub const Builder = struct {
             .default_step = undefined,
             .env_map = env_map,
             .search_prefixes = ArrayList([]const u8).init(allocator),
-            .install_prefix = null,
+            .install_prefix = undefined,
             .lib_dir = undefined,
             .exe_dir = undefined,
             .h_dir = undefined,
@@ -187,22 +190,14 @@ pub const Builder = struct {
     }
 
     /// This function is intended to be called by std/special/build_runner.zig, not a build.zig file.
-    pub fn setInstallPrefix(self: *Builder, optional_prefix: ?[]const u8) void {
-        self.install_prefix = optional_prefix;
-    }
-
-    /// This function is intended to be called by std/special/build_runner.zig, not a build.zig file.
-    pub fn resolveInstallPrefix(self: *Builder) void {
+    pub fn resolveInstallPrefix(self: *Builder, install_prefix: ?[]const u8) void {
         if (self.dest_dir) |dest_dir| {
-            const install_prefix = self.install_prefix orelse "/usr";
-            self.install_path = fs.path.join(self.allocator, &[_][]const u8{ dest_dir, install_prefix }) catch unreachable;
+            self.install_prefix = install_prefix orelse "/usr";
+            self.install_path = fs.path.join(self.allocator, &[_][]const u8{ dest_dir, self.install_prefix }) catch unreachable;
         } else {
-            const install_prefix = self.install_prefix orelse blk: {
-                const p = self.cache_root;
-                self.install_prefix = p;
-                break :blk p;
-            };
-            self.install_path = install_prefix;
+            self.install_prefix = install_prefix orelse
+                (fs.path.join(self.allocator, &[_][]const u8{ self.build_root, "zig-out" }) catch unreachable);
+            self.install_path = self.install_prefix;
         }
         self.lib_dir = fs.path.join(self.allocator, &[_][]const u8{ self.install_path, "lib" }) catch unreachable;
         self.exe_dir = fs.path.join(self.allocator, &[_][]const u8{ self.install_path, "bin" }) catch unreachable;
@@ -269,13 +264,55 @@ pub const Builder = struct {
         return LibExeObjStep.createSharedLibrary(self, name, root_src_param, kind);
     }
 
+    pub fn addSharedLibraryFromWriteFileStep(
+        self: *Builder,
+        name: []const u8,
+        wfs: *WriteFileStep,
+        basename: []const u8,
+        kind: LibExeObjStep.SharedLibKind,
+    ) *LibExeObjStep {
+        return LibExeObjStep.createSharedLibrary(self, name, @as(FileSource, .{
+            .write_file = .{
+                .step = wfs,
+                .basename = basename,
+            },
+        }), kind);
+    }
+
     pub fn addStaticLibrary(self: *Builder, name: []const u8, root_src: ?[]const u8) *LibExeObjStep {
         const root_src_param = if (root_src) |p| @as(FileSource, .{ .path = p }) else null;
         return LibExeObjStep.createStaticLibrary(self, name, root_src_param);
     }
 
+    pub fn addStaticLibraryFromWriteFileStep(
+        self: *Builder,
+        name: []const u8,
+        wfs: *WriteFileStep,
+        basename: []const u8,
+    ) *LibExeObjStep {
+        return LibExeObjStep.createStaticLibrary(self, name, @as(FileSource, .{
+            .write_file = .{
+                .step = wfs,
+                .basename = basename,
+            },
+        }));
+    }
+
     pub fn addTest(self: *Builder, root_src: []const u8) *LibExeObjStep {
         return LibExeObjStep.createTest(self, "test", .{ .path = root_src });
+    }
+
+    pub fn addTestFromWriteFileStep(
+        self: *Builder,
+        wfs: *WriteFileStep,
+        basename: []const u8,
+    ) *LibExeObjStep {
+        return LibExeObjStep.createTest(self, "test", @as(FileSource, .{
+            .write_file = .{
+                .step = wfs,
+                .basename = basename,
+            },
+        }));
     }
 
     pub fn addAssemble(self: *Builder, name: []const u8, src: []const u8) *LibExeObjStep {
@@ -291,13 +328,21 @@ pub const Builder = struct {
     /// To run an executable built with zig build, see `LibExeObjStep.run`.
     pub fn addSystemCommand(self: *Builder, argv: []const []const u8) *RunStep {
         assert(argv.len >= 1);
-        const run_step = RunStep.create(self, self.fmt("run {}", .{argv[0]}));
+        const run_step = RunStep.create(self, self.fmt("run {s}", .{argv[0]}));
         run_step.addArgs(argv);
         return run_step;
     }
 
     pub fn dupe(self: *Builder, bytes: []const u8) []u8 {
         return self.allocator.dupe(u8, bytes) catch unreachable;
+    }
+
+    pub fn dupeStrings(self: *Builder, strings: []const []const u8) [][]u8 {
+        const array = self.allocator.alloc([]u8, strings.len) catch unreachable;
+        for (strings) |s, i| {
+            array[i] = self.dupe(s);
+        }
+        return array;
     }
 
     pub fn dupePath(self: *Builder, bytes: []const u8) []u8 {
@@ -386,7 +431,7 @@ pub const Builder = struct {
             }
         }
 
-        for (wanted_steps.span()) |s| {
+        for (wanted_steps.items) |s| {
             try self.makeOneStep(s);
         }
     }
@@ -403,10 +448,10 @@ pub const Builder = struct {
         const uninstall_tls = @fieldParentPtr(TopLevelStep, "step", uninstall_step);
         const self = @fieldParentPtr(Builder, "uninstall_tls", uninstall_tls);
 
-        for (self.installed_files.span()) |installed_file| {
+        for (self.installed_files.items) |installed_file| {
             const full_path = self.getInstallPath(installed_file.dir, installed_file.path);
             if (self.verbose) {
-                warn("rm {}\n", .{full_path});
+                warn("rm {s}\n", .{full_path});
             }
             fs.cwd().deleteTree(full_path) catch {};
         }
@@ -416,15 +461,15 @@ pub const Builder = struct {
 
     fn makeOneStep(self: *Builder, s: *Step) anyerror!void {
         if (s.loop_flag) {
-            warn("Dependency loop detected:\n  {}\n", .{s.name});
+            warn("Dependency loop detected:\n  {s}\n", .{s.name});
             return error.DependencyLoopDetected;
         }
         s.loop_flag = true;
 
-        for (s.dependencies.span()) |dep| {
+        for (s.dependencies.items) |dep| {
             self.makeOneStep(dep) catch |err| {
                 if (err == error.DependencyLoopDetected) {
-                    warn("  {}\n", .{s.name});
+                    warn("  {s}\n", .{s.name});
                 }
                 return err;
             };
@@ -436,16 +481,18 @@ pub const Builder = struct {
     }
 
     fn getTopLevelStepByName(self: *Builder, name: []const u8) !*Step {
-        for (self.top_level_steps.span()) |top_level_step| {
+        for (self.top_level_steps.items) |top_level_step| {
             if (mem.eql(u8, top_level_step.step.name, name)) {
                 return &top_level_step.step;
             }
         }
-        warn("Cannot run step '{}' because it does not exist\n", .{name});
+        warn("Cannot run step '{s}' because it does not exist\n", .{name});
         return error.InvalidStepName;
     }
 
-    pub fn option(self: *Builder, comptime T: type, name: []const u8, description: []const u8) ?T {
+    pub fn option(self: *Builder, comptime T: type, name_raw: []const u8, description_raw: []const u8) ?T {
+        const name = self.dupe(name_raw);
+        const description = self.dupe(description_raw);
         const type_id = comptime typeToEnum(T);
         const available_option = AvailableOption{
             .name = name,
@@ -453,7 +500,7 @@ pub const Builder = struct {
             .description = description,
         };
         if ((self.available_options_map.fetchPut(name, available_option) catch unreachable) != null) {
-            panic("Option '{}' declared twice", .{name});
+            panic("Option '{s}' declared twice", .{name});
         }
         self.available_options_list.append(available_option) catch unreachable;
 
@@ -468,32 +515,32 @@ pub const Builder = struct {
                     } else if (mem.eql(u8, s, "false")) {
                         return false;
                     } else {
-                        warn("Expected -D{} to be a boolean, but received '{}'\n", .{ name, s });
+                        warn("Expected -D{s} to be a boolean, but received '{s}'\n\n", .{ name, s });
                         self.markInvalidUserInput();
                         return null;
                     }
                 },
                 .List => {
-                    warn("Expected -D{} to be a boolean, but received a list.\n", .{name});
+                    warn("Expected -D{s} to be a boolean, but received a list.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
             },
             .Int => switch (entry.value.value) {
                 .Flag => {
-                    warn("Expected -D{} to be an integer, but received a boolean.\n", .{name});
+                    warn("Expected -D{s} to be an integer, but received a boolean.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
                 .Scalar => |s| {
                     const n = std.fmt.parseInt(T, s, 10) catch |err| switch (err) {
                         error.Overflow => {
-                            warn("-D{} value {} cannot fit into type {}.\n", .{ name, s, @typeName(T) });
+                            warn("-D{s} value {s} cannot fit into type {s}.\n\n", .{ name, s, @typeName(T) });
                             self.markInvalidUserInput();
                             return null;
                         },
                         else => {
-                            warn("Expected -D{} to be an integer of type {}.\n", .{ name, @typeName(T) });
+                            warn("Expected -D{s} to be an integer of type {s}.\n\n", .{ name, @typeName(T) });
                             self.markInvalidUserInput();
                             return null;
                         },
@@ -501,15 +548,34 @@ pub const Builder = struct {
                     return n;
                 },
                 .List => {
-                    warn("Expected -D{} to be an integer, but received a list.\n", .{name});
+                    warn("Expected -D{s} to be an integer, but received a list.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
             },
-            .Float => panic("TODO float options to build script", .{}),
+            .Float => switch (entry.value.value) {
+                .Flag => {
+                    warn("Expected -D{s} to be a float, but received a boolean.\n\n", .{name});
+                    self.markInvalidUserInput();
+                    return null;
+                },
+                .Scalar => |s| {
+                    const n = std.fmt.parseFloat(T, s) catch |err| {
+                        warn("Expected -D{s} to be a float of type {s}.\n\n", .{ name, @typeName(T) });
+                        self.markInvalidUserInput();
+                        return null;
+                    };
+                    return n;
+                },
+                .List => {
+                    warn("Expected -D{s} to be a float, but received a list.\n\n", .{name});
+                    self.markInvalidUserInput();
+                    return null;
+                },
+            },
             .Enum => switch (entry.value.value) {
                 .Flag => {
-                    warn("Expected -D{} to be a string, but received a boolean.\n", .{name});
+                    warn("Expected -D{s} to be a string, but received a boolean.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
@@ -517,25 +583,25 @@ pub const Builder = struct {
                     if (std.meta.stringToEnum(T, s)) |enum_lit| {
                         return enum_lit;
                     } else {
-                        warn("Expected -D{} to be of type {}.\n", .{ name, @typeName(T) });
+                        warn("Expected -D{s} to be of type {s}.\n\n", .{ name, @typeName(T) });
                         self.markInvalidUserInput();
                         return null;
                     }
                 },
                 .List => {
-                    warn("Expected -D{} to be a string, but received a list.\n", .{name});
+                    warn("Expected -D{s} to be a string, but received a list.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
             },
             .String => switch (entry.value.value) {
                 .Flag => {
-                    warn("Expected -D{} to be a string, but received a boolean.\n", .{name});
+                    warn("Expected -D{s} to be a string, but received a boolean.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
                 .List => {
-                    warn("Expected -D{} to be a string, but received a list.\n", .{name});
+                    warn("Expected -D{s} to be a string, but received a list.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
@@ -543,14 +609,14 @@ pub const Builder = struct {
             },
             .List => switch (entry.value.value) {
                 .Flag => {
-                    warn("Expected -D{} to be a list, but received a boolean.\n", .{name});
+                    warn("Expected -D{s} to be a list, but received a boolean.\n\n", .{name});
                     self.markInvalidUserInput();
                     return null;
                 },
                 .Scalar => |s| {
                     return self.allocator.dupe([]const u8, &[_][]const u8{s}) catch unreachable;
                 },
-                .List => |lst| return lst.span(),
+                .List => |lst| return lst.items,
             },
         }
     }
@@ -559,7 +625,7 @@ pub const Builder = struct {
         const step_info = self.allocator.create(TopLevelStep) catch unreachable;
         step_info.* = TopLevelStep{
             .step = Step.initNoOp(.TopLevel, name, self.allocator),
-            .description = description,
+            .description = self.dupe(description),
         };
         self.top_level_steps.append(step_info) catch unreachable;
         return &step_info.step;
@@ -570,7 +636,7 @@ pub const Builder = struct {
         if (self.release_mode != null) {
             @panic("setPreferredReleaseMode must be called before standardReleaseOptions and may not be called twice");
         }
-        const description = self.fmt("Create a release build ({})", .{@tagName(mode)});
+        const description = self.fmt("Create a release build ({s})", .{@tagName(mode)});
         self.is_release = self.option(bool, "release", description) orelse false;
         self.release_mode = if (self.is_release) mode else builtin.Mode.Debug;
     }
@@ -593,7 +659,7 @@ pub const Builder = struct {
         else if (!release_fast and !release_safe and !release_small)
             builtin.Mode.Debug
         else x: {
-            warn("Multiple release modes (of -Drelease-safe, -Drelease-fast and -Drelease-small)", .{});
+            warn("Multiple release modes (of -Drelease-safe, -Drelease-fast and -Drelease-small)\n\n", .{});
             self.markInvalidUserInput();
             break :x builtin.Mode.Debug;
         };
@@ -610,57 +676,66 @@ pub const Builder = struct {
 
     /// Exposes standard `zig build` options for choosing a target.
     pub fn standardTargetOptions(self: *Builder, args: StandardTargetOptionsArgs) CrossTarget {
-        const triple = self.option(
+        const maybe_triple = self.option(
             []const u8,
             "target",
             "The CPU architecture, OS, and ABI to build for",
-        ) orelse return args.default_target;
+        );
+        const mcpu = self.option([]const u8, "cpu", "Target CPU");
 
-        // TODO add cpu and features as part of the target triple
+        const triple = maybe_triple orelse return args.default_target;
 
         var diags: CrossTarget.ParseOptions.Diagnostics = .{};
         const selected_target = CrossTarget.parse(.{
             .arch_os_abi = triple,
+            .cpu_features = mcpu,
             .diagnostics = &diags,
         }) catch |err| switch (err) {
             error.UnknownCpuModel => {
-                std.debug.warn("Unknown CPU: '{}'\nAvailable CPUs for architecture '{}':\n", .{
+                warn("Unknown CPU: '{s}'\nAvailable CPUs for architecture '{s}':\n", .{
                     diags.cpu_name.?,
                     @tagName(diags.arch.?),
                 });
                 for (diags.arch.?.allCpuModels()) |cpu| {
-                    std.debug.warn(" {}\n", .{cpu.name});
+                    warn(" {s}\n", .{cpu.name});
                 }
-                process.exit(1);
+                warn("\n", .{});
+                self.markInvalidUserInput();
+                return args.default_target;
             },
             error.UnknownCpuFeature => {
-                std.debug.warn(
-                    \\Unknown CPU feature: '{}'
-                    \\Available CPU features for architecture '{}':
+                warn(
+                    \\Unknown CPU feature: '{s}'
+                    \\Available CPU features for architecture '{s}':
                     \\
                 , .{
                     diags.unknown_feature_name,
                     @tagName(diags.arch.?),
                 });
                 for (diags.arch.?.allFeaturesList()) |feature| {
-                    std.debug.warn(" {}: {}\n", .{ feature.name, feature.description });
+                    warn(" {s}: {s}\n", .{ feature.name, feature.description });
                 }
-                process.exit(1);
+                warn("\n", .{});
+                self.markInvalidUserInput();
+                return args.default_target;
             },
             error.UnknownOperatingSystem => {
-                std.debug.warn(
-                    \\Unknown OS: '{}'
+                warn(
+                    \\Unknown OS: '{s}'
                     \\Available operating systems:
                     \\
                 , .{diags.os_name});
                 inline for (std.meta.fields(std.Target.Os.Tag)) |field| {
-                    std.debug.warn(" {}\n", .{field.name});
+                    warn(" {s}\n", .{field.name});
                 }
-                process.exit(1);
+                warn("\n", .{});
+                self.markInvalidUserInput();
+                return args.default_target;
             },
             else => |e| {
-                std.debug.warn("Unable to parse target '{}': {}\n", .{ triple, @errorName(e) });
-                process.exit(1);
+                warn("Unable to parse target '{s}': {s}\n\n", .{ triple, @errorName(e) });
+                self.markInvalidUserInput();
+                return args.default_target;
             },
         };
 
@@ -674,22 +749,24 @@ pub const Builder = struct {
                     break :whitelist_check;
                 }
             }
-            std.debug.warn("Chosen target '{}' does not match one of the supported targets:\n", .{
+            warn("Chosen target '{s}' does not match one of the supported targets:\n", .{
                 selected_canonicalized_triple,
             });
             for (list) |t| {
                 const t_triple = t.zigTriple(self.allocator) catch unreachable;
-                std.debug.warn(" {}\n", .{t_triple});
+                warn(" {s}\n", .{t_triple});
             }
-            // TODO instead of process exit, return error and have a zig build flag implemented by
-            // the build runner that turns process exits into error return traces
-            process.exit(1);
+            warn("\n", .{});
+            self.markInvalidUserInput();
+            return args.default_target;
         }
 
         return selected_target;
     }
 
-    pub fn addUserInputOption(self: *Builder, name: []const u8, value: []const u8) !bool {
+    pub fn addUserInputOption(self: *Builder, name_raw: []const u8, value_raw: []const u8) !bool {
+        const name = self.dupe(name_raw);
+        const value = self.dupe(value_raw);
         const gop = try self.user_input_options.getOrPut(name);
         if (!gop.found_existing) {
             gop.entry.value = UserInputOption{
@@ -707,7 +784,7 @@ pub const Builder = struct {
                 var list = ArrayList([]const u8).init(self.allocator);
                 list.append(s) catch unreachable;
                 list.append(value) catch unreachable;
-                _ = self.user_input_options.put(name, UserInputOption{
+                self.user_input_options.put(name, UserInputOption{
                     .name = name,
                     .value = UserValue{ .List = list },
                     .used = false,
@@ -716,21 +793,22 @@ pub const Builder = struct {
             UserValue.List => |*list| {
                 // append to the list
                 list.append(value) catch unreachable;
-                _ = self.user_input_options.put(name, UserInputOption{
+                self.user_input_options.put(name, UserInputOption{
                     .name = name,
                     .value = UserValue{ .List = list.* },
                     .used = false,
                 }) catch unreachable;
             },
             UserValue.Flag => {
-                warn("Option '-D{}={}' conflicts with flag '-D{}'.\n", .{ name, value, name });
+                warn("Option '-D{s}={s}' conflicts with flag '-D{s}'.\n", .{ name, value, name });
                 return true;
             },
         }
         return false;
     }
 
-    pub fn addUserInputFlag(self: *Builder, name: []const u8) !bool {
+    pub fn addUserInputFlag(self: *Builder, name_raw: []const u8) !bool {
+        const name = self.dupe(name_raw);
         const gop = try self.user_input_options.getOrPut(name);
         if (!gop.found_existing) {
             gop.entry.value = UserInputOption{
@@ -744,11 +822,11 @@ pub const Builder = struct {
         // option already exists
         switch (gop.entry.value.value) {
             UserValue.Scalar => |s| {
-                warn("Flag '-D{}' conflicts with option '-D{}={}'.\n", .{ name, name, s });
+                warn("Flag '-D{s}' conflicts with option '-D{s}={s}'.\n", .{ name, name, s });
                 return true;
             },
             UserValue.List => {
-                warn("Flag '-D{}' conflicts with multiple options of the same name.\n", .{name});
+                warn("Flag '-D{s}' conflicts with multiple options of the same name.\n", .{name});
                 return true;
             },
             UserValue.Flag => {},
@@ -791,7 +869,7 @@ pub const Builder = struct {
         while (true) {
             const entry = it.next() orelse break;
             if (!entry.value.used) {
-                warn("Invalid option: -D{}\n\n", .{entry.key});
+                warn("Invalid option: -D{s}\n\n", .{entry.key});
                 self.markInvalidUserInput();
             }
         }
@@ -804,9 +882,9 @@ pub const Builder = struct {
     }
 
     fn printCmd(cwd: ?[]const u8, argv: []const []const u8) void {
-        if (cwd) |yes_cwd| warn("cd {} && ", .{yes_cwd});
+        if (cwd) |yes_cwd| warn("cd {s} && ", .{yes_cwd});
         for (argv) |arg| {
-            warn("{} ", .{arg});
+            warn("{s} ", .{arg});
         }
         warn("\n", .{});
     }
@@ -823,7 +901,7 @@ pub const Builder = struct {
         child.env_map = env_map;
 
         const term = child.spawnAndWait() catch |err| {
-            warn("Unable to spawn {}: {}\n", .{ argv[0], @errorName(err) });
+            warn("Unable to spawn {s}: {s}\n", .{ argv[0], @errorName(err) });
             return err;
         };
 
@@ -846,7 +924,7 @@ pub const Builder = struct {
 
     pub fn makePath(self: *Builder, path: []const u8) !void {
         fs.cwd().makePath(self.pathFromRoot(path)) catch |err| {
-            warn("Unable to create path {}: {}\n", .{ path, @errorName(err) });
+            warn("Unable to create path {s}: {s}\n", .{ path, @errorName(err) });
             return err;
         };
     }
@@ -907,6 +985,9 @@ pub const Builder = struct {
         install_dir: InstallDir,
         dest_rel_path: []const u8,
     ) *InstallFileStep {
+        if (dest_rel_path.len == 0) {
+            panic("dest_rel_path must be non-empty", .{});
+        }
         const install_step = self.allocator.create(InstallFileStep) catch unreachable;
         install_step.* = InstallFileStep.init(self, src_path, install_dir, dest_rel_path);
         return install_step;
@@ -919,15 +1000,16 @@ pub const Builder = struct {
     }
 
     pub fn pushInstalledFile(self: *Builder, dir: InstallDir, dest_rel_path: []const u8) void {
-        self.installed_files.append(InstalledFile{
+        const file = InstalledFile{
             .dir = dir,
             .path = dest_rel_path,
-        }) catch unreachable;
+        };
+        self.installed_files.append(file.dupe(self)) catch unreachable;
     }
 
     pub fn updateFile(self: *Builder, source_path: []const u8, dest_path: []const u8) !void {
         if (self.verbose) {
-            warn("cp {} {} ", .{ source_path, dest_path });
+            warn("cp {s} {s} ", .{ source_path, dest_path });
         }
         const cwd = fs.cwd();
         const prev_status = try fs.Dir.updateFile(cwd, source_path, cwd, dest_path, .{});
@@ -948,7 +1030,7 @@ pub const Builder = struct {
     pub fn findProgram(self: *Builder, names: []const []const u8, paths: []const []const u8) ![]const u8 {
         // TODO report error for ambiguous situations
         const exe_extension = @as(CrossTarget, .{}).exeFileExt();
-        for (self.search_prefixes.span()) |search_prefix| {
+        for (self.search_prefixes.items) |search_prefix| {
             for (names) |name| {
                 if (fs.path.isAbsolute(name)) {
                     return name;
@@ -956,7 +1038,7 @@ pub const Builder = struct {
                 const full_path = try fs.path.join(self.allocator, &[_][]const u8{
                     search_prefix,
                     "bin",
-                    self.fmt("{}{}", .{ name, exe_extension }),
+                    self.fmt("{s}{s}", .{ name, exe_extension }),
                 });
                 return fs.realpathAlloc(self.allocator, full_path) catch continue;
             }
@@ -970,7 +1052,7 @@ pub const Builder = struct {
                 while (it.next()) |path| {
                     const full_path = try fs.path.join(self.allocator, &[_][]const u8{
                         path,
-                        self.fmt("{}{}", .{ name, exe_extension }),
+                        self.fmt("{s}{s}", .{ name, exe_extension }),
                     });
                     return fs.realpathAlloc(self.allocator, full_path) catch continue;
                 }
@@ -983,7 +1065,7 @@ pub const Builder = struct {
             for (paths) |path| {
                 const full_path = try fs.path.join(self.allocator, &[_][]const u8{
                     path,
-                    self.fmt("{}{}", .{ name, exe_extension }),
+                    self.fmt("{s}{s}", .{ name, exe_extension }),
                 });
                 return fs.realpathAlloc(self.allocator, full_path) catch continue;
             }
@@ -1006,10 +1088,11 @@ pub const Builder = struct {
         child.stdin_behavior = .Ignore;
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = stderr_behavior;
+        child.env_map = self.env_map;
 
         try child.spawn();
 
-        const stdout = try child.stdout.?.inStream().readAllAlloc(self.allocator, max_output_size);
+        const stdout = try child.stdout.?.reader().readAllAlloc(self.allocator, max_output_size);
         errdefer self.allocator.free(stdout);
 
         const term = try child.wait();
@@ -1038,19 +1121,19 @@ pub const Builder = struct {
         var code: u8 = undefined;
         return self.execAllowFail(argv, &code, .Inherit) catch |err| switch (err) {
             error.FileNotFound => {
-                if (src_step) |s| warn("{}...", .{s.name});
+                if (src_step) |s| warn("{s}...", .{s.name});
                 warn("Unable to spawn the following command: file not found\n", .{});
                 printCmd(null, argv);
                 std.os.exit(@truncate(u8, code));
             },
             error.ExitCodeFailure => {
-                if (src_step) |s| warn("{}...", .{s.name});
-                warn("The following command exited with error code {}:\n", .{code});
+                if (src_step) |s| warn("{s}...", .{s.name});
+                warn("The following command exited with error code {d}:\n", .{code});
                 printCmd(null, argv);
                 std.os.exit(@truncate(u8, code));
             },
             error.ProcessTerminated => {
-                if (src_step) |s| warn("{}...", .{s.name});
+                if (src_step) |s| warn("{s}...", .{s.name});
                 warn("The following command terminated unexpectedly:\n", .{});
                 printCmd(null, argv);
                 std.os.exit(@truncate(u8, code));
@@ -1064,10 +1147,11 @@ pub const Builder = struct {
     }
 
     pub fn addSearchPrefix(self: *Builder, search_prefix: []const u8) void {
-        self.search_prefixes.append(search_prefix) catch unreachable;
+        self.search_prefixes.append(self.dupePath(search_prefix)) catch unreachable;
     }
 
     pub fn getInstallPath(self: *Builder, dir: InstallDir, dest_rel_path: []const u8) []const u8 {
+        assert(!fs.path.isAbsolute(dest_rel_path)); // Install paths must be relative to the prefix
         const base_dir = switch (dir) {
             .Prefix => self.install_path,
             .Bin => self.exe_dir,
@@ -1084,6 +1168,7 @@ pub const Builder = struct {
     fn execPkgConfigList(self: *Builder, out_code: *u8) ![]const PkgConfigPkg {
         const stdout = try self.execAllowFail(&[_][]const u8{ "pkg-config", "--list-all" }, out_code, .Ignore);
         var list = ArrayList(PkgConfigPkg).init(self.allocator);
+        errdefer list.deinit();
         var line_it = mem.tokenize(stdout, "\r\n");
         while (line_it.next()) |line| {
             if (mem.trim(u8, line, " \t").len == 0) continue;
@@ -1093,7 +1178,7 @@ pub const Builder = struct {
                 .desc = tok_it.rest(),
             });
         }
-        return list.span();
+        return list.toOwnedSlice();
     }
 
     fn getPkgConfigList(self: *Builder) ![]const PkgConfigPkg {
@@ -1125,7 +1210,13 @@ test "builder.findProgram compiles" {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
-    const builder = try Builder.create(&arena.allocator, "zig", "zig-cache", "zig-cache");
+    const builder = try Builder.create(
+        &arena.allocator,
+        "zig",
+        "zig-cache",
+        "zig-cache",
+        "zig-cache",
+    );
     defer builder.destroy();
     _ = builder.findProgram(&[_][]const u8{}, &[_][]const u8{}) catch null;
 }
@@ -1142,9 +1233,21 @@ pub const Pkg = struct {
     dependencies: ?[]const Pkg = null,
 };
 
-const CSourceFile = struct {
+pub const CSourceFile = struct {
     source: FileSource,
     args: []const []const u8,
+
+    fn dupe(self: CSourceFile, b: *Builder) CSourceFile {
+        return .{
+            .source = self.source.dupe(b),
+            .args = b.dupeStrings(self.args),
+        };
+    }
+};
+
+const CSourceFiles = struct {
+    files: []const []const u8,
+    flags: []const []const u8,
 };
 
 fn isLibCLibrary(name: []const u8) bool {
@@ -1181,11 +1284,28 @@ pub const FileSource = union(enum) {
             .translate_c => |tc| tc.getOutputPath(),
         };
     }
+
+    pub fn dupe(self: FileSource, b: *Builder) FileSource {
+        return switch (self) {
+            .path => |p| .{ .path = b.dupe(p) },
+            .write_file => |wf| .{ .write_file = .{
+                .step = wf.step,
+                .basename = b.dupe(wf.basename),
+            } },
+            .translate_c => |tc| .{ .translate_c = tc },
+        };
+    }
 };
 
 const BuildOptionArtifactArg = struct {
     name: []const u8,
     artifact: *LibExeObjStep,
+};
+
+const BuildOptionWriteFileArg = struct {
+    name: []const u8,
+    write_file: *WriteFileStep,
+    basename: []const u8,
 };
 
 pub const LibExeObjStep = struct {
@@ -1213,9 +1333,10 @@ pub const LibExeObjStep = struct {
     emit_bin: bool = true,
     emit_docs: bool = false,
     emit_h: bool = false,
-    bundle_compiler_rt: bool,
+    bundle_compiler_rt: ?bool = null,
     disable_stack_probing: bool,
     disable_sanitize_c: bool,
+    sanitize_thread: bool,
     rdynamic: bool,
     c_std: Builder.CStd,
     override_lib_dir: ?[]const u8,
@@ -1234,7 +1355,7 @@ pub const LibExeObjStep = struct {
     packages: ArrayList(Pkg),
     build_options_contents: std.ArrayList(u8),
     build_options_artifact_args: std.ArrayList(BuildOptionArtifactArg),
-    system_linker_hack: bool = false,
+    build_options_write_file_args: std.ArrayList(BuildOptionWriteFileArg),
 
     object_src: []const u8,
 
@@ -1266,6 +1387,8 @@ pub const LibExeObjStep = struct {
     /// safely garbage-collected during the linking phase.
     link_function_sections: bool = false,
 
+    linker_allow_shlib_undefined: ?bool = null,
+
     /// Uses system Wine installation to run cross compiled Windows build artifacts.
     enable_wine: bool = false,
 
@@ -1274,6 +1397,9 @@ pub const LibExeObjStep = struct {
 
     /// Uses system Wasmtime installation to run cross compiled wasm/wasi build artifacts.
     enable_wasmtime: bool = false,
+
+    /// Experimental. Uses system Darling installation to run cross compiled macOS build artifacts.
+    enable_darling: bool = false,
 
     /// After following the steps in https://github.com/ziglang/zig/wiki/Updating-libc#glibc,
     /// this will be the directory $glibc-build-dir/install/glibcs
@@ -1284,7 +1410,17 @@ pub const LibExeObjStep = struct {
     /// Position Independent Code
     force_pic: ?bool = null,
 
+    /// Position Independent Executable
+    pie: ?bool = null,
+
+    red_zone: ?bool = null,
+
     subsystem: ?builtin.SubSystem = null,
+
+    /// Overrides the default stack size
+    stack_size: ?u64 = null,
+
+    want_lto: ?bool = null,
 
     const LinkObject = union(enum) {
         StaticPath: []const u8,
@@ -1292,6 +1428,7 @@ pub const LibExeObjStep = struct {
         SystemLib: []const u8,
         AssemblyFile: FileSource,
         CSourceFile: *CSourceFile,
+        CSourceFiles: *CSourceFiles,
     };
 
     const IncludeDir = union(enum) {
@@ -1347,14 +1484,16 @@ pub const LibExeObjStep = struct {
 
     fn initExtraArgs(
         builder: *Builder,
-        name: []const u8,
-        root_src: ?FileSource,
+        name_raw: []const u8,
+        root_src_raw: ?FileSource,
         kind: Kind,
         is_dynamic: bool,
         ver: ?Version,
     ) LibExeObjStep {
+        const name = builder.dupe(name_raw);
+        const root_src: ?FileSource = if (root_src_raw) |rsrc| rsrc.dupe(builder) else null;
         if (mem.indexOf(u8, name, "/") != null or mem.indexOf(u8, name, "\\") != null) {
-            panic("invalid name: '{}'. It looks like a file path, but it is supposed to be the library or application name.", .{name});
+            panic("invalid name: '{s}'. It looks like a file path, but it is supposed to be the library or application name.", .{name});
         }
         var self = LibExeObjStep{
             .strip = false,
@@ -1370,9 +1509,9 @@ pub const LibExeObjStep = struct {
             .step = Step.init(.LibExeObj, name, builder.allocator, make),
             .version = ver,
             .out_filename = undefined,
-            .out_h_filename = builder.fmt("{}.h", .{name}),
+            .out_h_filename = builder.fmt("{s}.h", .{name}),
             .out_lib_filename = undefined,
-            .out_pdb_filename = builder.fmt("{}.pdb", .{name}),
+            .out_pdb_filename = builder.fmt("{s}.pdb", .{name}),
             .major_only_filename = undefined,
             .name_only_filename = undefined,
             .packages = ArrayList(Pkg).init(builder.allocator),
@@ -1384,15 +1523,16 @@ pub const LibExeObjStep = struct {
             .object_src = undefined,
             .build_options_contents = std.ArrayList(u8).init(builder.allocator),
             .build_options_artifact_args = std.ArrayList(BuildOptionArtifactArg).init(builder.allocator),
+            .build_options_write_file_args = std.ArrayList(BuildOptionWriteFileArg).init(builder.allocator),
             .c_std = Builder.CStd.C99,
             .override_lib_dir = null,
             .main_pkg_path = null,
             .exec_cmd_args = null,
             .name_prefix = "",
             .filter = null,
-            .bundle_compiler_rt = false,
             .disable_stack_probing = false,
             .disable_sanitize_c = false,
+            .sanitize_thread = false,
             .rdynamic = false,
             .output_dir = null,
             .single_threaded = false,
@@ -1428,24 +1568,24 @@ pub const LibExeObjStep = struct {
                 self.out_lib_filename = self.out_filename;
             } else if (self.version) |version| {
                 if (target.isDarwin()) {
-                    self.major_only_filename = self.builder.fmt("lib{}.{d}.dylib", .{
+                    self.major_only_filename = self.builder.fmt("lib{s}.{d}.dylib", .{
                         self.name,
                         version.major,
                     });
-                    self.name_only_filename = self.builder.fmt("lib{}.dylib", .{self.name});
+                    self.name_only_filename = self.builder.fmt("lib{s}.dylib", .{self.name});
                     self.out_lib_filename = self.out_filename;
                 } else if (target.os.tag == .windows) {
-                    self.out_lib_filename = self.builder.fmt("{}.lib", .{self.name});
+                    self.out_lib_filename = self.builder.fmt("{s}.lib", .{self.name});
                 } else {
-                    self.major_only_filename = self.builder.fmt("lib{}.so.{d}", .{ self.name, version.major });
-                    self.name_only_filename = self.builder.fmt("lib{}.so", .{self.name});
+                    self.major_only_filename = self.builder.fmt("lib{s}.so.{d}", .{ self.name, version.major });
+                    self.name_only_filename = self.builder.fmt("lib{s}.so", .{self.name});
                     self.out_lib_filename = self.out_filename;
                 }
             } else {
                 if (target.isDarwin()) {
                     self.out_lib_filename = self.out_filename;
                 } else if (target.os.tag == .windows) {
-                    self.out_lib_filename = self.builder.fmt("{}.lib", .{self.name});
+                    self.out_lib_filename = self.builder.fmt("{s}.lib", .{self.name});
                 } else {
                     self.out_lib_filename = self.out_filename;
                 }
@@ -1478,7 +1618,7 @@ pub const LibExeObjStep = struct {
         // It doesn't have to be native. We catch that if you actually try to run it.
         // Consider that this is declarative; the run step may not be run unless a user
         // option is supplied.
-        const run_step = RunStep.create(exe.builder, exe.builder.fmt("run {}", .{exe.step.name}));
+        const run_step = RunStep.create(exe.builder, exe.builder.fmt("run {s}", .{exe.step.name}));
         run_step.addArtifactArg(exe);
 
         if (exe.vcpkg_bin_path) |path| {
@@ -1489,12 +1629,12 @@ pub const LibExeObjStep = struct {
     }
 
     pub fn setLinkerScriptPath(self: *LibExeObjStep, path: []const u8) void {
-        self.linker_script = path;
+        self.linker_script = self.builder.dupePath(path);
     }
 
     pub fn linkFramework(self: *LibExeObjStep, framework_name: []const u8) void {
         assert(self.target.isDarwin());
-        self.frameworks.put(framework_name) catch unreachable;
+        self.frameworks.put(self.builder.dupe(framework_name)) catch unreachable;
     }
 
     /// Returns whether the library, executable, or object depends on a particular system library.
@@ -1502,7 +1642,7 @@ pub const LibExeObjStep = struct {
         if (isLibCLibrary(name)) {
             return self.is_linking_libc;
         }
-        for (self.link_objects.span()) |link_object| {
+        for (self.link_objects.items) |link_object| {
             switch (link_object) {
                 LinkObject.SystemLib => |n| if (mem.eql(u8, n, name)) return true,
                 else => continue,
@@ -1629,7 +1769,7 @@ pub const LibExeObjStep = struct {
             } else if (mem.eql(u8, tok, "-pthread")) {
                 self.linkLibC();
             } else if (self.builder.verbose) {
-                warn("Ignoring pkg-config flag '{}'\n", .{tok});
+                warn("Ignoring pkg-config flag '{s}'\n", .{tok});
             }
         }
     }
@@ -1658,31 +1798,38 @@ pub const LibExeObjStep = struct {
 
     pub fn setNamePrefix(self: *LibExeObjStep, text: []const u8) void {
         assert(self.kind == Kind.Test);
-        self.name_prefix = text;
+        self.name_prefix = self.builder.dupe(text);
     }
 
     pub fn setFilter(self: *LibExeObjStep, text: ?[]const u8) void {
         assert(self.kind == Kind.Test);
-        self.filter = text;
+        self.filter = if (text) |t| self.builder.dupe(t) else null;
     }
 
-    pub fn addCSourceFile(self: *LibExeObjStep, file: []const u8, args: []const []const u8) void {
+    /// Handy when you have many C/C++ source files and want them all to have the same flags.
+    pub fn addCSourceFiles(self: *LibExeObjStep, files: []const []const u8, flags: []const []const u8) void {
+        const c_source_files = self.builder.allocator.create(CSourceFiles) catch unreachable;
+
+        const files_copy = self.builder.dupeStrings(files);
+        const flags_copy = self.builder.dupeStrings(flags);
+
+        c_source_files.* = .{
+            .files = files_copy,
+            .flags = flags_copy,
+        };
+        self.link_objects.append(LinkObject{ .CSourceFiles = c_source_files }) catch unreachable;
+    }
+
+    pub fn addCSourceFile(self: *LibExeObjStep, file: []const u8, flags: []const []const u8) void {
         self.addCSourceFileSource(.{
-            .args = args,
+            .args = flags,
             .source = .{ .path = file },
         });
     }
 
     pub fn addCSourceFileSource(self: *LibExeObjStep, source: CSourceFile) void {
         const c_source_file = self.builder.allocator.create(CSourceFile) catch unreachable;
-
-        const args_copy = self.builder.allocator.alloc([]u8, source.args.len) catch unreachable;
-        for (source.args) |arg, i| {
-            args_copy[i] = self.builder.dupe(arg);
-        }
-
-        c_source_file.* = source;
-        c_source_file.args = args_copy;
+        c_source_file.* = source.dupe(self.builder);
         self.link_objects.append(LinkObject{ .CSourceFile = c_source_file }) catch unreachable;
     }
 
@@ -1699,15 +1846,15 @@ pub const LibExeObjStep = struct {
     }
 
     pub fn overrideZigLibDir(self: *LibExeObjStep, dir_path: []const u8) void {
-        self.override_lib_dir = self.builder.dupe(dir_path);
+        self.override_lib_dir = self.builder.dupePath(dir_path);
     }
 
     pub fn setMainPkgPath(self: *LibExeObjStep, dir_path: []const u8) void {
-        self.main_pkg_path = dir_path;
+        self.main_pkg_path = self.builder.dupePath(dir_path);
     }
 
     pub fn setLibCFile(self: *LibExeObjStep, libc_file: ?[]const u8) void {
-        self.libc_file = libc_file;
+        self.libc_file = if (libc_file) |f| self.builder.dupe(f) else null;
     }
 
     /// Unless setOutputDir was called, this function must be called only in
@@ -1767,8 +1914,9 @@ pub const LibExeObjStep = struct {
     }
 
     pub fn addAssemblyFileSource(self: *LibExeObjStep, source: FileSource) void {
-        self.link_objects.append(LinkObject{ .AssemblyFile = source }) catch unreachable;
-        source.addStepDependencies(&self.step);
+        const source_duped = source.dupe(self.builder);
+        self.link_objects.append(LinkObject{ .AssemblyFile = source_duped }) catch unreachable;
+        source_duped.addStepDependencies(&self.step);
     }
 
     pub fn addObjectFile(self: *LibExeObjStep, path: []const u8) void {
@@ -1781,49 +1929,118 @@ pub const LibExeObjStep = struct {
     }
 
     pub fn addBuildOption(self: *LibExeObjStep, comptime T: type, name: []const u8, value: T) void {
-        const out = self.build_options_contents.outStream();
+        const out = self.build_options_contents.writer();
         switch (T) {
             []const []const u8 => {
-                out.print("pub const {z}: []const []const u8 = &[_][]const u8{{\n", .{name}) catch unreachable;
+                out.print("pub const {}: []const []const u8 = &[_][]const u8{{\n", .{std.zig.fmtId(name)}) catch unreachable;
                 for (value) |slice| {
-                    out.print("    \"{Z}\",\n", .{slice}) catch unreachable;
+                    out.print("    \"{}\",\n", .{std.zig.fmtEscapes(slice)}) catch unreachable;
                 }
                 out.writeAll("};\n") catch unreachable;
                 return;
             },
-            []const u8 => {
-                out.print("pub const {z}: []const u8 = \"{Z}\";\n", .{ name, value }) catch unreachable;
+            [:0]const u8 => {
+                out.print("pub const {}: [:0]const u8 = \"{}\";\n", .{ std.zig.fmtId(name), std.zig.fmtEscapes(value) }) catch unreachable;
                 return;
             },
-            ?[]const u8 => {
-                out.print("pub const {z}: ?[]const u8 = ", .{name}) catch unreachable;
+            []const u8 => {
+                out.print("pub const {}: []const u8 = \"{}\";\n", .{ std.zig.fmtId(name), std.zig.fmtEscapes(value) }) catch unreachable;
+                return;
+            },
+            ?[:0]const u8 => {
+                out.print("pub const {}: ?[:0]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
                 if (value) |payload| {
-                    out.print("\"{Z}\";\n", .{payload}) catch unreachable;
+                    out.print("\"{}\";\n", .{std.zig.fmtEscapes(payload)}) catch unreachable;
                 } else {
                     out.writeAll("null;\n") catch unreachable;
                 }
+                return;
+            },
+            ?[]const u8 => {
+                out.print("pub const {}: ?[]const u8 = ", .{std.zig.fmtId(name)}) catch unreachable;
+                if (value) |payload| {
+                    out.print("\"{}\";\n", .{std.zig.fmtEscapes(payload)}) catch unreachable;
+                } else {
+                    out.writeAll("null;\n") catch unreachable;
+                }
+                return;
+            },
+            std.builtin.Version => {
+                out.print(
+                    \\pub const {}: @import("builtin").Version = .{{
+                    \\    .major = {d},
+                    \\    .minor = {d},
+                    \\    .patch = {d},
+                    \\}};
+                    \\
+                , .{
+                    std.zig.fmtId(name),
+
+                    value.major,
+                    value.minor,
+                    value.patch,
+                }) catch unreachable;
+            },
+            std.SemanticVersion => {
+                out.print(
+                    \\pub const {}: @import("std").SemanticVersion = .{{
+                    \\    .major = {d},
+                    \\    .minor = {d},
+                    \\    .patch = {d},
+                    \\
+                , .{
+                    std.zig.fmtId(name),
+
+                    value.major,
+                    value.minor,
+                    value.patch,
+                }) catch unreachable;
+                if (value.pre) |some| {
+                    out.print("    .pre = \"{}\",\n", .{std.zig.fmtEscapes(some)}) catch unreachable;
+                }
+                if (value.build) |some| {
+                    out.print("    .build = \"{}\",\n", .{std.zig.fmtEscapes(some)}) catch unreachable;
+                }
+                out.writeAll("};\n") catch unreachable;
                 return;
             },
             else => {},
         }
         switch (@typeInfo(T)) {
             .Enum => |enum_info| {
-                out.print("pub const {z} = enum {{\n", .{@typeName(T)}) catch unreachable;
+                out.print("pub const {} = enum {{\n", .{std.zig.fmtId(@typeName(T))}) catch unreachable;
                 inline for (enum_info.fields) |field| {
-                    out.print("    {z},\n", .{field.name}) catch unreachable;
+                    out.print("    {},\n", .{std.zig.fmtId(field.name)}) catch unreachable;
                 }
                 out.writeAll("};\n") catch unreachable;
             },
             else => {},
         }
-        out.print("pub const {z} = {};\n", .{ name, value }) catch unreachable;
+        out.print("pub const {}: {s} = {};\n", .{ std.zig.fmtId(name), @typeName(T), value }) catch unreachable;
     }
 
     /// The value is the path in the cache dir.
     /// Adds a dependency automatically.
     pub fn addBuildOptionArtifact(self: *LibExeObjStep, name: []const u8, artifact: *LibExeObjStep) void {
-        self.build_options_artifact_args.append(.{ .name = name, .artifact = artifact }) catch unreachable;
+        self.build_options_artifact_args.append(.{ .name = self.builder.dupe(name), .artifact = artifact }) catch unreachable;
         self.step.dependOn(&artifact.step);
+    }
+
+    /// The value is the path in the cache dir.
+    /// Adds a dependency automatically.
+    /// basename refers to the basename of the WriteFileStep
+    pub fn addBuildOptionWriteFile(
+        self: *LibExeObjStep,
+        name: []const u8,
+        write_file: *WriteFileStep,
+        basename: []const u8,
+    ) void {
+        self.build_options_write_file_args.append(.{
+            .name = name,
+            .write_file = write_file,
+            .basename = basename,
+        }) catch unreachable;
+        self.step.dependOn(&write_file.step);
     }
 
     pub fn addSystemIncludeDir(self: *LibExeObjStep, path: []const u8) void {
@@ -1892,11 +2109,11 @@ pub const LibExeObjStep = struct {
 
     pub fn setExecCmd(self: *LibExeObjStep, args: []const ?[]const u8) void {
         assert(self.kind == Kind.Test);
-        self.exec_cmd_args = args;
-    }
-
-    pub fn enableSystemLinkerHack(self: *LibExeObjStep) void {
-        self.system_linker_hack = true;
+        const duped_args = self.builder.allocator.alloc(?[]u8, args.len) catch unreachable;
+        for (args) |arg, i| {
+            duped_args[i] = if (arg) |a| self.builder.dupe(a) else null;
+        }
+        self.exec_cmd_args = duped_args;
     }
 
     fn linkLibraryOrObject(self: *LibExeObjStep, other: *LibExeObjStep) void {
@@ -1905,7 +2122,7 @@ pub const LibExeObjStep = struct {
         self.include_dirs.append(IncludeDir{ .OtherStep = other }) catch unreachable;
 
         // Inherit dependency on system libraries
-        for (other.link_objects.span()) |link_object| {
+        for (other.link_objects.items) |link_object| {
             switch (link_object) {
                 .SystemLib => |name| self.linkSystemLibrary(name),
                 else => continue,
@@ -1942,7 +2159,7 @@ pub const LibExeObjStep = struct {
         const builder = self.builder;
 
         if (self.root_src == null and self.link_objects.items.len == 0) {
-            warn("{}: linker needs 1 or more objects to link\n", .{self.step.name});
+            warn("{s}: linker needs 1 or more objects to link\n", .{self.step.name});
             return error.NeedAnObject;
         }
 
@@ -1964,10 +2181,15 @@ pub const LibExeObjStep = struct {
             try zig_args.append(@tagName(builder.color));
         }
 
+        if (self.stack_size) |stack_size| {
+            try zig_args.append("--stack");
+            try zig_args.append(try std.fmt.allocPrint(builder.allocator, "{}", .{stack_size}));
+        }
+
         if (self.root_src) |root_src| try zig_args.append(root_src.getPath(builder));
 
         var prev_has_extra_flags = false;
-        for (self.link_objects.span()) |link_object| {
+        for (self.link_objects.items) |link_object| {
             switch (link_object) {
                 .StaticPath => |static_path| {
                     try zig_args.append(builder.pathFromRoot(static_path));
@@ -1980,13 +2202,10 @@ pub const LibExeObjStep = struct {
                         try zig_args.append(other.getOutputPath());
                     },
                     .Lib => {
-                        if (!other.is_dynamic or self.target.isWindows()) {
-                            try zig_args.append(other.getOutputLibPath());
-                        } else {
-                            const full_path_lib = other.getOutputPath();
-                            try zig_args.append("--library");
-                            try zig_args.append(full_path_lib);
+                        const full_path_lib = other.getOutputLibPath();
+                        try zig_args.append(full_path_lib);
 
+                        if (other.is_dynamic and !self.target.isWindows()) {
                             if (fs.path.dirname(full_path_lib)) |dirname| {
                                 try zig_args.append("-rpath");
                                 try zig_args.append(dirname);
@@ -1995,8 +2214,7 @@ pub const LibExeObjStep = struct {
                     },
                 },
                 .SystemLib => |name| {
-                    try zig_args.append("--library");
-                    try zig_args.append(name);
+                    try zig_args.append(builder.fmt("-l{s}", .{name}));
                 },
                 .AssemblyFile => |asm_file| {
                     if (prev_has_extra_flags) {
@@ -2006,6 +2224,7 @@ pub const LibExeObjStep = struct {
                     }
                     try zig_args.append(asm_file.getPath(builder));
                 },
+
                 .CSourceFile => |c_source_file| {
                     if (c_source_file.args.len == 0) {
                         if (prev_has_extra_flags) {
@@ -2022,22 +2241,57 @@ pub const LibExeObjStep = struct {
                     }
                     try zig_args.append(c_source_file.source.getPath(builder));
                 },
+
+                .CSourceFiles => |c_source_files| {
+                    if (c_source_files.flags.len == 0) {
+                        if (prev_has_extra_flags) {
+                            try zig_args.append("-cflags");
+                            try zig_args.append("--");
+                            prev_has_extra_flags = false;
+                        }
+                    } else {
+                        try zig_args.append("-cflags");
+                        for (c_source_files.flags) |flag| {
+                            try zig_args.append(flag);
+                        }
+                        try zig_args.append("--");
+                    }
+                    for (c_source_files.files) |file| {
+                        try zig_args.append(builder.pathFromRoot(file));
+                    }
+                },
             }
         }
 
-        if (self.build_options_contents.items.len > 0 or self.build_options_artifact_args.items.len > 0) {
-            // Render build artifact options at the last minute, now that the path is known.
+        if (self.build_options_contents.items.len > 0 or
+            self.build_options_artifact_args.items.len > 0 or
+            self.build_options_write_file_args.items.len > 0)
+        {
+            // Render build artifact and write file options at the last minute, now that the path is known.
+            //
+            // Note that pathFromRoot uses resolve path, so this will have
+            // correct behavior even if getOutputPath is already absolute.
             for (self.build_options_artifact_args.items) |item| {
-                const out = self.build_options_contents.writer();
-                out.print("pub const {}: []const u8 = \"{Z}\";\n", .{ item.name, item.artifact.getOutputPath() }) catch unreachable;
+                self.addBuildOption(
+                    []const u8,
+                    item.name,
+                    self.builder.pathFromRoot(item.artifact.getOutputPath()),
+                );
+            }
+            for (self.build_options_write_file_args.items) |item| {
+                self.addBuildOption(
+                    []const u8,
+                    item.name,
+                    self.builder.pathFromRoot(item.write_file.getOutputPath(item.basename)),
+                );
             }
 
             const build_options_file = try fs.path.join(
                 builder.allocator,
-                &[_][]const u8{ builder.cache_root, builder.fmt("{}_build_options.zig", .{self.name}) },
+                &[_][]const u8{ builder.cache_root, builder.fmt("{s}_build_options.zig", .{self.name}) },
             );
             const path_from_root = builder.pathFromRoot(build_options_file);
-            try fs.cwd().writeFile(path_from_root, self.build_options_contents.span());
+            try fs.cwd().writeFile(path_from_root, self.build_options_contents.items);
             try zig_args.append("--pkg-begin");
             try zig_args.append("build_options");
             try zig_args.append(path_from_root);
@@ -2090,6 +2344,9 @@ pub const LibExeObjStep = struct {
         if (self.link_function_sections) {
             try zig_args.append("-ffunction-sections");
         }
+        if (self.linker_allow_shlib_undefined) |x| {
+            try zig_args.append(if (x) "-fallow-shlib-undefined" else "-fno-allow-shlib-undefined");
+        }
         if (self.single_threaded) {
             try zig_args.append("--single-threaded");
         }
@@ -2107,6 +2364,9 @@ pub const LibExeObjStep = struct {
         try zig_args.append("--cache-dir");
         try zig_args.append(builder.pathFromRoot(builder.cache_root));
 
+        try zig_args.append("--global-cache-dir");
+        try zig_args.append(builder.pathFromRoot(builder.global_cache_root));
+
         zig_args.append("--name") catch unreachable;
         zig_args.append(self.name) catch unreachable;
 
@@ -2119,21 +2379,35 @@ pub const LibExeObjStep = struct {
         if (self.is_dynamic) {
             try zig_args.append("-dynamic");
         }
-        if (self.bundle_compiler_rt) {
-            try zig_args.append("--bundle-compiler-rt");
+        if (self.bundle_compiler_rt) |x| {
+            if (x) {
+                try zig_args.append("-fcompiler-rt");
+            } else {
+                try zig_args.append("-fno-compiler-rt");
+            }
         }
         if (self.disable_stack_probing) {
             try zig_args.append("-fno-stack-check");
         }
+        if (self.red_zone) |red_zone| {
+            if (red_zone) {
+                try zig_args.append("-mred-zone");
+            } else {
+                try zig_args.append("-mno-red-zone");
+            }
+        }
         if (self.disable_sanitize_c) {
             try zig_args.append("-fno-sanitize-c");
+        }
+        if (self.sanitize_thread) {
+            try zig_args.append("-fsanitize-thread");
         }
         if (self.rdynamic) {
             try zig_args.append("-rdynamic");
         }
 
         if (self.code_model != .default) {
-            try zig_args.append("-code-model");
+            try zig_args.append("-mcmodel");
             try zig_args.append(@tagName(self.code_model));
         }
 
@@ -2157,16 +2431,16 @@ pub const LibExeObjStep = struct {
             } else {
                 var mcpu_buffer = std.ArrayList(u8).init(builder.allocator);
 
-                try mcpu_buffer.outStream().print("-mcpu={}", .{cross.cpu.model.name});
+                try mcpu_buffer.writer().print("-mcpu={s}", .{cross.cpu.model.name});
 
                 for (all_features) |feature, i_usize| {
                     const i = @intCast(std.Target.Cpu.Feature.Set.Index, i_usize);
                     const in_cpu_set = populated_cpu_features.isEnabled(i);
                     const in_actual_set = cross.cpu.features.isEnabled(i);
                     if (in_cpu_set and !in_actual_set) {
-                        try mcpu_buffer.outStream().print("-{}", .{feature.name});
+                        try mcpu_buffer.writer().print("-{s}", .{feature.name});
                     } else if (!in_cpu_set and in_actual_set) {
-                        try mcpu_buffer.outStream().print("+{}", .{feature.name});
+                        try mcpu_buffer.writer().print("+{s}", .{feature.name});
                     }
                 }
 
@@ -2209,9 +2483,19 @@ pub const LibExeObjStep = struct {
                 try zig_args.append("--test-cmd");
                 try zig_args.append(bin_name);
                 if (glibc_dir_arg) |dir| {
-                    const full_dir = try fs.path.join(builder.allocator, &[_][]const u8{
-                        dir,
-                        try self.target.linuxTriple(builder.allocator),
+                    // TODO look into making this a call to `linuxTriple`. This
+                    // needs the directory to be called "i686" rather than
+                    // "i386" which is why we do it manually here.
+                    const fmt_str = "{s}" ++ fs.path.sep_str ++ "{s}-{s}-{s}";
+                    const cpu_arch = self.target.getCpuArch();
+                    const os_tag = self.target.getOsTag();
+                    const abi = self.target.getAbi();
+                    const cpu_arch_name: []const u8 = if (cpu_arch == .i386)
+                        "i686"
+                    else
+                        @tagName(cpu_arch);
+                    const full_dir = try std.fmt.allocPrint(builder.allocator, fmt_str, .{
+                        dir, cpu_arch_name, @tagName(os_tag), @tagName(abi),
                     });
 
                     try zig_args.append("--test-cmd");
@@ -2233,13 +2517,18 @@ pub const LibExeObjStep = struct {
                 try zig_args.append("--dir=.");
                 try zig_args.append("--test-cmd-bin");
             },
+            .darling => |bin_name| if (self.enable_darling) {
+                try zig_args.append("--test-cmd");
+                try zig_args.append(bin_name);
+                try zig_args.append("--test-cmd-bin");
+            },
         }
 
-        for (self.packages.span()) |pkg| {
+        for (self.packages.items) |pkg| {
             try self.makePackageCmd(pkg, &zig_args);
         }
 
-        for (self.include_dirs.span()) |include_dir| {
+        for (self.include_dirs.items) |include_dir| {
             switch (include_dir) {
                 .RawPath => |include_path| {
                     try zig_args.append("-I");
@@ -2257,18 +2546,18 @@ pub const LibExeObjStep = struct {
             }
         }
 
-        for (self.lib_paths.span()) |lib_path| {
+        for (self.lib_paths.items) |lib_path| {
             try zig_args.append("-L");
             try zig_args.append(lib_path);
         }
 
-        for (self.c_macros.span()) |c_macro| {
+        for (self.c_macros.items) |c_macro| {
             try zig_args.append("-D");
             try zig_args.append(c_macro);
         }
 
         if (self.target.isDarwin()) {
-            for (self.framework_dirs.span()) |dir| {
+            for (self.framework_dirs.items) |dir| {
                 try zig_args.append("-F");
                 try zig_args.append(dir);
             }
@@ -2280,8 +2569,15 @@ pub const LibExeObjStep = struct {
             }
         }
 
-        if (self.system_linker_hack) {
-            try zig_args.append("--system-linker-hack");
+        for (builder.search_prefixes.items) |search_prefix| {
+            try zig_args.append("-L");
+            try zig_args.append(try fs.path.join(builder.allocator, &[_][]const u8{
+                search_prefix, "lib",
+            }));
+            try zig_args.append("-isystem");
+            try zig_args.append(try fs.path.join(builder.allocator, &[_][]const u8{
+                search_prefix, "include",
+            }));
         }
 
         if (self.valgrind_support) |valgrind_support| {
@@ -2313,6 +2609,22 @@ pub const LibExeObjStep = struct {
             }
         }
 
+        if (self.pie) |pie| {
+            if (pie) {
+                try zig_args.append("-fPIE");
+            } else {
+                try zig_args.append("-fno-PIE");
+            }
+        }
+
+        if (self.want_lto) |lto| {
+            if (lto) {
+                try zig_args.append("-flto");
+            } else {
+                try zig_args.append("-fno-lto");
+            }
+        }
+
         if (self.subsystem) |subsystem| {
             try zig_args.append("--subsystem");
             try zig_args.append(switch (subsystem) {
@@ -2328,11 +2640,11 @@ pub const LibExeObjStep = struct {
         }
 
         if (self.kind == Kind.Test) {
-            try builder.spawnChild(zig_args.span());
+            try builder.spawnChild(zig_args.items);
         } else {
             try zig_args.append("--enable-cache");
 
-            const output_dir_nl = try builder.execFromStep(zig_args.span(), &self.step);
+            const output_dir_nl = try builder.execFromStep(zig_args.items, &self.step);
             const build_output_dir = mem.trimRight(u8, output_dir_nl, "\r\n");
 
             if (self.output_dir) |output_dir| {
@@ -2384,7 +2696,7 @@ pub const InstallArtifactStep = struct {
         const self = builder.allocator.create(Self) catch unreachable;
         self.* = Self{
             .builder = builder,
-            .step = Step.init(.InstallArtifact, builder.fmt("install {}", .{artifact.step.name}), builder.allocator, make),
+            .step = Step.init(.InstallArtifact, builder.fmt("install {s}", .{artifact.step.name}), builder.allocator, make),
             .artifact = artifact,
             .dest_dir = artifact.override_dest_dir orelse switch (artifact.kind) {
                 .Obj => unreachable,
@@ -2460,10 +2772,10 @@ pub const InstallFileStep = struct {
         builder.pushInstalledFile(dir, dest_rel_path);
         return InstallFileStep{
             .builder = builder,
-            .step = Step.init(.InstallFile, builder.fmt("install {}", .{src_path}), builder.allocator, make),
-            .src_path = src_path,
-            .dir = dir,
-            .dest_rel_path = dest_rel_path,
+            .step = Step.init(.InstallFile, builder.fmt("install {s}", .{src_path}), builder.allocator, make),
+            .src_path = builder.dupePath(src_path),
+            .dir = dir.dupe(builder),
+            .dest_rel_path = builder.dupePath(dest_rel_path),
         };
     }
 
@@ -2480,6 +2792,18 @@ pub const InstallDirectoryOptions = struct {
     install_dir: InstallDir,
     install_subdir: []const u8,
     exclude_extensions: ?[]const []const u8 = null,
+
+    fn dupe(self: InstallDirectoryOptions, b: *Builder) InstallDirectoryOptions {
+        return .{
+            .source_dir = b.dupe(self.source_dir),
+            .install_dir = self.install_dir.dupe(b),
+            .install_subdir = b.dupe(self.install_subdir),
+            .exclude_extensions = if (self.exclude_extensions) |extensions|
+                b.dupeStrings(extensions)
+            else
+                null,
+        };
+    }
 };
 
 pub const InstallDirStep = struct {
@@ -2494,8 +2818,8 @@ pub const InstallDirStep = struct {
         builder.pushInstalledFile(options.install_dir, options.install_subdir);
         return InstallDirStep{
             .builder = builder,
-            .step = Step.init(.InstallDir, builder.fmt("install {}/", .{options.source_dir}), builder.allocator, make),
-            .options = options,
+            .step = Step.init(.InstallDir, builder.fmt("install {s}/", .{options.source_dir}), builder.allocator, make),
+            .options = options.dupe(builder),
         };
     }
 
@@ -2530,14 +2854,14 @@ pub const LogStep = struct {
     pub fn init(builder: *Builder, data: []const u8) LogStep {
         return LogStep{
             .builder = builder,
-            .step = Step.init(.Log, builder.fmt("log {}", .{data}), builder.allocator, make),
-            .data = data,
+            .step = Step.init(.Log, builder.fmt("log {s}", .{data}), builder.allocator, make),
+            .data = builder.dupe(data),
         };
     }
 
     fn make(step: *Step) anyerror!void {
         const self = @fieldParentPtr(LogStep, "step", step);
-        warn("{}", .{self.data});
+        warn("{s}", .{self.data});
     }
 };
 
@@ -2549,8 +2873,8 @@ pub const RemoveDirStep = struct {
     pub fn init(builder: *Builder, dir_path: []const u8) RemoveDirStep {
         return RemoveDirStep{
             .builder = builder,
-            .step = Step.init(.RemoveDir, builder.fmt("RemoveDir {}", .{dir_path}), builder.allocator, make),
-            .dir_path = dir_path,
+            .step = Step.init(.RemoveDir, builder.fmt("RemoveDir {s}", .{dir_path}), builder.allocator, make),
+            .dir_path = builder.dupePath(dir_path),
         };
     }
 
@@ -2559,7 +2883,7 @@ pub const RemoveDirStep = struct {
 
         const full_path = self.builder.pathFromRoot(self.dir_path);
         fs.cwd().deleteTree(full_path) catch |err| {
-            warn("Unable to remove {}: {}\n", .{ full_path, @errorName(err) });
+            warn("Unable to remove {s}: {s}\n", .{ full_path, @errorName(err) });
             return err;
         };
     }
@@ -2594,7 +2918,7 @@ pub const Step = struct {
     pub fn init(id: Id, name: []const u8, allocator: *Allocator, makeFn: fn (*Step) anyerror!void) Step {
         return Step{
             .id = id,
-            .name = name,
+            .name = allocator.dupe(u8, name) catch unreachable,
             .makeFn = makeFn,
             .dependencies = ArrayList(*Step).init(allocator),
             .loop_flag = false,
@@ -2647,7 +2971,7 @@ fn doAtomicSymLinks(allocator: *Allocator, output_path: []const u8, filename_maj
         &[_][]const u8{ out_dir, filename_major_only },
     ) catch unreachable;
     fs.atomicSymLink(allocator, out_basename, major_only_path) catch |err| {
-        warn("Unable to symlink {} -> {}\n", .{ major_only_path, out_basename });
+        warn("Unable to symlink {s} -> {s}\n", .{ major_only_path, out_basename });
         return err;
     };
     // sym link for libfoo.so to libfoo.so.1
@@ -2656,7 +2980,7 @@ fn doAtomicSymLinks(allocator: *Allocator, output_path: []const u8, filename_maj
         &[_][]const u8{ out_dir, filename_name_only },
     ) catch unreachable;
     fs.atomicSymLink(allocator, filename_major_only, name_only_path) catch |err| {
-        warn("Unable to symlink {} -> {}\n", .{ name_only_path, filename_major_only });
+        warn("Unable to symlink {s} -> {s}\n", .{ name_only_path, filename_major_only });
         return err;
     };
 }
@@ -2701,11 +3025,28 @@ pub const InstallDir = union(enum) {
     Header: void,
     /// A path relative to the prefix
     Custom: []const u8,
+
+    fn dupe(self: InstallDir, builder: *Builder) InstallDir {
+        if (self == .Custom) {
+            // Written with this temporary to avoid RLS problems
+            const duped_path = builder.dupe(self.Custom);
+            return .{ .Custom = duped_path };
+        } else {
+            return self;
+        }
+    }
 };
 
 pub const InstalledFile = struct {
     dir: InstallDir,
     path: []const u8,
+
+    pub fn dupe(self: InstalledFile, builder: *Builder) InstalledFile {
+        return .{
+            .dir = self.dir.dupe(builder),
+            .path = builder.dupe(self.path),
+        };
+    }
 };
 
 test "Builder.dupePkg()" {
@@ -2715,6 +3056,7 @@ test "Builder.dupePkg()" {
     defer arena.deinit();
     var builder = try Builder.create(
         &arena.allocator,
+        "test",
         "test",
         "test",
         "test",
@@ -2736,19 +3078,56 @@ test "Builder.dupePkg()" {
     const dupe_deps = dupe.dependencies.?;
 
     // probably the same top level package details
-    std.testing.expectEqualStrings(pkg_top.name, dupe.name);
+    try std.testing.expectEqualStrings(pkg_top.name, dupe.name);
 
     // probably the same dependencies
-    std.testing.expectEqual(original_deps.len, dupe_deps.len);
-    std.testing.expectEqual(original_deps[0].name, pkg_dep.name);
+    try std.testing.expectEqual(original_deps.len, dupe_deps.len);
+    try std.testing.expectEqual(original_deps[0].name, pkg_dep.name);
 
     // could segfault otherwise if pointers in duplicated package's fields are
     // the same as those in stack allocated package's fields
-    std.testing.expect(dupe_deps.ptr != original_deps.ptr);
-    std.testing.expect(dupe.name.ptr != pkg_top.name.ptr);
-    std.testing.expect(dupe.path.ptr != pkg_top.path.ptr);
-    std.testing.expect(dupe_deps[0].name.ptr != pkg_dep.name.ptr);
-    std.testing.expect(dupe_deps[0].path.ptr != pkg_dep.path.ptr);
+    try std.testing.expect(dupe_deps.ptr != original_deps.ptr);
+    try std.testing.expect(dupe.name.ptr != pkg_top.name.ptr);
+    try std.testing.expect(dupe.path.ptr != pkg_top.path.ptr);
+    try std.testing.expect(dupe_deps[0].name.ptr != pkg_dep.name.ptr);
+    try std.testing.expect(dupe_deps[0].path.ptr != pkg_dep.path.ptr);
+}
+
+test "LibExeObjStep.addBuildOption" {
+    if (builtin.os.tag == .wasi) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = try Builder.create(
+        &arena.allocator,
+        "test",
+        "test",
+        "test",
+        "test",
+    );
+    defer builder.destroy();
+
+    var exe = builder.addExecutable("not_an_executable", "/not/an/executable.zig");
+    exe.addBuildOption(usize, "option1", 1);
+    exe.addBuildOption(?usize, "option2", null);
+    exe.addBuildOption([]const u8, "string", "zigisthebest");
+    exe.addBuildOption(?[]const u8, "optional_string", null);
+    exe.addBuildOption(std.SemanticVersion, "semantic_version", try std.SemanticVersion.parse("0.1.2-foo+bar"));
+
+    try std.testing.expectEqualStrings(
+        \\pub const option1: usize = 1;
+        \\pub const option2: ?usize = null;
+        \\pub const string: []const u8 = "zigisthebest";
+        \\pub const optional_string: ?[]const u8 = null;
+        \\pub const semantic_version: @import("std").SemanticVersion = .{
+        \\    .major = 0,
+        \\    .minor = 1,
+        \\    .patch = 2,
+        \\    .pre = "foo",
+        \\    .build = "bar",
+        \\};
+        \\
+    , exe.build_options_contents.items);
 }
 
 test "LibExeObjStep.addPackage" {
@@ -2759,6 +3138,7 @@ test "LibExeObjStep.addPackage" {
 
     var builder = try Builder.create(
         &arena.allocator,
+        "test",
         "test",
         "test",
         "test",
@@ -2778,13 +3158,13 @@ test "LibExeObjStep.addPackage" {
     var exe = builder.addExecutable("not_an_executable", "/not/an/executable.zig");
     exe.addPackage(pkg_top);
 
-    std.testing.expectEqual(@as(usize, 1), exe.packages.items.len);
+    try std.testing.expectEqual(@as(usize, 1), exe.packages.items.len);
 
     const dupe = exe.packages.items[0];
-    std.testing.expectEqualStrings(pkg_top.name, dupe.name);
+    try std.testing.expectEqualStrings(pkg_top.name, dupe.name);
 }
 
-test "" {
+test {
     // The only purpose of this test is to get all these untested functions
     // to be referenced to avoid regression so it is okay to skip some targets.
     if (comptime std.Target.current.cpu.arch.ptrBitWidth() == 64) {

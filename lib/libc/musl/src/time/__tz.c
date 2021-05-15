@@ -6,6 +6,12 @@
 #include <sys/mman.h>
 #include "libc.h"
 #include "lock.h"
+#include "fork_impl.h"
+
+#define malloc __libc_malloc
+#define calloc undef
+#define realloc undef
+#define free undef
 
 long  __timezone = 0;
 int   __daylight = 0;
@@ -30,6 +36,7 @@ static char *old_tz = old_tz_buf;
 static size_t old_tz_size = sizeof old_tz_buf;
 
 static volatile int lock[1];
+volatile int *const __timezone_lockptr = lock;
 
 static int getint(const char **p)
 {
@@ -86,15 +93,15 @@ static void getname(char *d, const char **p)
 	int i;
 	if (**p == '<') {
 		++*p;
-		for (i=0; (*p)[i]!='>' && i<TZNAME_MAX; i++)
-			d[i] = (*p)[i];
-		++*p;
+		for (i=0; (*p)[i] && (*p)[i]!='>'; i++)
+			if (i<TZNAME_MAX) d[i] = (*p)[i];
+		if ((*p)[i]) ++*p;
 	} else {
-		for (i=0; ((*p)[i]|32)-'a'<26U && i<TZNAME_MAX; i++)
-			d[i] = (*p)[i];
+		for (i=0; ((*p)[i]|32)-'a'<26U; i++)
+			if (i<TZNAME_MAX) d[i] = (*p)[i];
 	}
 	*p += i;
-	d[i] = 0;
+	d[i<TZNAME_MAX?i:TZNAME_MAX] = 0;
 }
 
 #define VEC(...) ((const unsigned char[]){__VA_ARGS__})
@@ -178,7 +185,7 @@ static void do_tzset()
 	zi = map;
 	if (map) {
 		int scale = 2;
-		if (sizeof(time_t) > 4 && map[4]=='2') {
+		if (map[4]!='1') {
 			size_t skip = zi_dotprod(zi+20, VEC(1,1,8,5,6,1), 6);
 			trans = zi+skip+44+44;
 			scale++;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -29,11 +29,24 @@ pub extern "c" fn fcopyfile(from: fd_t, to: fd_t, state: ?copyfile_state_t, flag
 pub extern "c" fn @"realpath$DARWIN_EXTSN"(noalias file_name: [*:0]const u8, noalias resolved_name: [*]u8) ?[*:0]u8;
 
 pub extern "c" fn __getdirentries64(fd: c_int, buf_ptr: [*]u8, buf_len: usize, basep: *i64) isize;
-pub extern "c" fn @"fstat$INODE64"(fd: fd_t, buf: *Stat) c_int;
-pub extern "c" fn @"fstatat$INODE64"(dirfd: fd_t, path_name: [*:0]const u8, buf: *Stat, flags: u32) c_int;
+
+extern "c" fn fstat(fd: fd_t, buf: *libc_stat) c_int;
+/// On x86_64 Darwin, fstat has to be manully linked with $INODE64 suffix to force 64bit version.
+/// Note that this is fixed on aarch64 and no longer necessary.
+extern "c" fn @"fstat$INODE64"(fd: fd_t, buf: *libc_stat) c_int;
+pub const _fstat = if (builtin.arch == .aarch64) fstat else @"fstat$INODE64";
+
+extern "c" fn fstatat(dirfd: fd_t, path: [*:0]const u8, stat_buf: *libc_stat, flags: u32) c_int;
+/// On x86_64 Darwin, fstatat has to be manully linked with $INODE64 suffix to force 64bit version.
+/// Note that this is fixed on aarch64 and no longer necessary.
+extern "c" fn @"fstatat$INODE64"(dirfd: fd_t, path_name: [*:0]const u8, buf: *libc_stat, flags: u32) c_int;
+pub const _fstatat = if (builtin.arch == .aarch64) fstatat else @"fstatat$INODE64";
 
 pub extern "c" fn mach_absolute_time() u64;
 pub extern "c" fn mach_timebase_info(tinfo: ?*mach_timebase_info_data) void;
+
+pub extern "c" fn malloc_size(?*const c_void) usize;
+pub extern "c" fn posix_memalign(memptr: *?*c_void, alignment: usize, size: usize) c_int;
 
 pub extern "c" fn kevent64(
     kq: c_int,
@@ -164,6 +177,11 @@ pub const pthread_cond_t = extern struct {
     __sig: c_long = 0x3CB0B1BB,
     __opaque: [__PTHREAD_COND_SIZE__]u8 = [_]u8{0} ** __PTHREAD_COND_SIZE__,
 };
+pub const pthread_rwlock_t = extern struct {
+    __sig: c_long = 0x2DA8B3B4,
+    __opaque: [192]u8 = [_]u8{0} ** 192,
+};
+pub const sem_t = c_int;
 const __PTHREAD_MUTEX_SIZE__ = if (@sizeOf(usize) == 8) 56 else 40;
 const __PTHREAD_COND_SIZE__ = if (@sizeOf(usize) == 8) 40 else 24;
 
@@ -172,4 +190,19 @@ pub const pthread_attr_t = extern struct {
     __opaque: [56]u8,
 };
 
+const pthread_t = std.c.pthread_t;
+pub extern "c" fn pthread_threadid_np(thread: ?pthread_t, thread_id: *u64) c_int;
+
 pub extern "c" fn arc4random_buf(buf: [*]u8, len: usize) void;
+
+// Grand Central Dispatch is exposed by libSystem.
+pub const dispatch_semaphore_t = *opaque {};
+pub const dispatch_time_t = u64;
+pub const DISPATCH_TIME_NOW = @as(dispatch_time_t, 0);
+pub const DISPATCH_TIME_FOREVER = ~@as(dispatch_time_t, 0);
+pub extern "c" fn dispatch_semaphore_create(value: isize) ?dispatch_semaphore_t;
+pub extern "c" fn dispatch_semaphore_wait(dsema: dispatch_semaphore_t, timeout: dispatch_time_t) isize;
+pub extern "c" fn dispatch_semaphore_signal(dsema: dispatch_semaphore_t) isize;
+
+pub extern "c" fn dispatch_release(object: *c_void) void;
+pub extern "c" fn dispatch_time(when: dispatch_time_t, delta: i64) dispatch_time_t;

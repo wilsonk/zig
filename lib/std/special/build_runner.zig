@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -41,15 +41,26 @@ pub fn main() !void {
         warn("Expected third argument to be cache root directory path\n", .{});
         return error.InvalidArgs;
     };
+    const global_cache_root = nextArg(args, &arg_idx) orelse {
+        warn("Expected third argument to be global cache root directory path\n", .{});
+        return error.InvalidArgs;
+    };
 
-    const builder = try Builder.create(allocator, zig_exe, build_root, cache_root);
+    const builder = try Builder.create(
+        allocator,
+        zig_exe,
+        build_root,
+        cache_root,
+        global_cache_root,
+    );
     defer builder.destroy();
 
     var targets = ArrayList([]const u8).init(allocator);
 
-    const stderr_stream = io.getStdErr().outStream();
-    const stdout_stream = io.getStdOut().outStream();
+    const stderr_stream = io.getStdErr().writer();
+    const stdout_stream = io.getStdOut().writer();
 
+    var install_prefix: ?[]const u8 = null;
     while (nextArg(args, &arg_idx)) |arg| {
         if (mem.startsWith(u8, arg, "-D")) {
             const option_contents = arg[2..];
@@ -69,11 +80,11 @@ pub fn main() !void {
         } else if (mem.startsWith(u8, arg, "-")) {
             if (mem.eql(u8, arg, "--verbose")) {
                 builder.verbose = true;
-            } else if (mem.eql(u8, arg, "--help")) {
+            } else if (mem.eql(u8, arg, "-h") or mem.eql(u8, arg, "--help")) {
                 return usage(builder, false, stdout_stream);
-            } else if (mem.eql(u8, arg, "--prefix")) {
-                builder.install_prefix = nextArg(args, &arg_idx) orelse {
-                    warn("Expected argument after --prefix\n\n", .{});
+            } else if (mem.eql(u8, arg, "-p") or mem.eql(u8, arg, "--prefix")) {
+                install_prefix = nextArg(args, &arg_idx) orelse {
+                    warn("Expected argument after {s}\n\n", .{arg});
                     return usageAndErr(builder, false, stderr_stream);
                 };
             } else if (mem.eql(u8, arg, "--search-prefix")) {
@@ -88,7 +99,7 @@ pub fn main() !void {
                     return usageAndErr(builder, false, stderr_stream);
                 };
                 builder.color = std.meta.stringToEnum(@TypeOf(builder.color), next_arg) orelse {
-                    warn("expected [auto|on|off] after --color, found '{}'", .{next_arg});
+                    warn("expected [auto|on|off] after --color, found '{s}'", .{next_arg});
                     return usageAndErr(builder, false, stderr_stream);
                 };
             } else if (mem.eql(u8, arg, "--override-lib-dir")) {
@@ -116,7 +127,7 @@ pub fn main() !void {
                 builder.args = argsRest(args, arg_idx);
                 break;
             } else {
-                warn("Unrecognized argument: {}\n\n", .{arg});
+                warn("Unrecognized argument: {s}\n\n", .{arg});
                 return usageAndErr(builder, false, stderr_stream);
             }
         } else {
@@ -124,13 +135,13 @@ pub fn main() !void {
         }
     }
 
-    builder.resolveInstallPrefix();
+    builder.resolveInstallPrefix(install_prefix);
     try runBuild(builder);
 
     if (builder.validateUserInputDidItFail())
         return usageAndErr(builder, true, stderr_stream);
 
-    builder.make(targets.span()) catch |err| {
+    builder.make(targets.items) catch |err| {
         switch (err) {
             error.InvalidStepName => {
                 return usageAndErr(builder, true, stderr_stream);
@@ -152,33 +163,32 @@ fn runBuild(builder: *Builder) anyerror!void {
 fn usage(builder: *Builder, already_ran_build: bool, out_stream: anytype) !void {
     // run the build script to collect the options
     if (!already_ran_build) {
-        builder.setInstallPrefix(null);
-        builder.resolveInstallPrefix();
+        builder.resolveInstallPrefix(null);
         try runBuild(builder);
     }
 
     try out_stream.print(
-        \\Usage: {} build [steps] [options]
+        \\Usage: {s} build [steps] [options]
         \\
         \\Steps:
         \\
     , .{builder.zig_exe});
 
     const allocator = builder.allocator;
-    for (builder.top_level_steps.span()) |top_level_step| {
+    for (builder.top_level_steps.items) |top_level_step| {
         const name = if (&top_level_step.step == builder.default_step)
-            try fmt.allocPrint(allocator, "{} (default)", .{top_level_step.step.name})
+            try fmt.allocPrint(allocator, "{s} (default)", .{top_level_step.step.name})
         else
             top_level_step.step.name;
-        try out_stream.print("  {s:<27} {}\n", .{ name, top_level_step.description });
+        try out_stream.print("  {s:<27} {s}\n", .{ name, top_level_step.description });
     }
 
     try out_stream.writeAll(
         \\
         \\General Options:
-        \\  --help                      Print this help and exit
+        \\  -h, --help                  Print this help and exit
         \\  --verbose                   Print commands before executing them
-        \\  --prefix [path]             Override default install prefix
+        \\  -p, --prefix [path]         Override default install prefix
         \\  --search-prefix [path]      Add a path to look for binaries, libraries, headers
         \\  --color [auto|off|on]       Enable or disable colored error messages
         \\
@@ -189,13 +199,13 @@ fn usage(builder: *Builder, already_ran_build: bool, out_stream: anytype) !void 
     if (builder.available_options_list.items.len == 0) {
         try out_stream.print("  (none)\n", .{});
     } else {
-        for (builder.available_options_list.span()) |option| {
-            const name = try fmt.allocPrint(allocator, "  -D{}=[{}]", .{
+        for (builder.available_options_list.items) |option| {
+            const name = try fmt.allocPrint(allocator, "  -D{s}=[{s}]", .{
                 option.name,
                 Builder.typeIdName(option.type_id),
             });
             defer allocator.free(name);
-            try out_stream.print("{s:<29} {}\n", .{ name, option.description });
+            try out_stream.print("{s:<29} {s}\n", .{ name, option.description });
         }
     }
 

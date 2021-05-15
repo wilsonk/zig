@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
 const std = @import("std");
 const fmt = std.fmt;
+
+const EncodingError = std.crypto.errors.EncodingError;
+const IdentityElementError = std.crypto.errors.IdentityElementError;
+const NonCanonicalError = std.crypto.errors.NonCanonicalError;
+const WeakPublicKeyError = std.crypto.errors.WeakPublicKeyError;
 
 /// Group operations over Edwards25519.
 pub const Ristretto255 = struct {
@@ -14,6 +19,8 @@ pub const Ristretto255 = struct {
     pub const Fe = Curve.Fe;
     /// Field arithmetic mod the order of the main subgroup.
     pub const scalar = Curve.scalar;
+    /// Length in byte of an encoded element.
+    pub const encoded_length: usize = 32;
 
     p: Curve,
 
@@ -32,7 +39,7 @@ pub const Ristretto255 = struct {
         return .{ .ratio_is_square = @boolToInt(has_m_root) | @boolToInt(has_p_root), .root = x.abs() };
     }
 
-    fn rejectNonCanonical(s: [32]u8) !void {
+    fn rejectNonCanonical(s: [encoded_length]u8) NonCanonicalError!void {
         if ((s[0] & 1) != 0) {
             return error.NonCanonical;
         }
@@ -40,7 +47,7 @@ pub const Ristretto255 = struct {
     }
 
     /// Reject the neutral element.
-    pub inline fn rejectIdentity(p: Ristretto255) !void {
+    pub fn rejectIdentity(p: Ristretto255) callconv(.Inline) IdentityElementError!void {
         return p.p.rejectIdentity();
     }
 
@@ -48,7 +55,7 @@ pub const Ristretto255 = struct {
     pub const basePoint = Ristretto255{ .p = Curve.basePoint };
 
     /// Decode a Ristretto255 representative.
-    pub fn fromBytes(s: [32]u8) !Ristretto255 {
+    pub fn fromBytes(s: [encoded_length]u8) (NonCanonicalError || EncodingError)!Ristretto255 {
         try rejectNonCanonical(s);
         const s_ = Fe.fromBytes(s);
         const ss = s_.sq(); // s^2
@@ -78,7 +85,7 @@ pub const Ristretto255 = struct {
     }
 
     /// Encode to a Ristretto255 representative.
-    pub fn toBytes(e: Ristretto255) [32]u8 {
+    pub fn toBytes(e: Ristretto255) [encoded_length]u8 {
         const p = &e.p;
         var u1_ = p.z.add(p.y); // Z+Y
         const zmy = p.z.sub(p.y); // Z-Y
@@ -139,19 +146,19 @@ pub const Ristretto255 = struct {
     }
 
     /// Double a Ristretto255 element.
-    pub inline fn dbl(p: Ristretto255) Ristretto255 {
+    pub fn dbl(p: Ristretto255) callconv(.Inline) Ristretto255 {
         return .{ .p = p.p.dbl() };
     }
 
     /// Add two Ristretto255 elements.
-    pub inline fn add(p: Ristretto255, q: Ristretto255) Ristretto255 {
+    pub fn add(p: Ristretto255, q: Ristretto255) callconv(.Inline) Ristretto255 {
         return .{ .p = p.p.add(q.p) };
     }
 
     /// Multiply a Ristretto255 element with a scalar.
     /// Return error.WeakPublicKey if the resulting element is
     /// the identity element.
-    pub inline fn mul(p: Ristretto255, s: [32]u8) !Ristretto255 {
+    pub fn mul(p: Ristretto255, s: [encoded_length]u8) callconv(.Inline) (IdentityElementError || WeakPublicKeyError)!Ristretto255 {
         return Ristretto255{ .p = try p.p.mul(s) };
     }
 
@@ -168,21 +175,21 @@ pub const Ristretto255 = struct {
 test "ristretto255" {
     const p = Ristretto255.basePoint;
     var buf: [256]u8 = undefined;
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{p.toBytes()}), "E2F2AE0A6ABC4E71A884A961C500515F58E30B6AA582DD8DB6A65945E08D2D76");
+    try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&p.toBytes())}), "E2F2AE0A6ABC4E71A884A961C500515F58E30B6AA582DD8DB6A65945E08D2D76");
 
-    var r: [32]u8 = undefined;
-    try fmt.hexToBytes(r[0..], "6a493210f7499cd17fecb510ae0cea23a110e8d5b901f8acadd3095c73a3b919");
+    var r: [Ristretto255.encoded_length]u8 = undefined;
+    _ = try fmt.hexToBytes(r[0..], "6a493210f7499cd17fecb510ae0cea23a110e8d5b901f8acadd3095c73a3b919");
     var q = try Ristretto255.fromBytes(r);
     q = q.dbl().add(p);
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{q.toBytes()}), "E882B131016B52C1D3337080187CF768423EFCCBB517BB495AB812C4160FF44E");
+    try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&q.toBytes())}), "E882B131016B52C1D3337080187CF768423EFCCBB517BB495AB812C4160FF44E");
 
     const s = [_]u8{15} ++ [_]u8{0} ** 31;
     const w = try p.mul(s);
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{w.toBytes()}), "E0C418F7C8D9C4CDD7395B93EA124F3AD99021BB681DFC3302A9D99A2E53E64E");
+    try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&w.toBytes())}), "E0C418F7C8D9C4CDD7395B93EA124F3AD99021BB681DFC3302A9D99A2E53E64E");
 
-    std.testing.expect(p.dbl().dbl().dbl().dbl().equivalent(w.add(p)));
+    try std.testing.expect(p.dbl().dbl().dbl().dbl().equivalent(w.add(p)));
 
     const h = [_]u8{69} ** 32 ++ [_]u8{42} ** 32;
     const ph = Ristretto255.fromUniform(h);
-    std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{X}", .{ph.toBytes()}), "DCCA54E037A4311EFBEEF413ACD21D35276518970B7A61DC88F8587B493D5E19");
+    try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buf, "{s}", .{std.fmt.fmtSliceHexUpper(&ph.toBytes())}), "DCCA54E037A4311EFBEEF413ACD21D35276518970B7A61DC88F8587B493D5E19");
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -21,6 +21,10 @@ pub fn __extendsftf2(a: f32) callconv(.C) f128 {
 
 pub fn __extendhfsf2(a: u16) callconv(.C) f32 {
     return @call(.{ .modifier = .always_inline }, extendXfYf2, .{ f32, f16, a });
+}
+
+pub fn __extendhftf2(a: u16) callconv(.C) f128 {
+    return @call(.{ .modifier = .always_inline }, extendXfYf2, .{ f128, f16, a });
 }
 
 pub fn __aeabi_h2f(arg: u16) callconv(.AAPCS) f32 {

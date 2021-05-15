@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -8,16 +8,16 @@
 const __udivmoddi4 = @import("int.zig").__udivmoddi4;
 const testing = @import("std").testing;
 
-fn test__udivmoddi4(a: u64, b: u64, expected_q: u64, expected_r: u64) void {
+fn test__udivmoddi4(a: u64, b: u64, expected_q: u64, expected_r: u64) !void {
     var r: u64 = undefined;
     const q = __udivmoddi4(a, b, &r);
-    testing.expect(q == expected_q);
-    testing.expect(r == expected_r);
+    try testing.expect(q == expected_q);
+    try testing.expect(r == expected_r);
 }
 
 test "udivmoddi4" {
     for (cases) |case| {
-        test__udivmoddi4(case[0], case[1], case[2], case[3]);
+        try test__udivmoddi4(case[0], case[1], case[2], case[3]);
     }
 }
 

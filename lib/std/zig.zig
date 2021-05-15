@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -8,43 +8,64 @@ const tokenizer = @import("zig/tokenizer.zig");
 
 pub const Token = tokenizer.Token;
 pub const Tokenizer = tokenizer.Tokenizer;
+pub const fmtId = @import("zig/fmt.zig").fmtId;
+pub const fmtEscapes = @import("zig/fmt.zig").fmtEscapes;
 pub const parse = @import("zig/parse.zig").parse;
-pub const parseStringLiteral = @import("zig/string_literal.zig").parse;
-pub const render = @import("zig/render.zig").render;
+pub const string_literal = @import("zig/string_literal.zig");
 pub const ast = @import("zig/ast.zig");
 pub const system = @import("zig/system.zig");
 pub const CrossTarget = @import("zig/cross_target.zig").CrossTarget;
 
 pub const SrcHash = [16]u8;
 
-/// If the source is small enough, it is used directly as the hash.
-/// If it is long, blake3 hash is computed.
 pub fn hashSrc(src: []const u8) SrcHash {
     var out: SrcHash = undefined;
-    if (src.len <= @typeInfo(SrcHash).Array.len) {
-        std.mem.copy(u8, &out, src);
-        std.mem.set(u8, out[src.len..], 0);
-    } else {
-        std.crypto.hash.Blake3.hash(src, &out, .{});
-    }
+    std.crypto.hash.Blake3.hash(src, &out, .{});
     return out;
 }
 
-pub fn findLineColumn(source: []const u8, byte_offset: usize) struct { line: usize, column: usize } {
+pub fn hashName(parent_hash: SrcHash, sep: []const u8, name: []const u8) SrcHash {
+    var out: SrcHash = undefined;
+    var hasher = std.crypto.hash.Blake3.init(.{});
+    hasher.update(&parent_hash);
+    hasher.update(sep);
+    hasher.update(name);
+    hasher.final(&out);
+    return out;
+}
+
+pub const Loc = struct {
+    line: usize,
+    column: usize,
+    /// Does not include the trailing newline.
+    source_line: []const u8,
+};
+
+pub fn findLineColumn(source: []const u8, byte_offset: usize) Loc {
     var line: usize = 0;
     var column: usize = 0;
-    for (source[0..byte_offset]) |byte| {
-        switch (byte) {
+    var line_start: usize = 0;
+    var i: usize = 0;
+    while (i < byte_offset) : (i += 1) {
+        switch (source[i]) {
             '\n' => {
                 line += 1;
                 column = 0;
+                line_start = i + 1;
             },
             else => {
                 column += 1;
             },
         }
     }
-    return .{ .line = line, .column = column };
+    while (i < source.len and source[i] != '\n') {
+        i += 1;
+    }
+    return .{
+        .line = line,
+        .column = column,
+        .source_line = source[line_start..i],
+    };
 }
 
 pub fn lineDelta(source: []const u8, start: usize, end: usize) isize {
@@ -139,6 +160,7 @@ pub fn binNameAlloc(allocator: *std.mem.Allocator, options: BinNameOptions) erro
             .Lib => return std.fmt.allocPrint(allocator, "{s}.wasm", .{root_name}),
         },
         .c => return std.fmt.allocPrint(allocator, "{s}.c", .{root_name}),
+        .spirv => return std.fmt.allocPrint(allocator, "{s}.spv", .{root_name}),
         .hex => return std.fmt.allocPrint(allocator, "{s}.ihex", .{root_name}),
         .raw => return std.fmt.allocPrint(allocator, "{s}.bin", .{root_name}),
     }
@@ -231,28 +253,28 @@ pub fn parseCharLiteral(
 
 test "parseCharLiteral" {
     var bad_index: usize = undefined;
-    std.testing.expectEqual(try parseCharLiteral("'a'", &bad_index), 'a');
-    std.testing.expectEqual(try parseCharLiteral("'ä'", &bad_index), 'ä');
-    std.testing.expectEqual(try parseCharLiteral("'\\x00'", &bad_index), 0);
-    std.testing.expectEqual(try parseCharLiteral("'\\x4f'", &bad_index), 0x4f);
-    std.testing.expectEqual(try parseCharLiteral("'\\x4F'", &bad_index), 0x4f);
-    std.testing.expectEqual(try parseCharLiteral("'ぁ'", &bad_index), 0x3041);
-    std.testing.expectEqual(try parseCharLiteral("'\\u{0}'", &bad_index), 0);
-    std.testing.expectEqual(try parseCharLiteral("'\\u{3041}'", &bad_index), 0x3041);
-    std.testing.expectEqual(try parseCharLiteral("'\\u{7f}'", &bad_index), 0x7f);
-    std.testing.expectEqual(try parseCharLiteral("'\\u{7FFF}'", &bad_index), 0x7FFF);
+    try std.testing.expectEqual(try parseCharLiteral("'a'", &bad_index), 'a');
+    try std.testing.expectEqual(try parseCharLiteral("'ä'", &bad_index), 'ä');
+    try std.testing.expectEqual(try parseCharLiteral("'\\x00'", &bad_index), 0);
+    try std.testing.expectEqual(try parseCharLiteral("'\\x4f'", &bad_index), 0x4f);
+    try std.testing.expectEqual(try parseCharLiteral("'\\x4F'", &bad_index), 0x4f);
+    try std.testing.expectEqual(try parseCharLiteral("'ぁ'", &bad_index), 0x3041);
+    try std.testing.expectEqual(try parseCharLiteral("'\\u{0}'", &bad_index), 0);
+    try std.testing.expectEqual(try parseCharLiteral("'\\u{3041}'", &bad_index), 0x3041);
+    try std.testing.expectEqual(try parseCharLiteral("'\\u{7f}'", &bad_index), 0x7f);
+    try std.testing.expectEqual(try parseCharLiteral("'\\u{7FFF}'", &bad_index), 0x7FFF);
 
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\x0'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\x000'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\y'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\uFFFF'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{}'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFFFF}'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFF'", &bad_index));
-    std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFF}x'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\x0'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\x000'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\y'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\uFFFF'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{}'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFFFF}'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFF'", &bad_index));
+    try std.testing.expectError(error.InvalidCharacter, parseCharLiteral("'\\u{FFFF}x'", &bad_index));
 }
 
-test "" {
+test {
     @import("std").testing.refAllDecls(@This());
 }

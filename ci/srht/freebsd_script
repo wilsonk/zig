@@ -4,12 +4,11 @@ set -x
 set -e
 
 sudo pkg update -fq
-sudo pkg install -y cmake py27-s3cmd wget curl jq
+sudo pkg install -y cmake py38-s3cmd wget curl jq samurai
 
 ZIGDIR="$(pwd)"
-CACHE_BASENAME="llvm+clang+lld-11.0.0-x86_64-freebsd-release"
+CACHE_BASENAME="zig+llvm+lld+clang-x86_64-freebsd-gnu-0.8.0-dev.1939+5a3ea9bec"
 PREFIX="$HOME/$CACHE_BASENAME"
-JOBS="-j$(sysctl -n hw.ncpu)"
 
 cd $HOME
 wget -nv "https://ziglang.org/deps/$CACHE_BASENAME.tar.xz"
@@ -20,6 +19,8 @@ cd $ZIGDIR
 # Make the `zig version` number consistent.
 # This will affect the cmake command below.
 git config core.abbrev 9
+git fetch --unshallow || true
+git fetch --tags
 
 # SourceHut reports that it is a terminal that supports escape codes, but it
 # is a filthy liar. Here we tell Zig to not try to send any terminal escape
@@ -28,10 +29,17 @@ export TERM=dumb
 
 mkdir build
 cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$PREFIX "-DCMAKE_INSTALL_PREFIX=$(pwd)/release" -DZIG_STATIC=ON
-make $JOBS install
+cmake .. \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_PREFIX_PATH=$PREFIX \
+    "-DCMAKE_INSTALL_PREFIX=$(pwd)/release" \
+    -DZIG_STATIC=ON \
+    -DZIG_TARGET_TRIPLE=x86_64-freebsd-gnu \
+    -GNinja
+samu install
 
-release/bin/zig build test
+# Here we skip some tests to save time.
+release/bin/zig build test -Dskip-compile-errors -Dskip-non-native
 
 if [ -f ~/.s3cfg ]; then
   mv ../LICENSE release/

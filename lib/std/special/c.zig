@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -66,7 +66,7 @@ test "strcpy" {
 
     s1[0] = 0;
     _ = strcpy(&s1, "foobarbaz");
-    std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
+    try std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
 }
 
 fn strncpy(dest: [*:0]u8, src: [*:0]const u8, n: usize) callconv(.C) [*:0]u8 {
@@ -85,8 +85,8 @@ test "strncpy" {
     var s1: [9:0]u8 = undefined;
 
     s1[0] = 0;
-    _ = strncpy(&s1, "foobarbaz", 9);
-    std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
+    _ = strncpy(&s1, "foobarbaz", @sizeOf(@TypeOf(s1)));
+    try std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
 }
 
 fn strcat(dest: [*:0]u8, src: [*:0]const u8) callconv(.C) [*:0]u8 {
@@ -109,7 +109,7 @@ test "strcat" {
     _ = strcat(&s1, "foo");
     _ = strcat(&s1, "bar");
     _ = strcat(&s1, "baz");
-    std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
+    try std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
 }
 
 fn strncat(dest: [*:0]u8, src: [*:0]const u8, avail: usize) callconv(.C) [*:0]u8 {
@@ -132,7 +132,7 @@ test "strncat" {
     _ = strncat(&s1, "foo1111", 3);
     _ = strncat(&s1, "bar1111", 3);
     _ = strncat(&s1, "baz1111", 3);
-    std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
+    try std.testing.expectEqualSlices(u8, "foobarbaz", std.mem.spanZ(&s1));
 }
 
 fn strcmp(s1: [*:0]const u8, s2: [*:0]const u8) callconv(.C) c_int {
@@ -161,10 +161,10 @@ fn strerror(errnum: c_int) callconv(.C) [*:0]const u8 {
 }
 
 test "strncmp" {
-    std.testing.expect(strncmp("a", "b", 1) == -1);
-    std.testing.expect(strncmp("a", "c", 1) == -2);
-    std.testing.expect(strncmp("b", "a", 1) == 1);
-    std.testing.expect(strncmp("\xff", "\x02", 1) == 253);
+    try std.testing.expect(strncmp("a", "b", 1) == -1);
+    try std.testing.expect(strncmp("a", "c", 1) == -2);
+    try std.testing.expect(strncmp("b", "a", 1) == 1);
+    try std.testing.expect(strncmp("\xff", "\x02", 1) == 253);
 }
 
 // Avoid dragging in the runtime safety mechanisms into this .o file,
@@ -172,7 +172,7 @@ test "strncmp" {
 pub fn panic(msg: []const u8, error_return_trace: ?*builtin.StackTrace) noreturn {
     if (builtin.is_test) {
         @setCold(true);
-        std.debug.panic("{}", .{msg});
+        std.debug.panic("{s}", .{msg});
     }
     if (builtin.os.tag != .freestanding and builtin.os.tag != .other) {
         std.os.abort();
@@ -225,7 +225,7 @@ export fn memmove(dest: ?[*]u8, src: ?[*]const u8, n: usize) callconv(.C) ?[*]u8
     return dest;
 }
 
-export fn memcmp(vl: ?[*]const u8, vr: ?[*]const u8, n: usize) callconv(.C) isize {
+export fn memcmp(vl: ?[*]const u8, vr: ?[*]const u8, n: usize) callconv(.C) c_int {
     @setRuntimeSafety(false);
 
     var index: usize = 0;
@@ -239,18 +239,18 @@ export fn memcmp(vl: ?[*]const u8, vr: ?[*]const u8, n: usize) callconv(.C) isiz
     return 0;
 }
 
-test "test_memcmp" {
+test "memcmp" {
     const base_arr = &[_]u8{ 1, 1, 1 };
     const arr1 = &[_]u8{ 1, 1, 1 };
     const arr2 = &[_]u8{ 1, 0, 1 };
     const arr3 = &[_]u8{ 1, 2, 1 };
 
-    std.testing.expect(memcmp(base_arr[0..], arr1[0..], base_arr.len) == 0);
-    std.testing.expect(memcmp(base_arr[0..], arr2[0..], base_arr.len) > 0);
-    std.testing.expect(memcmp(base_arr[0..], arr3[0..], base_arr.len) < 0);
+    try std.testing.expect(memcmp(base_arr[0..], arr1[0..], base_arr.len) == 0);
+    try std.testing.expect(memcmp(base_arr[0..], arr2[0..], base_arr.len) > 0);
+    try std.testing.expect(memcmp(base_arr[0..], arr3[0..], base_arr.len) < 0);
 }
 
-export fn bcmp(vl: [*]allowzero const u8, vr: [*]allowzero const u8, n: usize) callconv(.C) isize {
+export fn bcmp(vl: [*]allowzero const u8, vr: [*]allowzero const u8, n: usize) callconv(.C) c_int {
     @setRuntimeSafety(false);
 
     var index: usize = 0;
@@ -263,15 +263,15 @@ export fn bcmp(vl: [*]allowzero const u8, vr: [*]allowzero const u8, n: usize) c
     return 0;
 }
 
-test "test_bcmp" {
+test "bcmp" {
     const base_arr = &[_]u8{ 1, 1, 1 };
     const arr1 = &[_]u8{ 1, 1, 1 };
     const arr2 = &[_]u8{ 1, 0, 1 };
     const arr3 = &[_]u8{ 1, 2, 1 };
 
-    std.testing.expect(bcmp(base_arr[0..], arr1[0..], base_arr.len) == 0);
-    std.testing.expect(bcmp(base_arr[0..], arr2[0..], base_arr.len) != 0);
-    std.testing.expect(bcmp(base_arr[0..], arr3[0..], base_arr.len) != 0);
+    try std.testing.expect(bcmp(base_arr[0..], arr1[0..], base_arr.len) == 0);
+    try std.testing.expect(bcmp(base_arr[0..], arr2[0..], base_arr.len) != 0);
+    try std.testing.expect(bcmp(base_arr[0..], arr3[0..], base_arr.len) != 0);
 }
 
 comptime {
@@ -385,7 +385,12 @@ fn clone() callconv(.Naked) void {
                 \\      svc #0
             );
         },
-        .arm => {
+        .arm, .thumb => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //           r0,    r1,    r2,  r3,   +0,  +4,   +8
+
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //                r7     r0,    r1,   r2,  r3,   r4
             asm volatile (
                 \\    stmfd sp!,{r4,r5,r6,r7}
                 \\    mov r7,#120
@@ -445,6 +450,11 @@ fn clone() callconv(.Naked) void {
             );
         },
         .mips, .mipsel => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //            3,     4,     5,   6,    7,   8,    9
+
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //                 2      4,     5,    6,   7,    8
             asm volatile (
                 \\  # Save function pointer and argument pointer on new thread stack
                 \\  and $5, $5, -8
@@ -465,12 +475,14 @@ fn clone() callconv(.Naked) void {
                 \\  addu $sp, $sp, 16
                 \\  jr $ra
                 \\  subu $2, $0, $2
-                \\1:  beq $2, $0, 1f
+                \\1:
+                \\  beq $2, $0, 1f
                 \\  nop
                 \\  addu $sp, $sp, 16
                 \\  jr $ra
                 \\  nop
-                \\1:  lw $25, 0($sp)
+                \\1:
+                \\  lw $25, 0($sp)
                 \\  lw $4, 4($sp)
                 \\  jalr $25
                 \\  nop
@@ -479,56 +491,160 @@ fn clone() callconv(.Naked) void {
                 \\  syscall
             );
         },
+        .powerpc => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //            3,     4,     5,   6,    7,   8,    9
 
-        .powerpc64, .powerpc64le => {
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //                 0      3,     4,    5,   6,    7
             asm volatile (
-                \\  # store non-volatile regs r30, r31 on stack in order to put our
-                \\  # start func and its arg there
-                \\  stwu 30, -16(1)
-                \\  stw 31, 4(1)
-                \\  # save r3 (func) into r30, and r6(arg) into r31
-                \\  mr 30, 3
-                \\  mr 31, 6
-                \\  # create initial stack frame for new thread
-                \\  clrrwi 4, 4, 4
-                \\  li 0, 0
-                \\  stwu 0, -16(4)
-                \\  #move c into first arg
-                \\  mr 3, 5
-                \\  mr 5, 7
-                \\  mr 6, 8
-                \\  mr 7, 9
-                \\  # move syscall number into r0
-                \\  li 0, 120
-                \\  sc
-                \\  # check for syscall error
-                \\  bns+ 1f # jump to label 1 if no summary overflow.
-                \\  #else
-                \\  neg 3, 3 #negate the result (errno)
+                \\# store non-volatile regs r30, r31 on stack in order to put our
+                \\# start func and its arg there
+                \\stwu 30, -16(1)
+                \\stw 31, 4(1)
+                \\
+                \\# save r3 (func) into r30, and r6(arg) into r31
+                \\mr 30, 3
+                \\mr 31, 6
+                \\
+                \\# create initial stack frame for new thread
+                \\clrrwi 4, 4, 4
+                \\li 0, 0
+                \\stwu 0, -16(4)
+                \\
+                \\#move c into first arg
+                \\mr 3, 5
+                \\#mr 4, 4
+                \\mr 5, 7
+                \\mr 6, 8
+                \\mr 7, 9
+                \\
+                \\# move syscall number into r0
+                \\li 0, 120
+                \\
+                \\sc
+                \\
+                \\# check for syscall error
+                \\bns+ 1f # jump to label 1 if no summary overflow.
+                \\#else
+                \\neg 3, 3 #negate the result (errno)
                 \\1:
-                \\  # compare sc result with 0
-                \\  cmpwi cr7, 3, 0
-                \\  # if not 0, jump to end
-                \\  bne cr7, 2f
-                \\  #else: we're the child
-                \\  #call funcptr: move arg (d) into r3
-                \\  mr 3, 31
-                \\  #move r30 (funcptr) into CTR reg
-                \\  mtctr 30
-                \\  # call CTR reg
-                \\  bctrl
-                \\  # mov SYS_exit into r0 (the exit param is already in r3)
-                \\  li 0, 1
-                \\  sc
+                \\# compare sc result with 0
+                \\cmpwi cr7, 3, 0
+                \\
+                \\# if not 0, jump to end
+                \\bne cr7, 2f
+                \\
+                \\#else: we're the child
+                \\#call funcptr: move arg (d) into r3
+                \\mr 3, 31
+                \\#move r30 (funcptr) into CTR reg
+                \\mtctr 30
+                \\# call CTR reg
+                \\bctrl
+                \\# mov SYS_exit into r0 (the exit param is already in r3)
+                \\li 0, 1
+                \\sc
+                \\
                 \\2:
-                \\  # restore stack
-                \\  lwz 30, 0(1)
-                \\  lwz 31, 4(1)
-                \\  addi 1, 1, 16
-                \\  blr
+                \\
+                \\# restore stack
+                \\lwz 30, 0(1)
+                \\lwz 31, 4(1)
+                \\addi 1, 1, 16
+                \\
+                \\blr
             );
         },
+        .powerpc64, .powerpc64le => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //            3,     4,     5,   6,    7,   8,    9
 
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //                 0      3,     4,    5,   6,    7
+            asm volatile (
+                \\  # create initial stack frame for new thread
+                \\  clrrdi 4, 4, 4
+                \\  li     0, 0
+                \\  stdu   0,-32(4)
+                \\
+                \\  # save fn and arg to child stack
+                \\  std    3,  8(4)
+                \\  std    6, 16(4)
+                \\
+                \\  # shuffle args into correct registers and call SYS_clone
+                \\  mr    3, 5
+                \\  #mr   4, 4
+                \\  mr    5, 7
+                \\  mr    6, 8
+                \\  mr    7, 9
+                \\  li    0, 120  # SYS_clone = 120
+                \\  sc
+                \\
+                \\  # if error, negate return (errno)
+                \\  bns+  1f
+                \\  neg   3, 3
+                \\
+                \\1:
+                \\  # if we're the parent, return
+                \\  cmpwi cr7, 3, 0
+                \\  bnelr cr7
+                \\
+                \\  # we're the child. call fn(arg)
+                \\  ld     3, 16(1)
+                \\  ld    12,  8(1)
+                \\  mtctr 12
+                \\  bctrl
+                \\
+                \\  # call SYS_exit. exit code is already in r3 from fn return value
+                \\  li    0, 1    # SYS_exit = 1
+                \\  sc
+            );
+        },
+        .sparcv9 => {
+            // __clone(func, stack, flags, arg, ptid, tls, ctid)
+            //           i0,    i1,    i2,  i3,   i4,  i5,   sp
+            // syscall(SYS_clone, flags, stack, ptid, tls, ctid)
+            //                g1     o0,    o1,   o2,  o3,   o4
+            asm volatile (
+                \\ save %%sp, -192, %%sp
+                \\ # Save the func pointer and the arg pointer
+                \\ mov %%i0, %%g2
+                \\ mov %%i3, %%g3
+                \\ # Shuffle the arguments
+                \\ mov 217, %%g1
+                \\ mov %%i2, %%o0
+                \\ # Add some extra space for the initial frame
+                \\ sub %%i1, 176 + 2047, %%o1
+                \\ mov %%i4, %%o2
+                \\ mov %%i5, %%o3
+                \\ ldx [%%fp + 0x8af], %%o4
+                \\ t 0x6d
+                \\ bcs,pn %%xcc, 2f
+                \\ nop
+                \\ # The child pid is returned in o0 while o1 tells if this
+                \\ # process is # the child (=1) or the parent (=0).
+                \\ brnz %%o1, 1f
+                \\ nop
+                \\ # Parent process, return the child pid
+                \\ mov %%o0, %%i0
+                \\ ret
+                \\ restore
+                \\1:
+                \\ # Child process, call func(arg)
+                \\ mov %%g0, %%fp
+                \\ call %%g2
+                \\ mov %%g3, %%o0
+                \\ # Exit
+                \\ mov 1, %%g1
+                \\ t 0x6d
+                \\2:
+                \\ # The syscall failed
+                \\ sub %%g0, %%o0, %%i0
+                \\ ret
+                \\ restore
+            );
+        },
         else => @compileError("Implement clone() for this arch."),
     }
 }
@@ -582,6 +698,16 @@ export fn cos(a: f64) f64 {
 
 export fn cosf(a: f32) f32 {
     return math.cos(a);
+}
+
+export fn sincos(a: f64, r_sin: *f64, r_cos: *f64) void {
+    r_sin.* = math.sin(a);
+    r_cos.* = math.cos(a);
+}
+
+export fn sincosf(a: f32, r_sin: *f32, r_cos: *f32) void {
+    r_sin.* = math.sin(a);
+    r_cos.* = math.cos(a);
 }
 
 export fn exp(a: f64) f64 {
@@ -734,6 +860,85 @@ fn generic_fmod(comptime T: type, x: T, y: T) T {
     return @bitCast(T, ux);
 }
 
+test "fmod, fmodf" {
+    inline for ([_]type{ f32, f64 }) |T| {
+        const nan_val = math.nan(T);
+        const inf_val = math.inf(T);
+
+        try std.testing.expect(isNan(generic_fmod(T, nan_val, 1.0)));
+        try std.testing.expect(isNan(generic_fmod(T, 1.0, nan_val)));
+        try std.testing.expect(isNan(generic_fmod(T, inf_val, 1.0)));
+        try std.testing.expect(isNan(generic_fmod(T, 0.0, 0.0)));
+        try std.testing.expect(isNan(generic_fmod(T, 1.0, 0.0)));
+
+        try std.testing.expectEqual(@as(T, 0.0), generic_fmod(T, 0.0, 2.0));
+        try std.testing.expectEqual(@as(T, -0.0), generic_fmod(T, -0.0, 2.0));
+
+        try std.testing.expectEqual(@as(T, -2.0), generic_fmod(T, -32.0, 10.0));
+        try std.testing.expectEqual(@as(T, -2.0), generic_fmod(T, -32.0, -10.0));
+        try std.testing.expectEqual(@as(T, 2.0), generic_fmod(T, 32.0, 10.0));
+        try std.testing.expectEqual(@as(T, 2.0), generic_fmod(T, 32.0, -10.0));
+    }
+}
+
+fn generic_fmin(comptime T: type, x: T, y: T) T {
+    if (isNan(x))
+        return y;
+    if (isNan(y))
+        return x;
+    return if (x < y) x else y;
+}
+
+export fn fminf(x: f32, y: f32) callconv(.C) f32 {
+    return generic_fmin(f32, x, y);
+}
+
+export fn fmin(x: f64, y: f64) callconv(.C) f64 {
+    return generic_fmin(f64, x, y);
+}
+
+test "fmin, fminf" {
+    inline for ([_]type{ f32, f64 }) |T| {
+        const nan_val = math.nan(T);
+
+        try std.testing.expect(isNan(generic_fmin(T, nan_val, nan_val)));
+        try std.testing.expectEqual(@as(T, 1.0), generic_fmin(T, nan_val, 1.0));
+        try std.testing.expectEqual(@as(T, 1.0), generic_fmin(T, 1.0, nan_val));
+
+        try std.testing.expectEqual(@as(T, 1.0), generic_fmin(T, 1.0, 10.0));
+        try std.testing.expectEqual(@as(T, -1.0), generic_fmin(T, 1.0, -1.0));
+    }
+}
+
+fn generic_fmax(comptime T: type, x: T, y: T) T {
+    if (isNan(x))
+        return y;
+    if (isNan(y))
+        return x;
+    return if (x < y) y else x;
+}
+
+export fn fmaxf(x: f32, y: f32) callconv(.C) f32 {
+    return generic_fmax(f32, x, y);
+}
+
+export fn fmax(x: f64, y: f64) callconv(.C) f64 {
+    return generic_fmax(f64, x, y);
+}
+
+test "fmax, fmaxf" {
+    inline for ([_]type{ f32, f64 }) |T| {
+        const nan_val = math.nan(T);
+
+        try std.testing.expect(isNan(generic_fmax(T, nan_val, nan_val)));
+        try std.testing.expectEqual(@as(T, 1.0), generic_fmax(T, nan_val, 1.0));
+        try std.testing.expectEqual(@as(T, 1.0), generic_fmax(T, 1.0, nan_val));
+
+        try std.testing.expectEqual(@as(T, 10.0), generic_fmax(T, 1.0, 10.0));
+        try std.testing.expectEqual(@as(T, 1.0), generic_fmax(T, 1.0, -1.0));
+    }
+}
+
 // NOTE: The original code is full of implicit signed -> unsigned assumptions and u32 wraparound
 // behaviour. Most intermediate i32 values are changed to u32 where appropriate but there are
 // potentially some edge cases remaining that are not handled in the same way.
@@ -814,7 +1019,7 @@ export fn sqrt(x: f64) f64 {
 
     r = sign;
     while (r != 0) {
-        t = s1 +% r;
+        t1 = s1 +% r;
         t = s0;
         if (t < ix0 or (t == ix0 and t1 <= ix1)) {
             s1 = t1 +% r;
@@ -868,25 +1073,32 @@ export fn sqrt(x: f64) f64 {
 }
 
 test "sqrt" {
-    const epsilon = 0.000001;
+    const V = [_]f64{
+        0.0,
+        4.089288054930154,
+        7.538757127071935,
+        8.97780793672623,
+        5.304443821913729,
+        5.682408965311888,
+        0.5846878579110049,
+        3.650338664297043,
+        0.3178091951800732,
+        7.1505232436382835,
+        3.6589165881946464,
+    };
 
-    std.testing.expect(sqrt(0.0) == 0.0);
-    std.testing.expect(std.math.approxEq(f64, sqrt(2.0), 1.414214, epsilon));
-    std.testing.expect(std.math.approxEq(f64, sqrt(3.6), 1.897367, epsilon));
-    std.testing.expect(sqrt(4.0) == 2.0);
-    std.testing.expect(std.math.approxEq(f64, sqrt(7.539840), 2.745877, epsilon));
-    std.testing.expect(std.math.approxEq(f64, sqrt(19.230934), 4.385309, epsilon));
-    std.testing.expect(sqrt(64.0) == 8.0);
-    std.testing.expect(std.math.approxEq(f64, sqrt(64.1), 8.006248, epsilon));
-    std.testing.expect(std.math.approxEq(f64, sqrt(8942.230469), 94.563367, epsilon));
+    // Note that @sqrt will either generate the sqrt opcode (if supported by the
+    // target ISA) or a call to `sqrtf` otherwise.
+    for (V) |val|
+        try std.testing.expectEqual(@sqrt(val), sqrt(val));
 }
 
 test "sqrt special" {
-    std.testing.expect(std.math.isPositiveInf(sqrt(std.math.inf(f64))));
-    std.testing.expect(sqrt(0.0) == 0.0);
-    std.testing.expect(sqrt(-0.0) == -0.0);
-    std.testing.expect(std.math.isNan(sqrt(-1.0)));
-    std.testing.expect(std.math.isNan(sqrt(std.math.nan(f64))));
+    try std.testing.expect(std.math.isPositiveInf(sqrt(std.math.inf(f64))));
+    try std.testing.expect(sqrt(0.0) == 0.0);
+    try std.testing.expect(sqrt(-0.0) == -0.0);
+    try std.testing.expect(isNan(sqrt(-1.0)));
+    try std.testing.expect(isNan(sqrt(std.math.nan(f64))));
 }
 
 export fn sqrtf(x: f32) f32 {
@@ -966,23 +1178,30 @@ export fn sqrtf(x: f32) f32 {
 }
 
 test "sqrtf" {
-    const epsilon = 0.000001;
+    const V = [_]f32{
+        0.0,
+        4.089288054930154,
+        7.538757127071935,
+        8.97780793672623,
+        5.304443821913729,
+        5.682408965311888,
+        0.5846878579110049,
+        3.650338664297043,
+        0.3178091951800732,
+        7.1505232436382835,
+        3.6589165881946464,
+    };
 
-    std.testing.expect(sqrtf(0.0) == 0.0);
-    std.testing.expect(std.math.approxEq(f32, sqrtf(2.0), 1.414214, epsilon));
-    std.testing.expect(std.math.approxEq(f32, sqrtf(3.6), 1.897367, epsilon));
-    std.testing.expect(sqrtf(4.0) == 2.0);
-    std.testing.expect(std.math.approxEq(f32, sqrtf(7.539840), 2.745877, epsilon));
-    std.testing.expect(std.math.approxEq(f32, sqrtf(19.230934), 4.385309, epsilon));
-    std.testing.expect(sqrtf(64.0) == 8.0);
-    std.testing.expect(std.math.approxEq(f32, sqrtf(64.1), 8.006248, epsilon));
-    std.testing.expect(std.math.approxEq(f32, sqrtf(8942.230469), 94.563370, epsilon));
+    // Note that @sqrt will either generate the sqrt opcode (if supported by the
+    // target ISA) or a call to `sqrtf` otherwise.
+    for (V) |val|
+        try std.testing.expectEqual(@sqrt(val), sqrtf(val));
 }
 
 test "sqrtf special" {
-    std.testing.expect(std.math.isPositiveInf(sqrtf(std.math.inf(f32))));
-    std.testing.expect(sqrtf(0.0) == 0.0);
-    std.testing.expect(sqrtf(-0.0) == -0.0);
-    std.testing.expect(std.math.isNan(sqrtf(-1.0)));
-    std.testing.expect(std.math.isNan(sqrtf(std.math.nan(f32))));
+    try std.testing.expect(std.math.isPositiveInf(sqrtf(std.math.inf(f32))));
+    try std.testing.expect(sqrtf(0.0) == 0.0);
+    try std.testing.expect(sqrtf(-0.0) == -0.0);
+    try std.testing.expect(isNan(sqrtf(-1.0)));
+    try std.testing.expect(isNan(sqrtf(std.math.nan(f32))));
 }

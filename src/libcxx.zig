@@ -49,6 +49,7 @@ const libcxx_files = [_][]const u8{
     "src/future.cpp",
     "src/hash.cpp",
     "src/ios.cpp",
+    "src/ios.instantiations.cpp",
     "src/iostream.cpp",
     "src/locale.cpp",
     "src/memory.cpp",
@@ -127,6 +128,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         try cflags.append("-DLIBCXX_BUILDING_LIBCXXABI");
         try cflags.append("-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS");
         try cflags.append("-D_LIBCPP_DISABLE_VISIBILITY_ANNOTATIONS");
+        try cflags.append("-D_LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS");
 
         if (target.abi.isMusl()) {
             try cflags.append("-D_LIBCPP_HAS_MUSL_LIBC");
@@ -138,8 +140,6 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         try cflags.append("-I");
         try cflags.append(cxxabi_include_path);
 
-        try cflags.append("-O3");
-        try cflags.append("-DNDEBUG");
         if (target_util.supports_fpic(target)) {
             try cflags.append("-fPIC");
         }
@@ -162,18 +162,22 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         .root_name = root_name,
         .root_pkg = null,
         .output_mode = output_mode,
-        .rand = comp.rand,
+        .thread_pool = comp.thread_pool,
         .libc_installation = comp.bin_file.options.libc_installation,
         .emit_bin = emit_bin,
-        .optimize_mode = comp.bin_file.options.optimize_mode,
+        .optimize_mode = comp.compilerRtOptMode(),
         .link_mode = link_mode,
         .want_sanitize_c = false,
         .want_stack_check = false,
+        .want_red_zone = comp.bin_file.options.red_zone,
         .want_valgrind = false,
+        .want_tsan = comp.bin_file.options.tsan,
         .want_pic = comp.bin_file.options.pic,
+        .want_pie = comp.bin_file.options.pie,
         .emit_h = null,
-        .strip = comp.bin_file.options.strip,
+        .strip = comp.compilerRtStrip(),
         .is_native_os = comp.bin_file.options.is_native_os,
+        .is_native_abi = comp.bin_file.options.is_native_abi,
         .self_exe_path = comp.self_exe_path,
         .c_source_files = c_source_files.items,
         .verbose_cc = comp.verbose_cc,
@@ -186,6 +190,7 @@ pub fn buildLibCXX(comp: *Compilation) !void {
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
         .clang_passthrough_mode = comp.clang_passthrough_mode,
         .link_libc = true,
+        .skip_linker_dependencies = true,
     });
     defer sub_compilation.destroy();
 
@@ -253,16 +258,12 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
         try cflags.append("-I");
         try cflags.append(cxx_include_path);
 
-        try cflags.append("-O3");
-        try cflags.append("-DNDEBUG");
         if (target_util.supports_fpic(target)) {
             try cflags.append("-fPIC");
         }
         try cflags.append("-nostdinc++");
         try cflags.append("-fstrict-aliasing");
         try cflags.append("-funwind-tables");
-        try cflags.append("-D_DEBUG");
-        try cflags.append("-UNDEBUG");
         try cflags.append("-std=c++11");
 
         c_source_files[i] = .{
@@ -279,18 +280,22 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
         .root_name = root_name,
         .root_pkg = null,
         .output_mode = output_mode,
-        .rand = comp.rand,
+        .thread_pool = comp.thread_pool,
         .libc_installation = comp.bin_file.options.libc_installation,
         .emit_bin = emit_bin,
-        .optimize_mode = comp.bin_file.options.optimize_mode,
+        .optimize_mode = comp.compilerRtOptMode(),
         .link_mode = link_mode,
         .want_sanitize_c = false,
         .want_stack_check = false,
+        .want_red_zone = comp.bin_file.options.red_zone,
         .want_valgrind = false,
+        .want_tsan = comp.bin_file.options.tsan,
         .want_pic = comp.bin_file.options.pic,
+        .want_pie = comp.bin_file.options.pie,
         .emit_h = null,
-        .strip = comp.bin_file.options.strip,
+        .strip = comp.compilerRtStrip(),
         .is_native_os = comp.bin_file.options.is_native_os,
+        .is_native_abi = comp.bin_file.options.is_native_abi,
         .self_exe_path = comp.self_exe_path,
         .c_source_files = &c_source_files,
         .verbose_cc = comp.verbose_cc,
@@ -303,6 +308,7 @@ pub fn buildLibCXXABI(comp: *Compilation) !void {
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
         .clang_passthrough_mode = comp.clang_passthrough_mode,
         .link_libc = true,
+        .skip_linker_dependencies = true,
     });
     defer sub_compilation.destroy();
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -20,6 +20,7 @@ const assert = std.debug.assert;
 const testing = std.testing;
 const htest = @import("test.zig");
 const Vector = std.meta.Vector;
+const AuthenticationError = std.crypto.errors.AuthenticationError;
 
 pub const State = struct {
     pub const BLOCKBYTES = 48;
@@ -33,22 +34,29 @@ pub const State = struct {
         var data: [BLOCKBYTES / 4]u32 = undefined;
         var i: usize = 0;
         while (i < State.BLOCKBYTES) : (i += 4) {
-            data[i / 4] = mem.readIntLittle(u32, initial_state[i..][0..4]);
+            data[i / 4] = mem.readIntNative(u32, initial_state[i..][0..4]);
         }
         return Self{ .data = data };
     }
 
     /// TODO follow the span() convention instead of having this and `toSliceConst`
-    pub fn toSlice(self: *Self) []u8 {
-        return mem.sliceAsBytes(self.data[0..]);
+    pub fn toSlice(self: *Self) *[BLOCKBYTES]u8 {
+        return mem.asBytes(&self.data);
     }
 
     /// TODO follow the span() convention instead of having this and `toSlice`
-    pub fn toSliceConst(self: *Self) []const u8 {
-        return mem.sliceAsBytes(self.data[0..]);
+    pub fn toSliceConst(self: *const Self) *const [BLOCKBYTES]u8 {
+        return mem.asBytes(&self.data);
+    }
+
+    fn endianSwap(self: *Self) callconv(.Inline) void {
+        for (self.data) |*w| {
+            w.* = mem.littleToNative(u32, w.*);
+        }
     }
 
     fn permute_unrolled(self: *Self) void {
+        self.endianSwap();
         const state = &self.data;
         comptime var round = @as(u32, 24);
         inline while (round > 0) : (round -= 1) {
@@ -74,9 +82,11 @@ pub const State = struct {
                 else => {},
             }
         }
+        self.endianSwap();
     }
 
     fn permute_small(self: *Self) void {
+        self.endianSwap();
         const state = &self.data;
         var round = @as(u32, 24);
         while (round > 0) : (round -= 1) {
@@ -102,27 +112,25 @@ pub const State = struct {
                 else => {},
             }
         }
+        self.endianSwap();
     }
 
     const Lane = Vector(4, u32);
 
-    inline fn shift(x: Lane, comptime n: comptime_int) Lane {
+    fn shift(x: Lane, comptime n: comptime_int) callconv(.Inline) Lane {
         return x << @splat(4, @as(u5, n));
     }
 
-    inline fn rot(x: Lane, comptime n: comptime_int) Lane {
-        return (x << @splat(4, @as(u5, n))) | (x >> @splat(4, @as(u5, 32 - n)));
-    }
-
     fn permute_vectorized(self: *Self) void {
+        self.endianSwap();
         const state = &self.data;
         var x = Lane{ state[0], state[1], state[2], state[3] };
         var y = Lane{ state[4], state[5], state[6], state[7] };
         var z = Lane{ state[8], state[9], state[10], state[11] };
         var round = @as(u32, 24);
         while (round > 0) : (round -= 1) {
-            x = rot(x, 24);
-            y = rot(y, 9);
+            x = math.rotl(Lane, x, 24);
+            y = math.rotl(Lane, y, 9);
             const newz = x ^ shift(z, 1) ^ shift(y & z, 2);
             const newy = y ^ x ^ shift(x | z, 1);
             const newx = z ^ y ^ shift(x & y, 3);
@@ -146,6 +154,7 @@ pub const State = struct {
             state[4 + i] = y[i];
             state[8 + i] = z[i];
         }
+        self.endianSwap();
     }
 
     pub const permute = if (std.Target.current.cpu.arch == .x86_64) impl: {
@@ -172,27 +181,31 @@ pub const State = struct {
 
 test "permute" {
     // test vector from gimli-20170627
-    var state = State{
-        .data = blk: {
-            var input: [12]u32 = undefined;
-            var i = @as(u32, 0);
-            while (i < 12) : (i += 1) {
-                input[i] = i * i * i + i *% 0x9e3779b9;
-            }
-            testing.expectEqualSlices(u32, &input, &[_]u32{
-                0x00000000, 0x9e3779ba, 0x3c6ef37a, 0xdaa66d46,
-                0x78dde724, 0x1715611a, 0xb54cdb2e, 0x53845566,
-                0xf1bbcfc8, 0x8ff34a5a, 0x2e2ac522, 0xcc624026,
-            });
-            break :blk input;
-        },
+    const tv_input = [3][4]u32{
+        [4]u32{ 0x00000000, 0x9e3779ba, 0x3c6ef37a, 0xdaa66d46 },
+        [4]u32{ 0x78dde724, 0x1715611a, 0xb54cdb2e, 0x53845566 },
+        [4]u32{ 0xf1bbcfc8, 0x8ff34a5a, 0x2e2ac522, 0xcc624026 },
     };
+    var input: [48]u8 = undefined;
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        mem.writeIntLittle(u32, input[i * 4 ..][0..4], tv_input[i / 4][i % 4]);
+    }
+
+    var state = State.init(input);
     state.permute();
-    testing.expectEqualSlices(u32, &state.data, &[_]u32{
-        0xba11c85a, 0x91bad119, 0x380ce880, 0xd24c2c68,
-        0x3eceffea, 0x277a921c, 0x4f73a0bd, 0xda5a9cd8,
-        0x84b673f0, 0x34e52ff7, 0x9e2bef49, 0xf41bb8d6,
-    });
+
+    const tv_output = [3][4]u32{
+        [4]u32{ 0xba11c85a, 0x91bad119, 0x380ce880, 0xd24c2c68 },
+        [4]u32{ 0x3eceffea, 0x277a921c, 0x4f73a0bd, 0xda5a9cd8 },
+        [4]u32{ 0x84b673f0, 0x34e52ff7, 0x9e2bef49, 0xf41bb8d6 },
+    };
+    var expected_output: [48]u8 = undefined;
+    i = 0;
+    while (i < 12) : (i += 1) {
+        mem.writeIntLittle(u32, expected_output[i * 4 ..][0..4], tv_output[i / 4][i % 4]);
+    }
+    try testing.expectEqualSlices(u8, state.toSliceConst(), expected_output[0..]);
 }
 
 pub const Hash = struct {
@@ -217,18 +230,17 @@ pub const Hash = struct {
         const buf = self.state.toSlice();
         var in = data;
         while (in.len > 0) {
-            var left = State.RATE - self.buf_off;
-            if (left == 0) {
-                self.state.permute();
-                self.buf_off = 0;
-                left = State.RATE;
-            }
+            const left = State.RATE - self.buf_off;
             const ps = math.min(in.len, left);
             for (buf[self.buf_off .. self.buf_off + ps]) |*p, i| {
                 p.* ^= in[i];
             }
             self.buf_off += ps;
             in = in[ps..];
+            if (self.buf_off == State.RATE) {
+                self.state.permute();
+                self.buf_off = 0;
+            }
         }
     }
 
@@ -238,7 +250,7 @@ pub const Hash = struct {
     /// By default, Gimli-Hash provides a fixed-length output of 32 bytes
     /// (the concatenation of two 16-byte blocks).  However, Gimli-Hash can
     /// be used as an “extendable one-way function” (XOF).
-    pub fn final(self: *Self, out: *[digest_length]u8) void {
+    pub fn final(self: *Self, out: []u8) void {
         const buf = self.state.toSlice();
 
         // XOR 1 into the next byte of the state
@@ -250,22 +262,35 @@ pub const Hash = struct {
     }
 };
 
-pub fn hash(out: *[Hash.digest_length]u8, in: []const u8, options: Hash.Options) void {
+pub fn hash(out: []u8, in: []const u8, options: Hash.Options) void {
     var st = Hash.init(options);
     st.update(in);
     st.final(out);
 }
 
 test "hash" {
-    // https://github.com/ziglang/zig/issues/5127
-    if (std.Target.current.cpu.arch == .mips) return error.SkipZigTest;
-
     // a test vector (30) from NIST KAT submission.
     var msg: [58 / 2]u8 = undefined;
-    try std.fmt.hexToBytes(&msg, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C");
+    _ = try std.fmt.hexToBytes(&msg, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C");
     var md: [32]u8 = undefined;
     hash(&md, &msg, .{});
-    htest.assertEqual("1C9A03DC6A5DDC5444CFC6F4B154CFF5CF081633B2CEA4D7D0AE7CCFED5AAA44", &md);
+    try htest.assertEqual("1C9A03DC6A5DDC5444CFC6F4B154CFF5CF081633B2CEA4D7D0AE7CCFED5AAA44", &md);
+}
+
+test "hash test vector 17" {
+    var msg: [32 / 2]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&msg, "000102030405060708090A0B0C0D0E0F");
+    var md: [32]u8 = undefined;
+    hash(&md, &msg, .{});
+    try htest.assertEqual("404C130AF1B9023A7908200919F690FFBB756D5176E056FFDE320016A37C7282", &md);
+}
+
+test "hash test vector 33" {
+    var msg: [32]u8 = undefined;
+    _ = try std.fmt.hexToBytes(&msg, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+    var md: [32]u8 = undefined;
+    hash(&md, &msg, .{});
+    try htest.assertEqual("A8F4FA28708BDA7EFB4C1914CA4AFA9E475B82D588D36504F87DBB0ED9AB3C4B", &md);
 }
 
 pub const Aead = struct {
@@ -368,7 +393,7 @@ pub const Aead = struct {
     /// npub: public nonce
     /// k: private key
     /// NOTE: the check of the authentication tag is currently not done in constant time
-    pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, k: [key_length]u8) !void {
+    pub fn decrypt(m: []u8, c: []const u8, tag: [tag_length]u8, ad: []const u8, npub: [nonce_length]u8, k: [key_length]u8) AuthenticationError!void {
         assert(c.len == m.len);
 
         var state = Aead.init(ad, npub, k);
@@ -405,19 +430,16 @@ pub const Aead = struct {
         // TODO: use a constant-time equality check here, see https://github.com/ziglang/zig/issues/1776
         if (!mem.eql(u8, buf[0..State.RATE], &tag)) {
             @memset(m.ptr, undefined, m.len);
-            return error.InvalidMessage;
+            return error.AuthenticationFailed;
         }
     }
 };
 
 test "cipher" {
-    // https://github.com/ziglang/zig/issues/5127
-    if (std.Target.current.cpu.arch == .mips) return error.SkipZigTest;
-
     var key: [32]u8 = undefined;
-    try std.fmt.hexToBytes(&key, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+    _ = try std.fmt.hexToBytes(&key, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
     var nonce: [16]u8 = undefined;
-    try std.fmt.hexToBytes(&nonce, "000102030405060708090A0B0C0D0E0F");
+    _ = try std.fmt.hexToBytes(&nonce, "000102030405060708090A0B0C0D0E0F");
     { // test vector (1) from NIST KAT submission.
         const ad: [0]u8 = undefined;
         const pt: [0]u8 = undefined;
@@ -425,73 +447,73 @@ test "cipher" {
         var ct: [pt.len]u8 = undefined;
         var tag: [16]u8 = undefined;
         Aead.encrypt(&ct, &tag, &pt, &ad, nonce, key);
-        htest.assertEqual("", &ct);
-        htest.assertEqual("14DA9BB7120BF58B985A8E00FDEBA15B", &tag);
+        try htest.assertEqual("", &ct);
+        try htest.assertEqual("14DA9BB7120BF58B985A8E00FDEBA15B", &tag);
 
         var pt2: [pt.len]u8 = undefined;
         try Aead.decrypt(&pt2, &ct, tag, &ad, nonce, key);
-        testing.expectEqualSlices(u8, &pt, &pt2);
+        try testing.expectEqualSlices(u8, &pt, &pt2);
     }
     { // test vector (34) from NIST KAT submission.
         const ad: [0]u8 = undefined;
         var pt: [2 / 2]u8 = undefined;
-        try std.fmt.hexToBytes(&pt, "00");
+        _ = try std.fmt.hexToBytes(&pt, "00");
 
         var ct: [pt.len]u8 = undefined;
         var tag: [16]u8 = undefined;
         Aead.encrypt(&ct, &tag, &pt, &ad, nonce, key);
-        htest.assertEqual("7F", &ct);
-        htest.assertEqual("80492C317B1CD58A1EDC3A0D3E9876FC", &tag);
+        try htest.assertEqual("7F", &ct);
+        try htest.assertEqual("80492C317B1CD58A1EDC3A0D3E9876FC", &tag);
 
         var pt2: [pt.len]u8 = undefined;
         try Aead.decrypt(&pt2, &ct, tag, &ad, nonce, key);
-        testing.expectEqualSlices(u8, &pt, &pt2);
+        try testing.expectEqualSlices(u8, &pt, &pt2);
     }
     { // test vector (106) from NIST KAT submission.
         var ad: [12 / 2]u8 = undefined;
-        try std.fmt.hexToBytes(&ad, "000102030405");
+        _ = try std.fmt.hexToBytes(&ad, "000102030405");
         var pt: [6 / 2]u8 = undefined;
-        try std.fmt.hexToBytes(&pt, "000102");
+        _ = try std.fmt.hexToBytes(&pt, "000102");
 
         var ct: [pt.len]u8 = undefined;
         var tag: [16]u8 = undefined;
         Aead.encrypt(&ct, &tag, &pt, &ad, nonce, key);
-        htest.assertEqual("484D35", &ct);
-        htest.assertEqual("030BBEA23B61C00CED60A923BDCF9147", &tag);
+        try htest.assertEqual("484D35", &ct);
+        try htest.assertEqual("030BBEA23B61C00CED60A923BDCF9147", &tag);
 
         var pt2: [pt.len]u8 = undefined;
         try Aead.decrypt(&pt2, &ct, tag, &ad, nonce, key);
-        testing.expectEqualSlices(u8, &pt, &pt2);
+        try testing.expectEqualSlices(u8, &pt, &pt2);
     }
     { // test vector (790) from NIST KAT submission.
         var ad: [60 / 2]u8 = undefined;
-        try std.fmt.hexToBytes(&ad, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D");
+        _ = try std.fmt.hexToBytes(&ad, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D");
         var pt: [46 / 2]u8 = undefined;
-        try std.fmt.hexToBytes(&pt, "000102030405060708090A0B0C0D0E0F10111213141516");
+        _ = try std.fmt.hexToBytes(&pt, "000102030405060708090A0B0C0D0E0F10111213141516");
 
         var ct: [pt.len]u8 = undefined;
         var tag: [16]u8 = undefined;
         Aead.encrypt(&ct, &tag, &pt, &ad, nonce, key);
-        htest.assertEqual("6815B4A0ECDAD01596EAD87D9E690697475D234C6A13D1", &ct);
-        htest.assertEqual("DFE23F1642508290D68245279558B2FB", &tag);
+        try htest.assertEqual("6815B4A0ECDAD01596EAD87D9E690697475D234C6A13D1", &ct);
+        try htest.assertEqual("DFE23F1642508290D68245279558B2FB", &tag);
 
         var pt2: [pt.len]u8 = undefined;
         try Aead.decrypt(&pt2, &ct, tag, &ad, nonce, key);
-        testing.expectEqualSlices(u8, &pt, &pt2);
+        try testing.expectEqualSlices(u8, &pt, &pt2);
     }
     { // test vector (1057) from NIST KAT submission.
         const ad: [0]u8 = undefined;
         var pt: [64 / 2]u8 = undefined;
-        try std.fmt.hexToBytes(&pt, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
+        _ = try std.fmt.hexToBytes(&pt, "000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F");
 
         var ct: [pt.len]u8 = undefined;
         var tag: [16]u8 = undefined;
         Aead.encrypt(&ct, &tag, &pt, &ad, nonce, key);
-        htest.assertEqual("7F8A2CF4F52AA4D6B2E74105C30A2777B9D0C8AEFDD555DE35861BD3011F652F", &ct);
-        htest.assertEqual("7256456FA935AC34BBF55AE135F33257", &tag);
+        try htest.assertEqual("7F8A2CF4F52AA4D6B2E74105C30A2777B9D0C8AEFDD555DE35861BD3011F652F", &ct);
+        try htest.assertEqual("7256456FA935AC34BBF55AE135F33257", &tag);
 
         var pt2: [pt.len]u8 = undefined;
         try Aead.decrypt(&pt2, &ct, tag, &ad, nonce, key);
-        testing.expectEqualSlices(u8, &pt, &pt2);
+        try testing.expectEqualSlices(u8, &pt, &pt2);
     }
 }

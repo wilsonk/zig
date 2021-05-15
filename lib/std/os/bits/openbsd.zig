@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -32,29 +32,47 @@ pub const Kevent = extern struct {
     udata: usize,
 };
 
+// Modes and flags for dlopen()
+// include/dlfcn.h
+
+/// Bind function calls lazily.
+pub const RTLD_LAZY = 1;
+
+/// Bind function calls immediately.
+pub const RTLD_NOW = 2;
+
+/// Make symbols globally available.
+pub const RTLD_GLOBAL = 0x100;
+
+/// Opposite of RTLD_GLOBAL, and the default.
+pub const RTLD_LOCAL = 0x000;
+
+/// Trace loaded objects and exit.
+pub const RTLD_TRACE = 0x200;
+
 pub const dl_phdr_info = extern struct {
-    dlpi_addr: usize,
+    dlpi_addr: std.elf.Addr,
     dlpi_name: ?[*:0]const u8,
     dlpi_phdr: [*]std.elf.Phdr,
-    dlpi_phnum: u16,
+    dlpi_phnum: std.elf.Half,
 };
 
 pub const Flock = extern struct {
     l_start: off_t,
     l_len: off_t,
     l_pid: pid_t,
-    l_type: i16,
-    l_whence: i16,
+    l_type: c_short,
+    l_whence: c_short,
 };
 
 pub const addrinfo = extern struct {
-    flags: i32,
-    family: i32,
-    socktype: i32,
-    protocol: i32,
+    flags: c_int,
+    family: c_int,
+    socktype: c_int,
+    protocol: c_int,
     addrlen: socklen_t,
-    canonname: ?[*:0]u8,
     addr: ?*sockaddr,
+    canonname: ?[*:0]u8,
     next: ?*addrinfo,
 };
 
@@ -117,7 +135,7 @@ pub const msghdr = extern struct {
     msg_iov: [*]iovec,
 
     /// # elements in msg_iov
-    msg_iovlen: i32,
+    msg_iovlen: c_uint,
 
     /// ancillary data
     msg_control: ?*c_void,
@@ -126,7 +144,7 @@ pub const msghdr = extern struct {
     msg_controllen: socklen_t,
 
     /// flags on received message
-    msg_flags: i32,
+    msg_flags: c_int,
 };
 
 pub const msghdr_const = extern struct {
@@ -140,7 +158,7 @@ pub const msghdr_const = extern struct {
     msg_iov: [*]iovec_const,
 
     /// # elements in msg_iov
-    msg_iovlen: i32,
+    msg_iovlen: c_uint,
 
     /// ancillary data
     msg_control: ?*c_void,
@@ -149,16 +167,10 @@ pub const msghdr_const = extern struct {
     msg_controllen: socklen_t,
 
     /// flags on received message
-    msg_flags: i32,
+    msg_flags: c_int,
 };
 
-/// Renamed to Stat to not conflict with the stat function.
-/// atime, mtime, and ctime have functions to return `timespec`,
-/// because although this is a POSIX API, the layout and names of
-/// the structs are inconsistent across operating systems, and
-/// in C, macros are used to hide the differences. Here we use
-/// methods to accomplish this.
-pub const Stat = extern struct {
+pub const libc_stat = extern struct {
     mode: mode_t,
     dev: dev_t,
     ino: ino_t,
@@ -176,22 +188,32 @@ pub const Stat = extern struct {
     gen: u32,
     birthtim: timespec,
 
-    pub fn atime(self: Stat) timespec {
+    pub fn atime(self: @This()) timespec {
         return self.atim;
     }
 
-    pub fn mtime(self: Stat) timespec {
+    pub fn mtime(self: @This()) timespec {
         return self.mtim;
     }
 
-    pub fn ctime(self: Stat) timespec {
+    pub fn ctime(self: @This()) timespec {
         return self.ctim;
     }
 };
 
 pub const timespec = extern struct {
     tv_sec: time_t,
-    tv_nsec: isize,
+    tv_nsec: c_long,
+};
+
+pub const timeval = extern struct {
+    tv_sec: time_t,
+    tv_usec: c_long,
+};
+
+pub const timezone = extern struct {
+    tz_minuteswest: c_int,
+    tz_dsttime: c_int,
 };
 
 pub const MAXNAMLEN = 255;
@@ -222,6 +244,14 @@ pub const sockaddr = extern struct {
 
     /// actually longer; address value
     data: [14]u8,
+};
+
+pub const sockaddr_storage = extern struct {
+    len: u8,
+    family: sa_family_t,
+    __pad1: [5]u8,
+    __align: i64,
+    __pad2: [112]u8,
 };
 
 pub const sockaddr_in = extern struct {
@@ -267,12 +297,6 @@ pub const AI_NUMERICSERV = 16;
 
 /// only if any address is assigned
 pub const AI_ADDRCONFIG = 64;
-
-pub const CTL_KERN = 1;
-pub const CTL_DEBUG = 5;
-
-pub const KERN_PROC_ARGS = 55;
-pub const KERN_PROC_ARGV = 1;
 
 pub const PATH_MAX = 1024;
 
@@ -455,6 +479,36 @@ pub const SOCK_SEQPACKET = 5;
 
 pub const SOCK_CLOEXEC = 0x8000;
 pub const SOCK_NONBLOCK = 0x4000;
+
+pub const SO_DEBUG = 0x0001;
+pub const SO_ACCEPTCONN = 0x0002;
+pub const SO_REUSEADDR = 0x0004;
+pub const SO_KEEPALIVE = 0x0008;
+pub const SO_DONTROUTE = 0x0010;
+pub const SO_BROADCAST = 0x0020;
+pub const SO_USELOOPBACK = 0x0040;
+pub const SO_LINGER = 0x0080;
+pub const SO_OOBINLINE = 0x0100;
+pub const SO_REUSEPORT = 0x0200;
+pub const SO_TIMESTAMP = 0x0800;
+pub const SO_BINDANY = 0x1000;
+pub const SO_ZEROIZE = 0x2000;
+pub const SO_SNDBUF = 0x1001;
+pub const SO_RCVBUF = 0x1002;
+pub const SO_SNDLOWAT = 0x1003;
+pub const SO_RCVLOWAT = 0x1004;
+pub const SO_SNDTIMEO = 0x1005;
+pub const SO_RCVTIMEO = 0x1006;
+pub const SO_ERROR = 0x1007;
+pub const SO_TYPE = 0x1008;
+pub const SO_NETPROC = 0x1020;
+pub const SO_RTABLE = 0x1021;
+pub const SO_PEERCRED = 0x1022;
+pub const SO_SPLICE = 0x1023;
+pub const SO_DOMAIN = 0x1024;
+pub const SO_PROTOCOL = 0x1025;
+
+pub const SOL_SOCKET = 0xffff;
 
 pub const PF_UNSPEC = AF_UNSPEC;
 pub const PF_LOCAL = AF_LOCAL;
@@ -684,10 +738,10 @@ pub fn WIFSIGNALED(s: u32) bool {
 }
 
 pub const winsize = extern struct {
-    ws_row: u16,
-    ws_col: u16,
-    ws_xpixel: u16,
-    ws_ypixel: u16,
+    ws_row: c_ushort,
+    ws_col: c_ushort,
+    ws_xpixel: c_ushort,
+    ws_ypixel: c_ushort,
 };
 
 const NSIG = 33;
@@ -695,16 +749,23 @@ const NSIG = 33;
 pub const SIG_ERR = @intToPtr(?Sigaction.sigaction_fn, maxInt(usize));
 pub const SIG_DFL = @intToPtr(?Sigaction.sigaction_fn, 0);
 pub const SIG_IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
+pub const SIG_CATCH = @intToPtr(?Sigaction.sigaction_fn, 2);
+pub const SIG_HOLD = @intToPtr(?Sigaction.sigaction_fn, 3);
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const sigaction_fn = fn (c_int, *siginfo_t, ?*c_void) callconv(.C) void;
+    pub const handler_fn = fn (c_int) callconv(.C) void;
+    pub const sigaction_fn = fn (c_int, *const siginfo_t, ?*const c_void) callconv(.C) void;
+
     /// signal handler
-    sigaction: ?sigaction_fn,
+    handler: extern union {
+        handler: ?handler_fn,
+        sigaction: ?sigaction_fn,
+    },
     /// signal mask to apply
     mask: sigset_t,
     /// signal options
-    flags: c_int,
+    flags: c_uint,
 };
 
 pub const sigval = extern union {
@@ -712,33 +773,97 @@ pub const sigval = extern union {
     ptr: ?*c_void,
 };
 
-pub const siginfo_t = extern union {
-    pad: [128]u8,
-    info: _ksiginfo,
-};
-
-pub const _ksiginfo = extern struct {
+pub const siginfo_t = extern struct {
     signo: c_int,
     code: c_int,
     errno: c_int,
     data: extern union {
         proc: extern struct {
             pid: pid_t,
-            uid: uid_t,
-            value: sigval,
-            utime: clock_t,
-            stime: clock_t,
-            status: c_int,
+            pdata: extern union {
+                kill: extern struct {
+                    uid: uid_t,
+                    value: sigval,
+                },
+                cld: extern struct {
+                    utime: clock_t,
+                    stime: clock_t,
+                    status: c_int,
+                },
+            },
         },
         fault: extern struct {
             addr: ?*c_void,
             trapno: c_int,
         },
-    } align(@sizeOf(usize)),
+        __pad: [128 - 3 * @sizeOf(c_int)]u8,
+    },
+};
+
+comptime {
+    if (@sizeOf(usize) == 4)
+        std.debug.assert(@sizeOf(siginfo_t) == 128)
+    else
+        // Take into account the padding between errno and data fields.
+        std.debug.assert(@sizeOf(siginfo_t) == 136);
+}
+
+pub usingnamespace switch (builtin.arch) {
+    .x86_64 => struct {
+        pub const ucontext_t = extern struct {
+            sc_rdi: c_long,
+            sc_rsi: c_long,
+            sc_rdx: c_long,
+            sc_rcx: c_long,
+            sc_r8: c_long,
+            sc_r9: c_long,
+            sc_r10: c_long,
+            sc_r11: c_long,
+            sc_r12: c_long,
+            sc_r13: c_long,
+            sc_r14: c_long,
+            sc_r15: c_long,
+            sc_rbp: c_long,
+            sc_rbx: c_long,
+            sc_rax: c_long,
+            sc_gs: c_long,
+            sc_fs: c_long,
+            sc_es: c_long,
+            sc_ds: c_long,
+            sc_trapno: c_long,
+            sc_err: c_long,
+            sc_rip: c_long,
+            sc_cs: c_long,
+            sc_rflags: c_long,
+            sc_rsp: c_long,
+            sc_ss: c_long,
+
+            sc_fpstate: fxsave64,
+            __sc_unused: c_int,
+            sc_mask: c_int,
+            sc_cookie: c_long,
+        };
+
+        pub const fxsave64 = packed struct {
+            fx_fcw: u16,
+            fx_fsw: u16,
+            fx_ftw: u8,
+            fx_unused1: u8,
+            fx_fop: u16,
+            fx_rip: u64,
+            fx_rdp: u64,
+            fx_mxcsr: u32,
+            fx_mxcsr_mask: u32,
+            fx_st: [8][2]u64,
+            fx_xmm: [16][2]u64,
+            fx_unused3: [96]u8,
+        };
+    },
+    else => struct {},
 };
 
 pub const sigset_t = c_uint;
-pub const empty_sigset = sigset_t(0);
+pub const empty_sigset: sigset_t = 0;
 
 pub const EPERM = 1; // Operation not permitted
 pub const ENOENT = 2; // No such file or directory
@@ -1050,3 +1175,197 @@ pub const IPPROTO_PFSYNC = 240;
 
 /// raw IP packet
 pub const IPPROTO_RAW = 255;
+
+pub const rlimit_resource = extern enum(c_int) {
+    CPU,
+    FSIZE,
+    DATA,
+    STACK,
+    CORE,
+    RSS,
+    MEMLOCK,
+    NPROC,
+    NOFILE,
+
+    _,
+};
+
+pub const rlim_t = u64;
+
+/// No limit
+pub const RLIM_INFINITY: rlim_t = (1 << 63) - 1;
+
+pub const RLIM_SAVED_MAX = RLIM_INFINITY;
+pub const RLIM_SAVED_CUR = RLIM_INFINITY;
+
+pub const rlimit = extern struct {
+    /// Soft limit
+    cur: rlim_t,
+    /// Hard limit
+    max: rlim_t,
+};
+
+pub const SHUT_RD = 0;
+pub const SHUT_WR = 1;
+pub const SHUT_RDWR = 2;
+
+pub const nfds_t = c_uint;
+
+pub const pollfd = extern struct {
+    fd: fd_t,
+    events: c_short,
+    revents: c_short,
+};
+
+pub const POLLIN = 0x0001;
+pub const POLLPRI = 0x0002;
+pub const POLLOUT = 0x0004;
+pub const POLLERR = 0x0008;
+pub const POLLHUP = 0x0010;
+pub const POLLNVAL = 0x0020;
+pub const POLLRDNORM = 0x0040;
+pub const POLLNORM = POLLRDNORM;
+pub const POLLWRNORM = POLLOUT;
+pub const POLLRDBAND = 0x0080;
+pub const POLLWRBAND = 0x0100;
+
+// sysctl mib
+pub const CTL_UNSPEC = 0;
+pub const CTL_KERN = 1;
+pub const CTL_VM = 2;
+pub const CTL_FS = 3;
+pub const CTL_NET = 4;
+pub const CTL_DEBUG = 5;
+pub const CTL_HW = 6;
+pub const CTL_MACHDEP = 7;
+
+pub const CTL_DDB = 9;
+pub const CTL_VFS = 10;
+
+pub const KERN_OSTYPE = 1;
+pub const KERN_OSRELEASE = 2;
+pub const KERN_OSREV = 3;
+pub const KERN_VERSION = 4;
+pub const KERN_MAXVNODES = 5;
+pub const KERN_MAXPROC = 6;
+pub const KERN_MAXFILES = 7;
+pub const KERN_ARGMAX = 8;
+pub const KERN_SECURELVL = 9;
+pub const KERN_HOSTNAME = 10;
+pub const KERN_HOSTID = 11;
+pub const KERN_CLOCKRATE = 12;
+
+pub const KERN_PROF = 16;
+pub const KERN_POSIX1 = 17;
+pub const KERN_NGROUPS = 18;
+pub const KERN_JOB_CONTROL = 19;
+pub const KERN_SAVED_IDS = 20;
+pub const KERN_BOOTTIME = 21;
+pub const KERN_DOMAINNAME = 22;
+pub const KERN_MAXPARTITIONS = 23;
+pub const KERN_RAWPARTITION = 24;
+pub const KERN_MAXTHREAD = 25;
+pub const KERN_NTHREADS = 26;
+pub const KERN_OSVERSION = 27;
+pub const KERN_SOMAXCONN = 28;
+pub const KERN_SOMINCONN = 29;
+
+pub const KERN_NOSUIDCOREDUMP = 32;
+pub const KERN_FSYNC = 33;
+pub const KERN_SYSVMSG = 34;
+pub const KERN_SYSVSEM = 35;
+pub const KERN_SYSVSHM = 36;
+
+pub const KERN_MSGBUFSIZE = 38;
+pub const KERN_MALLOCSTATS = 39;
+pub const KERN_CPTIME = 40;
+pub const KERN_NCHSTATS = 41;
+pub const KERN_FORKSTAT = 42;
+pub const KERN_NSELCOLL = 43;
+pub const KERN_TTY = 44;
+pub const KERN_CCPU = 45;
+pub const KERN_FSCALE = 46;
+pub const KERN_NPROCS = 47;
+pub const KERN_MSGBUF = 48;
+pub const KERN_POOL = 49;
+pub const KERN_STACKGAPRANDOM = 50;
+pub const KERN_SYSVIPC_INFO = 51;
+pub const KERN_ALLOWKMEM = 52;
+pub const KERN_WITNESSWATCH = 53;
+pub const KERN_SPLASSERT = 54;
+pub const KERN_PROC_ARGS = 55;
+pub const KERN_NFILES = 56;
+pub const KERN_TTYCOUNT = 57;
+pub const KERN_NUMVNODES = 58;
+pub const KERN_MBSTAT = 59;
+pub const KERN_WITNESS = 60;
+pub const KERN_SEMINFO = 61;
+pub const KERN_SHMINFO = 62;
+pub const KERN_INTRCNT = 63;
+pub const KERN_WATCHDOG = 64;
+pub const KERN_ALLOWDT = 65;
+pub const KERN_PROC = 66;
+pub const KERN_MAXCLUSTERS = 67;
+pub const KERN_EVCOUNT = 68;
+pub const KERN_TIMECOUNTER = 69;
+pub const KERN_MAXLOCKSPERUID = 70;
+pub const KERN_CPTIME2 = 71;
+pub const KERN_CACHEPCT = 72;
+pub const KERN_FILE = 73;
+pub const KERN_WXABORT = 74;
+pub const KERN_CONSDEV = 75;
+pub const KERN_NETLIVELOCKS = 76;
+pub const KERN_POOL_DEBUG = 77;
+pub const KERN_PROC_CWD = 78;
+pub const KERN_PROC_NOBROADCASTKILL = 79;
+pub const KERN_PROC_VMMAP = 80;
+pub const KERN_GLOBAL_PTRACE = 81;
+pub const KERN_CONSBUFSIZE = 82;
+pub const KERN_CONSBUF = 83;
+pub const KERN_AUDIO = 84;
+pub const KERN_CPUSTATS = 85;
+pub const KERN_PFSTATUS = 86;
+pub const KERN_TIMEOUT_STATS = 87;
+pub const KERN_UTC_OFFSET = 88;
+pub const KERN_VIDEO = 89;
+
+pub const HW_MACHINE = 1;
+pub const HW_MODEL = 2;
+pub const HW_NCPU = 3;
+pub const HW_BYTEORDER = 4;
+pub const HW_PHYSMEM = 5;
+pub const HW_USERMEM = 6;
+pub const HW_PAGESIZE = 7;
+pub const HW_DISKNAMES = 8;
+pub const HW_DISKSTATS = 9;
+pub const HW_DISKCOUNT = 10;
+pub const HW_SENSORS = 11;
+pub const HW_CPUSPEED = 12;
+pub const HW_SETPERF = 13;
+pub const HW_VENDOR = 14;
+pub const HW_PRODUCT = 15;
+pub const HW_VERSION = 16;
+pub const HW_SERIALNO = 17;
+pub const HW_UUID = 18;
+pub const HW_PHYSMEM64 = 19;
+pub const HW_USERMEM64 = 20;
+pub const HW_NCPUFOUND = 21;
+pub const HW_ALLOWPOWERDOWN = 22;
+pub const HW_PERFPOLICY = 23;
+pub const HW_SMT = 24;
+pub const HW_NCPUONLINE = 25;
+
+pub const KERN_PROC_ALL = 0;
+pub const KERN_PROC_PID = 1;
+pub const KERN_PROC_PGRP = 2;
+pub const KERN_PROC_SESSION = 3;
+pub const KERN_PROC_TTY = 4;
+pub const KERN_PROC_UID = 5;
+pub const KERN_PROC_RUID = 6;
+pub const KERN_PROC_KTHREAD = 7;
+pub const KERN_PROC_SHOW_THREADS = 0x40000000;
+
+pub const KERN_PROC_ARGV = 1;
+pub const KERN_PROC_NARGV = 2;
+pub const KERN_PROC_ENV = 3;
+pub const KERN_PROC_NENV = 4;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -29,6 +29,8 @@ pub const load_command = extern struct {
     cmdsize: u32,
 };
 
+/// The uuid load command contains a single 128-bit unique random number that
+/// identifies an object produced by the static link editor.
 pub const uuid_command = extern struct {
     /// LC_UUID
     cmd: u32,
@@ -40,11 +42,40 @@ pub const uuid_command = extern struct {
     uuid: [16]u8,
 };
 
+/// The version_min_command contains the min OS version on which this
+/// binary was built to run.
+pub const version_min_command = extern struct {
+    /// LC_VERSION_MIN_MACOSX or LC_VERSION_MIN_IPHONEOS or LC_VERSION_MIN_WATCHOS or LC_VERSION_MIN_TVOS
+    cmd: u32,
+
+    /// sizeof(struct version_min_command)
+    cmdsize: u32,
+
+    /// X.Y.Z is encoded in nibbles xxxx.yy.zz
+    version: u32,
+
+    /// X.Y.Z is encoded in nibbles xxxx.yy.zz
+    sdk: u32,
+};
+
+/// The source_version_command is an optional load command containing
+/// the version of the sources used to build the binary.
+pub const source_version_command = extern struct {
+    /// LC_SOURCE_VERSION
+    cmd: u32,
+
+    /// sizeof(source_version_command)
+    cmdsize: u32,
+
+    /// A.B.C.D.E packed as a24.b10.c10.d10.e10
+    version: u64,
+};
+
 /// The entry_point_command is a replacement for thread_command.
 /// It is used for main executables to specify the location (file offset)
 /// of main(). If -stack_size was used at link time, the stacksize
 /// field will contain the stack size needed for the main thread.
-pub const entry_point_command = struct {
+pub const entry_point_command = extern struct {
     /// LC_MAIN only used in MH_EXECUTE filetypes
     cmd: u32,
 
@@ -1196,6 +1227,24 @@ pub const S_ATTR_EXT_RELOC = 0x200;
 /// section has local relocation entries
 pub const S_ATTR_LOC_RELOC = 0x100;
 
+/// template of initial values for TLVs
+pub const S_THREAD_LOCAL_REGULAR = 0x11;
+
+/// template of initial values for TLVs
+pub const S_THREAD_LOCAL_ZEROFILL = 0x12;
+
+/// TLV descriptors
+pub const S_THREAD_LOCAL_VARIABLES = 0x13;
+
+/// pointers to TLV descriptors
+pub const S_THREAD_LOCAL_VARIABLE_POINTERS = 0x14;
+
+/// functions to call to initialize TLV values
+pub const S_THREAD_LOCAL_INIT_FUNCTION_POINTERS = 0x15;
+
+/// 32-bit offsets to initializers
+pub const S_INIT_FUNC_OFFSETS = 0x16;
+
 pub const cpu_type_t = integer_t;
 pub const cpu_subtype_t = integer_t;
 pub const integer_t = c_int;
@@ -1225,6 +1274,51 @@ pub const VM_PROT_WRITE: vm_prot_t = 0x2;
 
 /// VM execute permission
 pub const VM_PROT_EXECUTE: vm_prot_t = 0x4;
+
+// The following are used to encode rebasing information
+pub const REBASE_TYPE_POINTER: u8 = 1;
+pub const REBASE_TYPE_TEXT_ABSOLUTE32: u8 = 2;
+pub const REBASE_TYPE_TEXT_PCREL32: u8 = 3;
+
+pub const REBASE_OPCODE_MASK: u8 = 0xF0;
+pub const REBASE_IMMEDIATE_MASK: u8 = 0x0F;
+pub const REBASE_OPCODE_DONE: u8 = 0x00;
+pub const REBASE_OPCODE_SET_TYPE_IMM: u8 = 0x10;
+pub const REBASE_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: u8 = 0x20;
+pub const REBASE_OPCODE_ADD_ADDR_ULEB: u8 = 0x30;
+pub const REBASE_OPCODE_ADD_ADDR_IMM_SCALED: u8 = 0x40;
+pub const REBASE_OPCODE_DO_REBASE_IMM_TIMES: u8 = 0x50;
+pub const REBASE_OPCODE_DO_REBASE_ULEB_TIMES: u8 = 0x60;
+pub const REBASE_OPCODE_DO_REBASE_ADD_ADDR_ULEB: u8 = 0x70;
+pub const REBASE_OPCODE_DO_REBASE_ULEB_TIMES_SKIPPING_ULEB: u8 = 0x80;
+
+// The following are used to encode binding information
+pub const BIND_TYPE_POINTER: u8 = 1;
+pub const BIND_TYPE_TEXT_ABSOLUTE32: u8 = 2;
+pub const BIND_TYPE_TEXT_PCREL32: u8 = 3;
+
+pub const BIND_SPECIAL_DYLIB_SELF: i8 = 0;
+pub const BIND_SPECIAL_DYLIB_MAIN_EXECUTABLE: i8 = -1;
+pub const BIND_SPECIAL_DYLIB_FLAT_LOOKUP: i8 = -2;
+
+pub const BIND_SYMBOL_FLAGS_WEAK_IMPORT: u8 = 0x1;
+pub const BIND_SYMBOL_FLAGS_NON_WEAK_DEFINITION: u8 = 0x8;
+
+pub const BIND_OPCODE_MASK: u8 = 0xf0;
+pub const BIND_IMMEDIATE_MASK: u8 = 0x0f;
+pub const BIND_OPCODE_DONE: u8 = 0x00;
+pub const BIND_OPCODE_SET_DYLIB_ORDINAL_IMM: u8 = 0x10;
+pub const BIND_OPCODE_SET_DYLIB_ORDINAL_ULEB: u8 = 0x20;
+pub const BIND_OPCODE_SET_DYLIB_SPECIAL_IMM: u8 = 0x30;
+pub const BIND_OPCODE_SET_SYMBOL_TRAILING_FLAGS_IMM: u8 = 0x40;
+pub const BIND_OPCODE_SET_TYPE_IMM: u8 = 0x50;
+pub const BIND_OPCODE_SET_ADDEND_SLEB: u8 = 0x60;
+pub const BIND_OPCODE_SET_SEGMENT_AND_OFFSET_ULEB: u8 = 0x70;
+pub const BIND_OPCODE_ADD_ADDR_ULEB: u8 = 0x80;
+pub const BIND_OPCODE_DO_BIND: u8 = 0x90;
+pub const BIND_OPCODE_DO_BIND_ADD_ADDR_ULEB: u8 = 0xa0;
+pub const BIND_OPCODE_DO_BIND_ADD_ADDR_IMM_SCALED: u8 = 0xb0;
+pub const BIND_OPCODE_DO_BIND_ULEB_TIMES_SKIPPING_ULEB: u8 = 0xc0;
 
 pub const reloc_type_x86_64 = packed enum(u4) {
     /// for absolute addresses
@@ -1256,6 +1350,41 @@ pub const reloc_type_x86_64 = packed enum(u4) {
 
     /// for thread local variables
     X86_64_RELOC_TLV,
+};
+
+pub const reloc_type_arm64 = packed enum(u4) {
+    /// For pointers.
+    ARM64_RELOC_UNSIGNED = 0,
+
+    /// Must be followed by a ARM64_RELOC_UNSIGNED.
+    ARM64_RELOC_SUBTRACTOR,
+
+    /// A B/BL instruction with 26-bit displacement.
+    ARM64_RELOC_BRANCH26,
+
+    /// Pc-rel distance to page of target.
+    ARM64_RELOC_PAGE21,
+
+    /// Offset within page, scaled by r_length.
+    ARM64_RELOC_PAGEOFF12,
+
+    /// Pc-rel distance to page of GOT slot.
+    ARM64_RELOC_GOT_LOAD_PAGE21,
+
+    /// Offset within page of GOT slot, scaled by r_length.
+    ARM64_RELOC_GOT_LOAD_PAGEOFF12,
+
+    /// For pointers to GOT slots.
+    ARM64_RELOC_POINTER_TO_GOT,
+
+    /// Pc-rel distance to page of TLVP slot.
+    ARM64_RELOC_TLVP_LOAD_PAGE21,
+
+    /// Offset within page of TLVP slot, scaled by r_length.
+    ARM64_RELOC_TLVP_LOAD_PAGEOFF12,
+
+    /// Must be followed by PAGE21 or PAGEOFF12.
+    ARM64_RELOC_ADDEND,
 };
 
 /// This symbol is a reference to an external non-lazy (data) symbol.
@@ -1301,3 +1430,202 @@ pub const N_WEAK_DEF: u16 = 0x80;
 /// be called to get the address of the real function to use.
 /// This bit is only available in .o files (MH_OBJECT filetype)
 pub const N_SYMBOL_RESOLVER: u16 = 0x100;
+
+// The following are used on the flags byte of a terminal node in the export information.
+pub const EXPORT_SYMBOL_FLAGS_KIND_MASK: u8 = 0x03;
+pub const EXPORT_SYMBOL_FLAGS_KIND_REGULAR: u8 = 0x00;
+pub const EXPORT_SYMBOL_FLAGS_KIND_THREAD_LOCAL: u8 = 0x01;
+pub const EXPORT_SYMBOL_FLAGS_KIND_ABSOLUTE: u8 = 0x02;
+pub const EXPORT_SYMBOL_FLAGS_KIND_WEAK_DEFINITION: u8 = 0x04;
+pub const EXPORT_SYMBOL_FLAGS_REEXPORT: u8 = 0x08;
+pub const EXPORT_SYMBOL_FLAGS_STUB_AND_RESOLVER: u8 = 0x10;
+
+// An indirect symbol table entry is simply a 32bit index into the symbol table
+// to the symbol that the pointer or stub is refering to.  Unless it is for a
+// non-lazy symbol pointer section for a defined symbol which strip(1) as
+// removed.  In which case it has the value INDIRECT_SYMBOL_LOCAL.  If the
+// symbol was also absolute INDIRECT_SYMBOL_ABS is or'ed with that.
+pub const INDIRECT_SYMBOL_LOCAL: u32 = 0x80000000;
+pub const INDIRECT_SYMBOL_ABS: u32 = 0x40000000;
+
+// Codesign consts and structs taken from:
+// https://opensource.apple.com/source/xnu/xnu-6153.81.5/osfmk/kern/cs_blobs.h.auto.html
+
+/// Single Requirement blob
+pub const CSMAGIC_REQUIREMENT: u32 = 0xfade0c00;
+/// Requirements vector (internal requirements)
+pub const CSMAGIC_REQUIREMENTS: u32 = 0xfade0c01;
+/// CodeDirectory blob
+pub const CSMAGIC_CODEDIRECTORY: u32 = 0xfade0c02;
+/// embedded form of signature data
+pub const CSMAGIC_EMBEDDED_SIGNATURE: u32 = 0xfade0cc0;
+/// XXX
+pub const CSMAGIC_EMBEDDED_SIGNATURE_OLD: u32 = 0xfade0b02;
+/// Embedded entitlements
+pub const CSMAGIC_EMBEDDED_ENTITLEMENTS: u32 = 0xfade7171;
+/// Multi-arch collection of embedded signatures
+pub const CSMAGIC_DETACHED_SIGNATURE: u32 = 0xfade0cc1;
+/// CMS Signature, among other things
+pub const CSMAGIC_BLOBWRAPPER: u32 = 0xfade0b01;
+
+pub const CS_SUPPORTSSCATTER: u32 = 0x20100;
+pub const CS_SUPPORTSTEAMID: u32 = 0x20200;
+pub const CS_SUPPORTSCODELIMIT64: u32 = 0x20300;
+pub const CS_SUPPORTSEXECSEG: u32 = 0x20400;
+
+/// Slot index for CodeDirectory
+pub const CSSLOT_CODEDIRECTORY: u32 = 0;
+pub const CSSLOT_INFOSLOT: u32 = 1;
+pub const CSSLOT_REQUIREMENTS: u32 = 2;
+pub const CSSLOT_RESOURCEDIR: u32 = 3;
+pub const CSSLOT_APPLICATION: u32 = 4;
+pub const CSSLOT_ENTITLEMENTS: u32 = 5;
+
+/// first alternate CodeDirectory, if any
+pub const CSSLOT_ALTERNATE_CODEDIRECTORIES: u32 = 0x1000;
+/// Max number of alternate CD slots
+pub const CSSLOT_ALTERNATE_CODEDIRECTORY_MAX: u32 = 5;
+/// One past the last
+pub const CSSLOT_ALTERNATE_CODEDIRECTORY_LIMIT: u32 = CSSLOT_ALTERNATE_CODEDIRECTORIES + CSSLOT_ALTERNATE_CODEDIRECTORY_MAX;
+
+/// CMS Signature
+pub const CSSLOT_SIGNATURESLOT: u32 = 0x10000;
+pub const CSSLOT_IDENTIFICATIONSLOT: u32 = 0x10001;
+pub const CSSLOT_TICKETSLOT: u32 = 0x10002;
+
+/// Compat with amfi
+pub const CSTYPE_INDEX_REQUIREMENTS: u32 = 0x00000002;
+/// Compat with amfi
+pub const CSTYPE_INDEX_ENTITLEMENTS: u32 = 0x00000005;
+
+pub const CS_HASHTYPE_SHA1: u8 = 1;
+pub const CS_HASHTYPE_SHA256: u8 = 2;
+pub const CS_HASHTYPE_SHA256_TRUNCATED: u8 = 3;
+pub const CS_HASHTYPE_SHA384: u8 = 4;
+
+pub const CS_SHA1_LEN: u32 = 20;
+pub const CS_SHA256_LEN: u32 = 32;
+pub const CS_SHA256_TRUNCATED_LEN: u32 = 20;
+
+/// Always - larger hashes are truncated
+pub const CS_CDHASH_LEN: u32 = 20;
+/// Max size of the hash we'll support
+pub const CS_HASH_MAX_SIZE: u32 = 48;
+
+pub const CS_SIGNER_TYPE_UNKNOWN: u32 = 0;
+pub const CS_SIGNER_TYPE_LEGACYVPN: u32 = 5;
+pub const CS_SIGNER_TYPE_MAC_APP_STORE: u32 = 6;
+
+pub const CS_ADHOC: u32 = 0x2;
+
+pub const CS_EXECSEG_MAIN_BINARY: u32 = 0x1;
+
+/// This CodeDirectory is tailored specfically at version 0x20400.
+pub const CodeDirectory = extern struct {
+    /// Magic number (CSMAGIC_CODEDIRECTORY)
+    magic: u32,
+
+    /// Total length of CodeDirectory blob
+    length: u32,
+
+    /// Compatibility version
+    version: u32,
+
+    /// Setup and mode flags
+    flags: u32,
+
+    /// Offset of hash slot element at index zero
+    hashOffset: u32,
+
+    /// Offset of identifier string
+    identOffset: u32,
+
+    /// Number of special hash slots
+    nSpecialSlots: u32,
+
+    /// Number of ordinary (code) hash slots
+    nCodeSlots: u32,
+
+    /// Limit to main image signature range
+    codeLimit: u32,
+
+    /// Size of each hash in bytes
+    hashSize: u8,
+
+    /// Type of hash (cdHashType* constants)
+    hashType: u8,
+
+    /// Platform identifier; zero if not platform binary
+    platform: u8,
+
+    /// log2(page size in bytes); 0 => infinite
+    pageSize: u8,
+
+    /// Unused (must be zero)
+    spare2: u32,
+
+    ///
+    scatterOffset: u32,
+
+    ///
+    teamOffset: u32,
+
+    ///
+    spare3: u32,
+
+    ///
+    codeLimit64: u64,
+
+    /// Offset of executable segment
+    execSegBase: u64,
+
+    /// Limit of executable segment
+    execSegLimit: u64,
+
+    /// Executable segment flags
+    execSegFlags: u64,
+};
+
+/// Structure of an embedded-signature SuperBlob
+pub const BlobIndex = extern struct {
+    /// Type of entry
+    @"type": u32,
+
+    /// Offset of entry
+    offset: u32,
+};
+
+/// This structure is followed by GenericBlobs in no particular
+/// order as indicated by offsets in index
+pub const SuperBlob = extern struct {
+    /// Magic number
+    magic: u32,
+
+    /// Total length of SuperBlob
+    length: u32,
+
+    /// Number of index BlobIndex entries following this struct
+    count: u32,
+};
+
+pub const GenericBlob = extern struct {
+    /// Magic number
+    magic: u32,
+
+    /// Total length of blob
+    length: u32,
+};
+
+/// The LC_DATA_IN_CODE load commands uses a linkedit_data_command
+/// to point to an array of data_in_code_entry entries. Each entry
+/// describes a range of data in a code section.
+pub const data_in_code_entry = extern struct {
+    /// From mach_header to start of data range.
+    offset: u32,
+
+    /// Number of bytes in data range.
+    length: u16,
+
+    /// A DICE_KIND value.
+    kind: u16,
+};

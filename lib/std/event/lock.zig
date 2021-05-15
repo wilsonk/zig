@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -16,7 +16,7 @@ const Loop = std.event.Loop;
 /// Allows only one actor to hold the lock.
 /// TODO: make this API also work in blocking I/O mode.
 pub const Lock = struct {
-    mutex: std.Mutex = std.Mutex{},
+    mutex: std.Thread.Mutex = std.Thread.Mutex{},
     head: usize = UNLOCKED,
 
     const UNLOCKED = 0;
@@ -136,7 +136,7 @@ test "std.event.Lock" {
     testLock(&lock);
 
     const expected_result = [1]i32{3 * @intCast(i32, shared_test_data.len)} ** shared_test_data.len;
-    testing.expectEqualSlices(i32, &expected_result, &shared_test_data);
+    try testing.expectEqualSlices(i32, &expected_result, &shared_test_data);
 }
 fn testLock(lock: *Lock) void {
     var handle1 = async lockRunner(lock);

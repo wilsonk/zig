@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -203,6 +203,14 @@ pub fn PackedIntArrayEndian(comptime Int: type, comptime endian: builtin.Endian,
             return self;
         }
 
+        ///Initialize all entries of a packed array to the same value
+        pub fn initAllTo(int: Int) Self {
+            // TODO: use `var self = @as(Self, undefined);` https://github.com/ziglang/zig/issues/7635
+            var self = Self{ .bytes = [_]u8{0} ** total_bytes };
+            self.setAll(int);
+            return self;
+        }
+
         ///Return the Int stored at index
         pub fn get(self: Self, index: usize) Int {
             debug.assert(index < int_count);
@@ -213,6 +221,14 @@ pub fn PackedIntArrayEndian(comptime Int: type, comptime endian: builtin.Endian,
         pub fn set(self: *Self, index: usize, int: Int) void {
             debug.assert(index < int_count);
             return Io.set(&self.bytes, index, 0, int);
+        }
+
+        ///Set all entries of a packed array to the same value
+        pub fn setAll(self: *Self, int: Int) void {
+            var i: usize = 0;
+            while (i < int_count) : (i += 1) {
+                self.set(i, int);
+            }
         }
 
         ///Create a PackedIntSlice of the array from given start to given end
@@ -332,12 +348,12 @@ test "PackedIntArray" {
     comptime var bits = 0;
     inline while (bits <= max_bits) : (bits += 1) {
         //alternate unsigned and signed
-        const sign: std.meta.Signedness = if (bits % 2 == 0) .signed else .unsigned;
+        const sign: builtin.Signedness = if (bits % 2 == 0) .signed else .unsigned;
         const I = std.meta.Int(sign, bits);
 
         const PackedArray = PackedIntArray(I, int_count);
         const expected_bytes = ((bits * int_count) + 7) / 8;
-        testing.expect(@sizeOf(PackedArray) == expected_bytes);
+        try testing.expect(@sizeOf(PackedArray) == expected_bytes);
 
         var data = @as(PackedArray, undefined);
 
@@ -354,7 +370,7 @@ test "PackedIntArray" {
         count = 0;
         while (i < data.len()) : (i += 1) {
             const val = data.get(i);
-            testing.expect(val == count);
+            try testing.expect(val == count);
             if (bits > 0) count +%= 1;
         }
     }
@@ -365,7 +381,15 @@ test "PackedIntArray init" {
     const PackedArray = PackedIntArray(u3, 8);
     var packed_array = PackedArray.init([_]u3{ 0, 1, 2, 3, 4, 5, 6, 7 });
     var i = @as(usize, 0);
-    while (i < packed_array.len()) : (i += 1) testing.expect(packed_array.get(i) == i);
+    while (i < packed_array.len()) : (i += 1) testing.expectEqual(@intCast(u3, i), packed_array.get(i));
+}
+
+test "PackedIntArray initAllTo" {
+    if (we_are_testing_this_with_stage1_which_leaks_comptime_memory) return error.SkipZigTest;
+    const PackedArray = PackedIntArray(u3, 8);
+    var packed_array = PackedArray.initAllTo(5);
+    var i = @as(usize, 0);
+    while (i < packed_array.len()) : (i += 1) testing.expectEqual(@as(u3, 5), packed_array.get(i));
 }
 
 test "PackedIntSlice" {
@@ -384,7 +408,7 @@ test "PackedIntSlice" {
     comptime var bits = 0;
     inline while (bits <= max_bits) : (bits += 1) {
         //alternate unsigned and signed
-        const sign: std.meta.Signedness = if (bits % 2 == 0) .signed else .unsigned;
+        const sign: builtin.Signedness = if (bits % 2 == 0) .signed else .unsigned;
         const I = std.meta.Int(sign, bits);
         const P = PackedIntSlice(I);
 
@@ -403,7 +427,7 @@ test "PackedIntSlice" {
         count = 0;
         while (i < data.len()) : (i += 1) {
             const val = data.get(i);
-            testing.expect(val == count);
+            try testing.expect(val == count);
             if (bits > 0) count +%= 1;
         }
     }
@@ -430,48 +454,48 @@ test "PackedIntSlice of PackedInt(Array/Slice)" {
 
         //slice of array
         var packed_slice = packed_array.slice(2, 5);
-        testing.expect(packed_slice.len() == 3);
+        try testing.expect(packed_slice.len() == 3);
         const ps_bit_count = (bits * packed_slice.len()) + packed_slice.bit_offset;
         const ps_expected_bytes = (ps_bit_count + 7) / 8;
-        testing.expect(packed_slice.bytes.len == ps_expected_bytes);
-        testing.expect(packed_slice.get(0) == 2 % limit);
-        testing.expect(packed_slice.get(1) == 3 % limit);
-        testing.expect(packed_slice.get(2) == 4 % limit);
+        try testing.expect(packed_slice.bytes.len == ps_expected_bytes);
+        try testing.expect(packed_slice.get(0) == 2 % limit);
+        try testing.expect(packed_slice.get(1) == 3 % limit);
+        try testing.expect(packed_slice.get(2) == 4 % limit);
         packed_slice.set(1, 7 % limit);
-        testing.expect(packed_slice.get(1) == 7 % limit);
+        try testing.expect(packed_slice.get(1) == 7 % limit);
 
         //write through slice
-        testing.expect(packed_array.get(3) == 7 % limit);
+        try testing.expect(packed_array.get(3) == 7 % limit);
 
         //slice of a slice
         const packed_slice_two = packed_slice.slice(0, 3);
-        testing.expect(packed_slice_two.len() == 3);
+        try testing.expect(packed_slice_two.len() == 3);
         const ps2_bit_count = (bits * packed_slice_two.len()) + packed_slice_two.bit_offset;
         const ps2_expected_bytes = (ps2_bit_count + 7) / 8;
-        testing.expect(packed_slice_two.bytes.len == ps2_expected_bytes);
-        testing.expect(packed_slice_two.get(1) == 7 % limit);
-        testing.expect(packed_slice_two.get(2) == 4 % limit);
+        try testing.expect(packed_slice_two.bytes.len == ps2_expected_bytes);
+        try testing.expect(packed_slice_two.get(1) == 7 % limit);
+        try testing.expect(packed_slice_two.get(2) == 4 % limit);
 
         //size one case
         const packed_slice_three = packed_slice_two.slice(1, 2);
-        testing.expect(packed_slice_three.len() == 1);
+        try testing.expect(packed_slice_three.len() == 1);
         const ps3_bit_count = (bits * packed_slice_three.len()) + packed_slice_three.bit_offset;
         const ps3_expected_bytes = (ps3_bit_count + 7) / 8;
-        testing.expect(packed_slice_three.bytes.len == ps3_expected_bytes);
-        testing.expect(packed_slice_three.get(0) == 7 % limit);
+        try testing.expect(packed_slice_three.bytes.len == ps3_expected_bytes);
+        try testing.expect(packed_slice_three.get(0) == 7 % limit);
 
         //empty slice case
         const packed_slice_empty = packed_slice.slice(0, 0);
-        testing.expect(packed_slice_empty.len() == 0);
-        testing.expect(packed_slice_empty.bytes.len == 0);
+        try testing.expect(packed_slice_empty.len() == 0);
+        try testing.expect(packed_slice_empty.bytes.len == 0);
 
         //slicing at byte boundaries
         const packed_slice_edge = packed_array.slice(8, 16);
-        testing.expect(packed_slice_edge.len() == 8);
+        try testing.expect(packed_slice_edge.len() == 8);
         const pse_bit_count = (bits * packed_slice_edge.len()) + packed_slice_edge.bit_offset;
         const pse_expected_bytes = (pse_bit_count + 7) / 8;
-        testing.expect(packed_slice_edge.bytes.len == pse_expected_bytes);
-        testing.expect(packed_slice_edge.bit_offset == 0);
+        try testing.expect(packed_slice_edge.bytes.len == pse_expected_bytes);
+        try testing.expect(packed_slice_edge.bit_offset == 0);
     }
 }
 
@@ -519,7 +543,7 @@ test "PackedInt(Array/Slice) sliceCast" {
             .Big => 0b01,
             .Little => 0b10,
         };
-        testing.expect(packed_slice_cast_2.get(i) == val);
+        try testing.expect(packed_slice_cast_2.get(i) == val);
     }
     i = 0;
     while (i < packed_slice_cast_4.len()) : (i += 1) {
@@ -527,12 +551,12 @@ test "PackedInt(Array/Slice) sliceCast" {
             .Big => 0b0101,
             .Little => 0b1010,
         };
-        testing.expect(packed_slice_cast_4.get(i) == val);
+        try testing.expect(packed_slice_cast_4.get(i) == val);
     }
     i = 0;
     while (i < packed_slice_cast_9.len()) : (i += 1) {
         const val = 0b010101010;
-        testing.expect(packed_slice_cast_9.get(i) == val);
+        try testing.expect(packed_slice_cast_9.get(i) == val);
         packed_slice_cast_9.set(i, 0b111000111);
     }
     i = 0;
@@ -541,7 +565,7 @@ test "PackedInt(Array/Slice) sliceCast" {
             .Big => if (i % 2 == 0) @as(u3, 0b111) else @as(u3, 0b000),
             .Little => if (i % 2 == 0) @as(u3, 0b111) else @as(u3, 0b000),
         };
-        testing.expect(packed_slice_cast_3.get(i) == val);
+        try testing.expect(packed_slice_cast_3.get(i) == val);
     }
 }
 
@@ -551,58 +575,58 @@ test "PackedInt(Array/Slice)Endian" {
     {
         const PackedArrayBe = PackedIntArrayEndian(u4, .Big, 8);
         var packed_array_be = PackedArrayBe.init([_]u4{ 0, 1, 2, 3, 4, 5, 6, 7 });
-        testing.expect(packed_array_be.bytes[0] == 0b00000001);
-        testing.expect(packed_array_be.bytes[1] == 0b00100011);
+        try testing.expect(packed_array_be.bytes[0] == 0b00000001);
+        try testing.expect(packed_array_be.bytes[1] == 0b00100011);
 
         var i = @as(usize, 0);
         while (i < packed_array_be.len()) : (i += 1) {
-            testing.expect(packed_array_be.get(i) == i);
+            try testing.expect(packed_array_be.get(i) == i);
         }
 
         var packed_slice_le = packed_array_be.sliceCastEndian(u4, .Little);
         i = 0;
         while (i < packed_slice_le.len()) : (i += 1) {
             const val = if (i % 2 == 0) i + 1 else i - 1;
-            testing.expect(packed_slice_le.get(i) == val);
+            try testing.expect(packed_slice_le.get(i) == val);
         }
 
         var packed_slice_le_shift = packed_array_be.slice(1, 5).sliceCastEndian(u4, .Little);
         i = 0;
         while (i < packed_slice_le_shift.len()) : (i += 1) {
             const val = if (i % 2 == 0) i else i + 2;
-            testing.expect(packed_slice_le_shift.get(i) == val);
+            try testing.expect(packed_slice_le_shift.get(i) == val);
         }
     }
 
     {
         const PackedArrayBe = PackedIntArrayEndian(u11, .Big, 8);
         var packed_array_be = PackedArrayBe.init([_]u11{ 0, 1, 2, 3, 4, 5, 6, 7 });
-        testing.expect(packed_array_be.bytes[0] == 0b00000000);
-        testing.expect(packed_array_be.bytes[1] == 0b00000000);
-        testing.expect(packed_array_be.bytes[2] == 0b00000100);
-        testing.expect(packed_array_be.bytes[3] == 0b00000001);
-        testing.expect(packed_array_be.bytes[4] == 0b00000000);
+        try testing.expect(packed_array_be.bytes[0] == 0b00000000);
+        try testing.expect(packed_array_be.bytes[1] == 0b00000000);
+        try testing.expect(packed_array_be.bytes[2] == 0b00000100);
+        try testing.expect(packed_array_be.bytes[3] == 0b00000001);
+        try testing.expect(packed_array_be.bytes[4] == 0b00000000);
 
         var i = @as(usize, 0);
         while (i < packed_array_be.len()) : (i += 1) {
-            testing.expect(packed_array_be.get(i) == i);
+            try testing.expect(packed_array_be.get(i) == i);
         }
 
         var packed_slice_le = packed_array_be.sliceCastEndian(u11, .Little);
-        testing.expect(packed_slice_le.get(0) == 0b00000000000);
-        testing.expect(packed_slice_le.get(1) == 0b00010000000);
-        testing.expect(packed_slice_le.get(2) == 0b00000000100);
-        testing.expect(packed_slice_le.get(3) == 0b00000000000);
-        testing.expect(packed_slice_le.get(4) == 0b00010000011);
-        testing.expect(packed_slice_le.get(5) == 0b00000000010);
-        testing.expect(packed_slice_le.get(6) == 0b10000010000);
-        testing.expect(packed_slice_le.get(7) == 0b00000111001);
+        try testing.expect(packed_slice_le.get(0) == 0b00000000000);
+        try testing.expect(packed_slice_le.get(1) == 0b00010000000);
+        try testing.expect(packed_slice_le.get(2) == 0b00000000100);
+        try testing.expect(packed_slice_le.get(3) == 0b00000000000);
+        try testing.expect(packed_slice_le.get(4) == 0b00010000011);
+        try testing.expect(packed_slice_le.get(5) == 0b00000000010);
+        try testing.expect(packed_slice_le.get(6) == 0b10000010000);
+        try testing.expect(packed_slice_le.get(7) == 0b00000111001);
 
         var packed_slice_le_shift = packed_array_be.slice(1, 5).sliceCastEndian(u11, .Little);
-        testing.expect(packed_slice_le_shift.get(0) == 0b00010000000);
-        testing.expect(packed_slice_le_shift.get(1) == 0b00000000100);
-        testing.expect(packed_slice_le_shift.get(2) == 0b00000000000);
-        testing.expect(packed_slice_le_shift.get(3) == 0b00010000011);
+        try testing.expect(packed_slice_le_shift.get(0) == 0b00010000000);
+        try testing.expect(packed_slice_le_shift.get(1) == 0b00000000100);
+        try testing.expect(packed_slice_le_shift.get(2) == 0b00000000000);
+        try testing.expect(packed_slice_le_shift.get(3) == 0b00010000011);
     }
 }
 

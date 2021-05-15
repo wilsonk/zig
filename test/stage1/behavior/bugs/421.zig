@@ -1,12 +1,12 @@
-const assert = @import("std").debug.assert;
+const expect = @import("std").testing.expect;
 
 test "bitCast to array" {
-    comptime testBitCastArray();
-    testBitCastArray();
+    comptime try testBitCastArray();
+    try testBitCastArray();
 }
 
-fn testBitCastArray() void {
-    assert(extractOne64(0x0123456789abcdef0123456789abcdef) == 0x0123456789abcdef);
+fn testBitCastArray() !void {
+    try expect(extractOne64(0x0123456789abcdef0123456789abcdef) == 0x0123456789abcdef);
 }
 
 fn extractOne64(a: u128) u64 {

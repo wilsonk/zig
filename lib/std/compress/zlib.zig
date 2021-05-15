@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -109,17 +109,17 @@ fn testReader(data: []const u8, comptime expected: []const u8) !void {
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(buf, hash[0..], .{});
 
-    assertEqual(expected, &hash);
+    try assertEqual(expected, &hash);
 }
 
 // Assert `expected` == `input` where `input` is a bytestring.
-pub fn assertEqual(comptime expected: []const u8, input: []const u8) void {
+pub fn assertEqual(comptime expected: []const u8, input: []const u8) !void {
     var expected_bytes: [expected.len / 2]u8 = undefined;
     for (expected_bytes) |*r, i| {
         r.* = std.fmt.parseInt(u8, expected[2 * i .. 2 * i + 2], 16) catch unreachable;
     }
 
-    testing.expectEqualSlices(u8, &expected_bytes, input);
+    try testing.expectEqualSlices(u8, &expected_bytes, input);
 }
 
 // All the test cases are obtained by compressing the RFC1950 text
@@ -144,34 +144,47 @@ test "compressed data" {
     );
 }
 
+test "don't read past deflate stream's end" {
+    try testReader(
+        &[_]u8{
+            0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0xc0, 0x00, 0xc1, 0xff,
+            0xff, 0x43, 0x30, 0x03, 0x03, 0xc3, 0xff, 0xff, 0xff, 0x01,
+            0x83, 0x95, 0x0b, 0xf5,
+        },
+        // SHA256 of
+        // 00ff 0000 00ff 0000 00ff 00ff ffff 00ff ffff 0000 0000 ffff ff
+        "3bbba1cc65408445c81abb61f3d2b86b1b60ee0d70b4c05b96d1499091a08c93",
+    );
+}
+
 test "sanity checks" {
     // Truncated header
-    testing.expectError(
+    try testing.expectError(
         error.EndOfStream,
         testReader(&[_]u8{0x78}, ""),
     );
     // Failed FCHECK check
-    testing.expectError(
+    try testing.expectError(
         error.BadHeader,
         testReader(&[_]u8{ 0x78, 0x9D }, ""),
     );
     // Wrong CM
-    testing.expectError(
+    try testing.expectError(
         error.InvalidCompression,
         testReader(&[_]u8{ 0x79, 0x94 }, ""),
     );
     // Wrong CINFO
-    testing.expectError(
+    try testing.expectError(
         error.InvalidWindowSize,
         testReader(&[_]u8{ 0x88, 0x98 }, ""),
     );
     // Wrong checksum
-    testing.expectError(
+    try testing.expectError(
         error.WrongChecksum,
         testReader(&[_]u8{ 0x78, 0xda, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00 }, ""),
     );
     // Truncated checksum
-    testing.expectError(
+    try testing.expectError(
         error.EndOfStream,
         testReader(&[_]u8{ 0x78, 0xda, 0x03, 0x00, 0x00 }, ""),
     );

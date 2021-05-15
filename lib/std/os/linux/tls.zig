@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -53,8 +53,8 @@ const TLSVariant = enum {
 };
 
 const tls_variant = switch (builtin.arch) {
-    .arm, .armeb, .aarch64, .aarch64_be, .riscv32, .riscv64, .mips, .mipsel, .powerpc, .powerpc64, .powerpc64le => TLSVariant.VariantI,
-    .x86_64, .i386 => TLSVariant.VariantII,
+    .arm, .armeb, .thumb, .aarch64, .aarch64_be, .riscv32, .riscv64, .mips, .mipsel, .powerpc, .powerpc64, .powerpc64le => TLSVariant.VariantI,
+    .x86_64, .i386, .sparcv9 => TLSVariant.VariantII,
     else => @compileError("undefined tls_variant for this architecture"),
 };
 
@@ -62,14 +62,14 @@ const tls_variant = switch (builtin.arch) {
 const tls_tcb_size = switch (builtin.arch) {
     // ARM EABI mandates enough space for two pointers: the first one points to
     // the DTV while the second one is unspecified but reserved
-    .arm, .armeb, .aarch64, .aarch64_be => 2 * @sizeOf(usize),
+    .arm, .armeb, .thumb, .aarch64, .aarch64_be => 2 * @sizeOf(usize),
     // One pointer-sized word that points either to the DTV or the TCB itself
     else => @sizeOf(usize),
 };
 
 // Controls if the TP points to the end of the TCB instead of its beginning
 const tls_tp_points_past_tcb = switch (builtin.arch) {
-    .riscv32, .riscv64, .mips, .mipsel, .powerpc64, .powerpc64le => true,
+    .riscv32, .riscv64, .mips, .mipsel, .powerpc, .powerpc64, .powerpc64le => true,
     else => false,
 };
 
@@ -150,7 +150,7 @@ pub fn setThreadPointer(addr: usize) void {
                 : [addr] "r" (addr)
             );
         },
-        .arm => {
+        .arm, .thumb => {
             const rc = std.os.linux.syscall1(.set_tls, addr);
             assert(rc == 0);
         },
@@ -165,9 +165,23 @@ pub fn setThreadPointer(addr: usize) void {
             const rc = std.os.linux.syscall1(.set_thread_area, addr);
             assert(rc == 0);
         },
-        .powerpc, .powerpc64, .powerpc64le => {
+        .powerpc => {
+            asm volatile (
+                \\ mr 2, %[addr]
+                :
+                : [addr] "r" (addr)
+            );
+        },
+        .powerpc64, .powerpc64le => {
             asm volatile (
                 \\ mr 13, %[addr]
+                :
+                : [addr] "r" (addr)
+            );
+        },
+        .sparcv9 => {
+            asm volatile (
+                \\ mov %[addr], %%g7
                 :
                 : [addr] "r" (addr)
             );
@@ -234,7 +248,7 @@ fn initTLS() void {
         tls_data = @intToPtr([*]u8, img_base + phdr.p_vaddr)[0..phdr.p_filesz];
         tls_data_alloc_size = phdr.p_memsz;
     } else {
-        tls_align_factor = @alignOf(*usize);
+        tls_align_factor = @alignOf(usize);
         tls_data = &[_]u8{};
         tls_data_alloc_size = 0;
     }
@@ -293,8 +307,8 @@ fn initTLS() void {
     };
 }
 
-inline fn alignPtrCast(comptime T: type, ptr: [*]u8) *T {
-    return @ptrCast(*T, @alignCast(@alignOf(*T), ptr));
+fn alignPtrCast(comptime T: type, ptr: [*]u8) callconv(.Inline) *T {
+    return @ptrCast(*T, @alignCast(@alignOf(T), ptr));
 }
 
 /// Initializes all the fields of the static TLS area and returns the computed
@@ -320,32 +334,43 @@ pub fn prepareTLS(area: []u8) usize {
         if (tls_tp_points_past_tcb) tls_image.data_offset else tls_image.tcb_offset;
 }
 
-var main_thread_tls_buffer: [256]u8 = undefined;
+// The main motivation for the size chosen here is this is how much ends up being
+// requested for the thread local variables of the std.crypto.random implementation.
+// I'm not sure why it ends up being so much; the struct itself is only 64 bytes.
+// I think it has to do with being page aligned and LLVM or LLD is not smart enough
+// to lay out the TLS data in a space conserving way. Anyway I think it's fine
+// because it's less than 3 pages of memory, and putting it in the ELF like this
+// is equivalent to moving the mmap call below into the kernel, avoiding syscall
+// overhead.
+var main_thread_tls_buffer: [0x2100]u8 align(mem.page_size) = undefined;
 
 pub fn initStaticTLS() void {
     initTLS();
 
-    const alloc_tls_area: []u8 = blk: {
-        const full_alloc_size = tls_image.alloc_size + tls_image.alloc_align - 1;
-
+    const tls_area = blk: {
         // Fast path for the common case where the TLS data is really small,
-        // avoid an allocation and use our local buffer
-        if (full_alloc_size < main_thread_tls_buffer.len)
-            break :blk main_thread_tls_buffer[0..];
+        // avoid an allocation and use our local buffer.
+        if (tls_image.alloc_align <= mem.page_size and
+            tls_image.alloc_size <= main_thread_tls_buffer.len)
+        {
+            break :blk main_thread_tls_buffer[0..tls_image.alloc_size];
+        }
 
-        break :blk os.mmap(
+        const alloc_tls_area = os.mmap(
             null,
-            full_alloc_size,
+            tls_image.alloc_size + tls_image.alloc_align - 1,
             os.PROT_READ | os.PROT_WRITE,
             os.MAP_PRIVATE | os.MAP_ANONYMOUS,
             -1,
             0,
         ) catch os.abort();
-    };
 
-    // Make sure the slice is correctly aligned
-    const start = @ptrToInt(alloc_tls_area.ptr) & (tls_image.alloc_align - 1);
-    const tls_area = alloc_tls_area[start .. start + tls_image.alloc_size];
+        // Make sure the slice is correctly aligned.
+        const begin_addr = @ptrToInt(alloc_tls_area.ptr);
+        const begin_aligned_addr = mem.alignForward(begin_addr, tls_image.alloc_align);
+        const start = begin_aligned_addr - begin_addr;
+        break :blk alloc_tls_area[start .. start + tls_image.alloc_size];
+    };
 
     const tp_value = prepareTLS(tls_area);
     setThreadPointer(tp_value);

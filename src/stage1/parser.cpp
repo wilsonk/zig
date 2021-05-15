@@ -493,6 +493,33 @@ static AstNode *ast_parse_root(ParseContext *pc) {
     return node;
 }
 
+static Token *ast_parse_multiline_string_literal(ParseContext *pc, Buf *buf) {
+    Token *first_str_token = nullptr;
+    Token *str_token = nullptr;
+    while ((str_token = eat_token_if(pc, TokenIdMultilineStringLiteral))) {
+        if (first_str_token == nullptr) {
+            first_str_token = str_token;
+        }
+        if (buf->list.length == 0) {
+            buf_resize(buf, 0);
+        }
+        buf_append_buf(buf, token_buf(str_token));
+
+        // Ignore inline comments
+        size_t cur_token = pc->current_token;
+        while (eat_token_if(pc, TokenIdDocComment));
+
+        // Lookahead to see if there's another multilne string literal,
+        // if not, we have to revert back to before the doc comment
+        if (peek_token(pc)->id != TokenIdMultilineStringLiteral) {
+            pc->current_token = cur_token;
+        } else {
+            buf_append_char(buf, '\n'); // Add a newline between comments
+        }
+    }
+    return first_str_token;
+}
+
 static Token *ast_parse_doc_comments(ParseContext *pc, Buf *buf) {
     Token *first_doc_token = nullptr;
     Token *doc_token = nullptr;
@@ -605,7 +632,7 @@ static AstNodeContainerDecl ast_parse_container_members(ParseContext *pc) {
                 case ContainerFieldStateSeen:
                     break;
                 case ContainerFieldStateEnd:
-                    ast_error(pc, first_token, "declarations are not allowed between container fields");                    
+                    ast_error(pc, first_token, "declarations are not allowed between container fields");
             }
 
             assert(container_field->type == NodeTypeStructField);
@@ -631,10 +658,10 @@ static AstNode *ast_parse_test_decl(ParseContext *pc) {
     if (test == nullptr)
         return nullptr;
 
-    Token *name = expect_token(pc, TokenIdStringLiteral);
+    Token *name = eat_token_if(pc, TokenIdStringLiteral);
     AstNode *block = ast_expect(pc, ast_parse_block);
     AstNode *res = ast_create_node(pc, NodeTypeTestDecl, test);
-    res->data.test_decl.name = token_buf(name);
+    res->data.test_decl.name = name ? token_buf(name) : nullptr;
     res->data.test_decl.body = block;
     return res;
 }
@@ -667,15 +694,13 @@ static AstNode *ast_parse_top_level_decl(ParseContext *pc, VisibMod visib_mod, B
     if (first == nullptr)
         first = eat_token_if(pc, TokenIdKeywordExtern);
     if (first == nullptr)
-        first = eat_token_if(pc, TokenIdKeywordInline);
-    if (first == nullptr)
         first = eat_token_if(pc, TokenIdKeywordNoInline);
     if (first != nullptr) {
         Token *lib_name = nullptr;
         if (first->id == TokenIdKeywordExtern)
             lib_name = eat_token_if(pc, TokenIdStringLiteral);
 
-        if (first->id != TokenIdKeywordInline && first->id != TokenIdKeywordNoInline) {
+        if (first->id != TokenIdKeywordNoInline) {
             Token *thread_local_kw = eat_token_if(pc, TokenIdKeywordThreadLocal);
             AstNode *var_decl = ast_parse_var_decl(pc);
             if (var_decl != nullptr) {
@@ -712,17 +737,8 @@ static AstNode *ast_parse_top_level_decl(ParseContext *pc, VisibMod visib_mod, B
             if (!fn_proto->data.fn_proto.is_extern)
                 fn_proto->data.fn_proto.is_extern = first->id == TokenIdKeywordExtern;
             fn_proto->data.fn_proto.is_export = first->id == TokenIdKeywordExport;
-            switch (first->id) {
-                case TokenIdKeywordInline:
-                    fn_proto->data.fn_proto.fn_inline = FnInlineAlways;
-                    break;
-                case TokenIdKeywordNoInline:
-                    fn_proto->data.fn_proto.fn_inline = FnInlineNever;
-                    break;
-                default:
-                    fn_proto->data.fn_proto.fn_inline = FnInlineAuto;
-                    break;
-            }
+            if (first->id == TokenIdKeywordNoInline)
+                fn_proto->data.fn_proto.is_noinline = true;
             fn_proto->data.fn_proto.lib_name = token_buf(lib_name);
 
             AstNode *res = fn_proto;
@@ -804,12 +820,19 @@ static AstNode *ast_parse_fn_proto(ParseContext *pc) {
     AstNode *align_expr = ast_parse_byte_align(pc);
     AstNode *section_expr = ast_parse_link_section(pc);
     AstNode *callconv_expr = ast_parse_callconv(pc);
-    Token *anytype = eat_token_if(pc, TokenIdKeywordAnyType);
     Token *exmark = nullptr;
     AstNode *return_type = nullptr;
-    if (anytype == nullptr) {
-        exmark = eat_token_if(pc, TokenIdBang);
-        return_type = ast_expect(pc, ast_parse_type_expr);
+
+    exmark = eat_token_if(pc, TokenIdBang);
+    return_type = ast_parse_type_expr(pc);
+    if (return_type == nullptr) {
+        Token *next = peek_token(pc);
+        ast_error(
+            pc,
+            next,
+            "expected return type (use 'void' to return nothing), found: '%s'",
+            token_name(next->id)
+        );
     }
 
     AstNode *res = ast_create_node(pc, NodeTypeFnProto, first);
@@ -819,7 +842,6 @@ static AstNode *ast_parse_fn_proto(ParseContext *pc) {
     res->data.fn_proto.align_expr = align_expr;
     res->data.fn_proto.section_expr = section_expr;
     res->data.fn_proto.callconv_expr = callconv_expr;
-    res->data.fn_proto.return_anytype_token = anytype;
     res->data.fn_proto.auto_err_set = exmark != nullptr;
     res->data.fn_proto.return_type = return_type;
 
@@ -930,10 +952,7 @@ static AstNode *ast_parse_statement(ParseContext *pc) {
 
     Token *suspend = eat_token_if(pc, TokenIdKeywordSuspend);
     if (suspend != nullptr) {
-        AstNode *statement = nullptr;
-        if (eat_token_if(pc, TokenIdSemicolon) == nullptr)
-            statement = ast_expect(pc, ast_parse_block_expr_statement);
-
+        AstNode *statement = ast_expect(pc, ast_parse_block_expr_statement);
         AstNode *res = ast_create_node(pc, NodeTypeSuspend, suspend);
         res->data.suspend.block = statement;
         return res;
@@ -1625,18 +1644,21 @@ static AstNode *ast_parse_primary_type_expr(ParseContext *pc) {
     // TODO: This is not in line with the grammar.
     //       Because the prev stage 1 tokenizer does not parse
     //       @[a-zA-Z_][a-zA-Z0-9_] as one token, it has to do a
-    //       hack, where it accepts '@' (IDENTIFIER / KEYWORD_export).
+    //       hack, where it accepts '@' (IDENTIFIER / KEYWORD_export /
+    //       KEYWORD_extern).
     //       I'd say that it's better if '@' is part of the builtin
     //       identifier token.
     Token *at_sign = eat_token_if(pc, TokenIdAtSign);
     if (at_sign != nullptr) {
         Buf *name;
-        Token *token = eat_token_if(pc, TokenIdKeywordExport);
-        if (token == nullptr) {
+        Token *token;
+        if ((token = eat_token_if(pc, TokenIdKeywordExport)) != nullptr) {
+            name = buf_create_from_str("export");
+        } else if ((token = eat_token_if(pc, TokenIdKeywordExtern)) != nullptr) {
+            name = buf_create_from_str("extern");
+        } else {
             token = expect_token(pc, TokenIdSymbol);
             name = token_buf(token);
-        } else {
-            name = buf_create_from_str("export");
         }
 
         AstNode *res = ast_expect(pc, ast_parse_fn_call_arguments);
@@ -1754,12 +1776,21 @@ static AstNode *ast_parse_primary_type_expr(ParseContext *pc) {
     if (unreachable != nullptr)
         return ast_create_node(pc, NodeTypeUnreachable, unreachable);
 
+
+    Buf *string_buf;
     Token *string_lit = eat_token_if(pc, TokenIdStringLiteral);
-    if (string_lit == nullptr)
-        string_lit = eat_token_if(pc, TokenIdMultilineStringLiteral);
+    if (string_lit != nullptr) {
+      string_buf = token_buf(string_lit);
+    } else {
+        Buf multiline_string_buf = BUF_INIT;
+        string_lit = ast_parse_multiline_string_literal(pc, &multiline_string_buf);
+        if (string_lit != nullptr) {
+            string_buf = buf_create_from_buf(&multiline_string_buf);
+        }
+    }
     if (string_lit != nullptr) {
         AstNode *res = ast_create_node(pc, NodeTypeStringLiteral, string_lit);
-        res->data.string_literal.buf = token_buf(string_lit);
+        res->data.string_literal.buf = string_buf;
         return res;
     }
 
@@ -2421,7 +2452,6 @@ static AstNode *ast_parse_assign_op(ParseContext *pc) {
     // In C, we have `T arr[N] = {[i] = T{}};` but it doesn't
     // seem to work in C++...
     BinOpType table[TokenIdCount] = {};
-    table[TokenIdBarBarEq] = BinOpTypeAssignMergeErrorSets;
     table[TokenIdBitAndEq] = BinOpTypeAssignBitAnd;
     table[TokenIdBitOrEq] = BinOpTypeAssignBitOr;
     table[TokenIdBitShiftLeftEq] = BinOpTypeAssignBitShiftLeft;

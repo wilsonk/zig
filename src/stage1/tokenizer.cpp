@@ -208,7 +208,6 @@ enum TokenizeState {
     TokenizeStateSawAmpersand,
     TokenizeStateSawCaret,
     TokenizeStateSawBar,
-    TokenizeStateSawBarBar,
     TokenizeStateDocComment,
     TokenizeStateContainerDocComment,
     TokenizeStateLineComment,
@@ -223,6 +222,7 @@ enum TokenizeState {
     TokenizeStateSawGreaterThanGreaterThan,
     TokenizeStateSawDot,
     TokenizeStateSawDotDot,
+    TokenizeStateSawDotStar,
     TokenizeStateSawAtSign,
     TokenizeStateCharCode,
     TokenizeStateError,
@@ -566,9 +566,8 @@ void tokenize(Buf *buf, Tokenization *out) {
                         set_token_id(&t, t.cur_tok, TokenIdEllipsis2);
                         break;
                     case '*':
-                        t.state = TokenizeStateStart;
+                        t.state = TokenizeStateSawDotStar;
                         set_token_id(&t, t.cur_tok, TokenIdDotStar);
-                        end_token(&t);
                         break;
                     default:
                         t.pos -= 1;
@@ -583,6 +582,18 @@ void tokenize(Buf *buf, Tokenization *out) {
                         t.state = TokenizeStateStart;
                         set_token_id(&t, t.cur_tok, TokenIdEllipsis3);
                         end_token(&t);
+                        break;
+                    default:
+                        t.pos -= 1;
+                        end_token(&t);
+                        t.state = TokenizeStateStart;
+                        continue;
+                }
+                break;
+            case TokenizeStateSawDotStar:
+                switch (c) {
+                    case '*':
+                        tokenize_error(&t, "`.*` can't be followed by `*`. Are you missing a space?");
                         break;
                     default:
                         t.pos -= 1;
@@ -821,19 +832,6 @@ void tokenize(Buf *buf, Tokenization *out) {
                         break;
                     case '|':
                         set_token_id(&t, t.cur_tok, TokenIdBarBar);
-                        t.state = TokenizeStateSawBarBar;
-                        break;
-                    default:
-                        t.pos -= 1;
-                        end_token(&t);
-                        t.state = TokenizeStateStart;
-                        continue;
-                }
-                break;
-            case TokenizeStateSawBarBar:
-                switch (c) {
-                    case '=':
-                        set_token_id(&t, t.cur_tok, TokenIdBarBarEq);
                         end_token(&t);
                         t.state = TokenizeStateStart;
                         break;
@@ -1449,7 +1447,7 @@ void tokenize(Buf *buf, Tokenization *out) {
                 tokenize_error(&t, "unterminated string");
                 break;
             } else if (t.cur_tok->id == TokenIdCharLiteral) {
-                tokenize_error(&t, "unterminated character literal");
+                tokenize_error(&t, "unterminated Unicode code point literal");
                 break;
             } else {
                 zig_unreachable();
@@ -1458,7 +1456,7 @@ void tokenize(Buf *buf, Tokenization *out) {
         case TokenizeStateCharLiteral:
         case TokenizeStateCharLiteralEnd:
         case TokenizeStateCharLiteralUnicode:
-            tokenize_error(&t, "unterminated character literal");
+            tokenize_error(&t, "unterminated Unicode code point literal");
             break;
         case TokenizeStateSymbol:
         case TokenizeStateZero:
@@ -1481,13 +1479,13 @@ void tokenize(Buf *buf, Tokenization *out) {
         case TokenizeStateSawGreaterThan:
         case TokenizeStateSawGreaterThanGreaterThan:
         case TokenizeStateSawDot:
+        case TokenizeStateSawDotStar:
         case TokenizeStateSawAtSign:
         case TokenizeStateSawStarPercent:
         case TokenizeStateSawPlusPercent:
         case TokenizeStateSawMinusPercent:
         case TokenizeStateLineString:
         case TokenizeStateLineStringEnd:
-        case TokenizeStateSawBarBar:
         case TokenizeStateDocComment:
         case TokenizeStateContainerDocComment:
             end_token(&t);
@@ -1646,7 +1644,6 @@ const char * token_name(TokenId id) {
         case TokenIdTimesEq: return "*=";
         case TokenIdTimesPercent: return "*%";
         case TokenIdTimesPercentEq: return "*%=";
-        case TokenIdBarBarEq: return "||=";
         case TokenIdCount:
             zig_unreachable();
     }

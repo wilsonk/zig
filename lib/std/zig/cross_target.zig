@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -111,11 +111,11 @@ pub const CrossTarget = struct {
             .kfreebsd,
             .lv2,
             .solaris,
+            .zos,
             .haiku,
             .minix,
             .rtems,
             .nacl,
-            .cnk,
             .aix,
             .cuda,
             .nvcl,
@@ -130,6 +130,9 @@ pub const CrossTarget = struct {
             .wasi,
             .emscripten,
             .uefi,
+            .opencl,
+            .glsl450,
+            .vulkan,
             .other,
             => {
                 self.os_version_min = .{ .none = {} };
@@ -500,8 +503,12 @@ pub const CrossTarget = struct {
             self.dynamic_linker.get() == null and self.glibc_version == null;
     }
 
+    pub fn isNativeAbi(self: CrossTarget) bool {
+        return self.os_tag == null and self.abi == null;
+    }
+
     pub fn isNative(self: CrossTarget) bool {
-        return self.isNativeCpu() and self.isNativeOs() and self.abi == null;
+        return self.isNativeCpu() and self.isNativeOs() and self.isNativeAbi();
     }
 
     pub fn zigTriple(self: CrossTarget, allocator: *mem.Allocator) error{OutOfMemory}![]u8 {
@@ -515,29 +522,29 @@ pub const CrossTarget = struct {
         var result = std.ArrayList(u8).init(allocator);
         defer result.deinit();
 
-        try result.outStream().print("{}-{}", .{ arch_name, os_name });
+        try result.writer().print("{s}-{s}", .{ arch_name, os_name });
 
         // The zig target syntax does not allow specifying a max os version with no min, so
         // if either are present, we need the min.
         if (self.os_version_min != null or self.os_version_max != null) {
             switch (self.getOsVersionMin()) {
                 .none => {},
-                .semver => |v| try result.outStream().print(".{}", .{v}),
-                .windows => |v| try result.outStream().print("{s}", .{v}),
+                .semver => |v| try result.writer().print(".{}", .{v}),
+                .windows => |v| try result.writer().print("{s}", .{v}),
             }
         }
         if (self.os_version_max) |max| {
             switch (max) {
                 .none => {},
-                .semver => |v| try result.outStream().print("...{}", .{v}),
-                .windows => |v| try result.outStream().print("..{s}", .{v}),
+                .semver => |v| try result.writer().print("...{}", .{v}),
+                .windows => |v| try result.writer().print("..{s}", .{v}),
             }
         }
 
         if (self.glibc_version) |v| {
-            try result.outStream().print("-{}.{}", .{ @tagName(self.getAbi()), v });
+            try result.writer().print("-{s}.{}", .{ @tagName(self.getAbi()), v });
         } else if (self.abi) |abi| {
-            try result.outStream().print("-{}", .{@tagName(abi)});
+            try result.writer().print("-{s}", .{@tagName(abi)});
         }
 
         return result.toOwnedSlice();
@@ -591,7 +598,7 @@ pub const CrossTarget = struct {
             .Dynamic => "",
         };
 
-        return std.fmt.allocPrint(allocator, "{}-{}{}", .{ arch, os, static_suffix });
+        return std.fmt.allocPrint(allocator, "{s}-{s}{s}", .{ arch, os, static_suffix });
     }
 
     pub const Executor = union(enum) {
@@ -599,6 +606,7 @@ pub const CrossTarget = struct {
         qemu: []const u8,
         wine: []const u8,
         wasmtime: []const u8,
+        darling: []const u8,
         unavailable,
     };
 
@@ -660,6 +668,15 @@ pub const CrossTarget = struct {
                 32 => return Executor{ .wasmtime = "wasmtime" },
                 else => return .unavailable,
             },
+            .macos => {
+                // TODO loosen this check once upstream adds QEMU-based emulation
+                // layer for non-host architectures:
+                // https://github.com/darlinghq/darling/issues/863
+                if (cpu_arch != Target.current.cpu.arch) {
+                    return .unavailable;
+                }
+                return Executor{ .darling = "darling" };
+            },
             else => return .unavailable,
         }
     }
@@ -707,11 +724,11 @@ pub const CrossTarget = struct {
             .kfreebsd,
             .lv2,
             .solaris,
+            .zos,
             .haiku,
             .minix,
             .rtems,
             .nacl,
-            .cnk,
             .aix,
             .cuda,
             .nvcl,
@@ -726,6 +743,9 @@ pub const CrossTarget = struct {
             .wasi,
             .emscripten,
             .uefi,
+            .opencl,
+            .glsl450,
+            .vulkan,
             .other,
             => return error.InvalidOperatingSystemVersion,
 
@@ -786,11 +806,11 @@ test "CrossTarget.parse" {
         var buf: [256]u8 = undefined;
         const triple = std.fmt.bufPrint(
             buf[0..],
-            "native-native-{}.2.1.1",
+            "native-native-{s}.2.1.1",
             .{@tagName(std.Target.current.abi)},
         ) catch unreachable;
 
-        std.testing.expectEqualSlices(u8, triple, text);
+        try std.testing.expectEqualSlices(u8, triple, text);
     }
     {
         const cross_target = try CrossTarget.parse(.{
@@ -798,18 +818,18 @@ test "CrossTarget.parse" {
             .cpu_features = "native",
         });
 
-        std.testing.expect(cross_target.cpu_arch.? == .aarch64);
-        std.testing.expect(cross_target.cpu_model == .native);
+        try std.testing.expect(cross_target.cpu_arch.? == .aarch64);
+        try std.testing.expect(cross_target.cpu_model == .native);
     }
     {
         const cross_target = try CrossTarget.parse(.{ .arch_os_abi = "native" });
 
-        std.testing.expect(cross_target.cpu_arch == null);
-        std.testing.expect(cross_target.isNative());
+        try std.testing.expect(cross_target.cpu_arch == null);
+        try std.testing.expect(cross_target.isNative());
 
         const text = try cross_target.zigTriple(std.testing.allocator);
         defer std.testing.allocator.free(text);
-        std.testing.expectEqualSlices(u8, "native", text);
+        try std.testing.expectEqualSlices(u8, "native", text);
     }
     {
         const cross_target = try CrossTarget.parse(.{
@@ -818,23 +838,23 @@ test "CrossTarget.parse" {
         });
         const target = cross_target.toTarget();
 
-        std.testing.expect(target.os.tag == .linux);
-        std.testing.expect(target.abi == .gnu);
-        std.testing.expect(target.cpu.arch == .x86_64);
-        std.testing.expect(!Target.x86.featureSetHas(target.cpu.features, .sse));
-        std.testing.expect(!Target.x86.featureSetHas(target.cpu.features, .avx));
-        std.testing.expect(!Target.x86.featureSetHas(target.cpu.features, .cx8));
-        std.testing.expect(Target.x86.featureSetHas(target.cpu.features, .cmov));
-        std.testing.expect(Target.x86.featureSetHas(target.cpu.features, .fxsr));
+        try std.testing.expect(target.os.tag == .linux);
+        try std.testing.expect(target.abi == .gnu);
+        try std.testing.expect(target.cpu.arch == .x86_64);
+        try std.testing.expect(!Target.x86.featureSetHas(target.cpu.features, .sse));
+        try std.testing.expect(!Target.x86.featureSetHas(target.cpu.features, .avx));
+        try std.testing.expect(!Target.x86.featureSetHas(target.cpu.features, .cx8));
+        try std.testing.expect(Target.x86.featureSetHas(target.cpu.features, .cmov));
+        try std.testing.expect(Target.x86.featureSetHas(target.cpu.features, .fxsr));
 
-        std.testing.expect(Target.x86.featureSetHasAny(target.cpu.features, .{ .sse, .avx, .cmov }));
-        std.testing.expect(!Target.x86.featureSetHasAny(target.cpu.features, .{ .sse, .avx }));
-        std.testing.expect(Target.x86.featureSetHasAll(target.cpu.features, .{ .mmx, .x87 }));
-        std.testing.expect(!Target.x86.featureSetHasAll(target.cpu.features, .{ .mmx, .x87, .sse }));
+        try std.testing.expect(Target.x86.featureSetHasAny(target.cpu.features, .{ .sse, .avx, .cmov }));
+        try std.testing.expect(!Target.x86.featureSetHasAny(target.cpu.features, .{ .sse, .avx }));
+        try std.testing.expect(Target.x86.featureSetHasAll(target.cpu.features, .{ .mmx, .x87 }));
+        try std.testing.expect(!Target.x86.featureSetHasAll(target.cpu.features, .{ .mmx, .x87, .sse }));
 
         const text = try cross_target.zigTriple(std.testing.allocator);
         defer std.testing.allocator.free(text);
-        std.testing.expectEqualSlices(u8, "x86_64-linux-gnu", text);
+        try std.testing.expectEqualSlices(u8, "x86_64-linux-gnu", text);
     }
     {
         const cross_target = try CrossTarget.parse(.{
@@ -843,15 +863,15 @@ test "CrossTarget.parse" {
         });
         const target = cross_target.toTarget();
 
-        std.testing.expect(target.os.tag == .linux);
-        std.testing.expect(target.abi == .musleabihf);
-        std.testing.expect(target.cpu.arch == .arm);
-        std.testing.expect(target.cpu.model == &Target.arm.cpu.generic);
-        std.testing.expect(Target.arm.featureSetHas(target.cpu.features, .v8a));
+        try std.testing.expect(target.os.tag == .linux);
+        try std.testing.expect(target.abi == .musleabihf);
+        try std.testing.expect(target.cpu.arch == .arm);
+        try std.testing.expect(target.cpu.model == &Target.arm.cpu.generic);
+        try std.testing.expect(Target.arm.featureSetHas(target.cpu.features, .v8a));
 
         const text = try cross_target.zigTriple(std.testing.allocator);
         defer std.testing.allocator.free(text);
-        std.testing.expectEqualSlices(u8, "arm-linux-musleabihf", text);
+        try std.testing.expectEqualSlices(u8, "arm-linux-musleabihf", text);
     }
     {
         const cross_target = try CrossTarget.parse(.{
@@ -860,21 +880,21 @@ test "CrossTarget.parse" {
         });
         const target = cross_target.toTarget();
 
-        std.testing.expect(target.cpu.arch == .aarch64);
-        std.testing.expect(target.os.tag == .linux);
-        std.testing.expect(target.os.version_range.linux.range.min.major == 3);
-        std.testing.expect(target.os.version_range.linux.range.min.minor == 10);
-        std.testing.expect(target.os.version_range.linux.range.min.patch == 0);
-        std.testing.expect(target.os.version_range.linux.range.max.major == 4);
-        std.testing.expect(target.os.version_range.linux.range.max.minor == 4);
-        std.testing.expect(target.os.version_range.linux.range.max.patch == 1);
-        std.testing.expect(target.os.version_range.linux.glibc.major == 2);
-        std.testing.expect(target.os.version_range.linux.glibc.minor == 27);
-        std.testing.expect(target.os.version_range.linux.glibc.patch == 0);
-        std.testing.expect(target.abi == .gnu);
+        try std.testing.expect(target.cpu.arch == .aarch64);
+        try std.testing.expect(target.os.tag == .linux);
+        try std.testing.expect(target.os.version_range.linux.range.min.major == 3);
+        try std.testing.expect(target.os.version_range.linux.range.min.minor == 10);
+        try std.testing.expect(target.os.version_range.linux.range.min.patch == 0);
+        try std.testing.expect(target.os.version_range.linux.range.max.major == 4);
+        try std.testing.expect(target.os.version_range.linux.range.max.minor == 4);
+        try std.testing.expect(target.os.version_range.linux.range.max.patch == 1);
+        try std.testing.expect(target.os.version_range.linux.glibc.major == 2);
+        try std.testing.expect(target.os.version_range.linux.glibc.minor == 27);
+        try std.testing.expect(target.os.version_range.linux.glibc.patch == 0);
+        try std.testing.expect(target.abi == .gnu);
 
         const text = try cross_target.zigTriple(std.testing.allocator);
         defer std.testing.allocator.free(text);
-        std.testing.expectEqualSlices(u8, "aarch64-linux.3.10...4.4.1-gnu.2.27", text);
+        try std.testing.expectEqualSlices(u8, "aarch64-linux.3.10...4.4.1-gnu.2.27", text);
     }
 }

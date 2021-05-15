@@ -35,7 +35,73 @@ pub const Condition = enum(u4) {
     le,
     /// always
     al,
+
+    /// Converts a std.math.CompareOperator into a condition flag,
+    /// i.e. returns the condition that is true iff the result of the
+    /// comparison is true. Assumes signed comparison
+    pub fn fromCompareOperatorSigned(op: std.math.CompareOperator) Condition {
+        return switch (op) {
+            .gte => .ge,
+            .gt => .gt,
+            .neq => .ne,
+            .lt => .lt,
+            .lte => .le,
+            .eq => .eq,
+        };
+    }
+
+    /// Converts a std.math.CompareOperator into a condition flag,
+    /// i.e. returns the condition that is true iff the result of the
+    /// comparison is true. Assumes unsigned comparison
+    pub fn fromCompareOperatorUnsigned(op: std.math.CompareOperator) Condition {
+        return switch (op) {
+            .gte => .cs,
+            .gt => .hi,
+            .neq => .ne,
+            .lt => .cc,
+            .lte => .ls,
+            .eq => .eq,
+        };
+    }
+
+    /// Returns the condition which is true iff the given condition is
+    /// false (if such a condition exists)
+    pub fn negate(cond: Condition) Condition {
+        return switch (cond) {
+            .eq => .ne,
+            .ne => .eq,
+            .cs => .cc,
+            .cc => .cs,
+            .mi => .pl,
+            .pl => .mi,
+            .vs => .vc,
+            .vc => .vs,
+            .hi => .ls,
+            .ls => .hi,
+            .ge => .lt,
+            .lt => .ge,
+            .gt => .le,
+            .le => .gt,
+            .al => unreachable,
+        };
+    }
 };
+
+test "condition from CompareOperator" {
+    try testing.expectEqual(@as(Condition, .eq), Condition.fromCompareOperatorSigned(.eq));
+    try testing.expectEqual(@as(Condition, .eq), Condition.fromCompareOperatorUnsigned(.eq));
+
+    try testing.expectEqual(@as(Condition, .gt), Condition.fromCompareOperatorSigned(.gt));
+    try testing.expectEqual(@as(Condition, .hi), Condition.fromCompareOperatorUnsigned(.gt));
+
+    try testing.expectEqual(@as(Condition, .le), Condition.fromCompareOperatorSigned(.lte));
+    try testing.expectEqual(@as(Condition, .ls), Condition.fromCompareOperatorUnsigned(.lte));
+}
+
+test "negate condition" {
+    try testing.expectEqual(@as(Condition, .eq), Condition.ne.negate());
+    try testing.expectEqual(@as(Condition, .ne), Condition.eq.negate());
+}
 
 /// Represents a register in the ARM instruction set architecture
 pub const Register = enum(u5) {
@@ -109,8 +175,8 @@ pub const Register = enum(u5) {
 };
 
 test "Register.id" {
-    testing.expectEqual(@as(u4, 15), Register.r15.id());
-    testing.expectEqual(@as(u4, 15), Register.pc.id());
+    try testing.expectEqual(@as(u4, 15), Register.r15.id());
+    try testing.expectEqual(@as(u4, 15), Register.pc.id());
 }
 
 /// Program status registers containing flags, mode bits and other
@@ -120,7 +186,7 @@ pub const Psr = enum {
     spsr,
 };
 
-pub const callee_preserved_regs = [_]Register{ .r0, .r1, .r2, .r3, .r4, .r5, .r6, .r7, .r8, .r10 };
+pub const callee_preserved_regs = [_]Register{ .r4, .r5, .r6, .r7, .r8, .r10 };
 pub const c_abi_int_param_regs = [_]Register{ .r0, .r1, .r2, .r3 };
 pub const c_abi_int_return_regs = [_]Register{ .r0, .r1 };
 
@@ -138,6 +204,29 @@ pub const Instruction = union(enum) {
         fixed: u2 = 0b00,
         cond: u4,
     },
+    Multiply: packed struct {
+        rn: u4,
+        fixed_1: u4 = 0b1001,
+        rm: u4,
+        ra: u4,
+        rd: u4,
+        set_cond: u1,
+        accumulate: u1,
+        fixed_2: u6 = 0b000000,
+        cond: u4,
+    },
+    MultiplyLong: packed struct {
+        rn: u4,
+        fixed_1: u4 = 0b1001,
+        rm: u4,
+        rdlo: u4,
+        rdhi: u4,
+        set_cond: u1,
+        accumulate: u1,
+        unsigned: u1,
+        fixed_2: u5 = 0b00001,
+        cond: u4,
+    },
     SingleDataTransfer: packed struct {
         offset: u12,
         rd: u4,
@@ -149,6 +238,22 @@ pub const Instruction = union(enum) {
         pre_post: u1,
         imm: u1,
         fixed: u2 = 0b01,
+        cond: u4,
+    },
+    ExtraLoadStore: packed struct {
+        imm4l: u4,
+        fixed_1: u1 = 0b1,
+        op2: u2,
+        fixed_2: u1 = 0b1,
+        imm4h: u4,
+        rt: u4,
+        rn: u4,
+        o1: u1,
+        write_back: u1,
+        imm: u1,
+        up_down: u1,
+        pre_index: u1,
+        fixed_3: u3 = 0b000,
         cond: u4,
     },
     BlockDataTransfer: packed struct {
@@ -317,6 +422,29 @@ pub const Instruction = union(enum) {
                 },
             };
         }
+
+        /// Tries to convert an unsigned 32 bit integer into an
+        /// immediate operand using rotation. Returns null when there
+        /// is no conversion
+        pub fn fromU32(x: u32) ?Operand {
+            const masks = comptime blk: {
+                const base_mask: u32 = std.math.maxInt(u8);
+                var result = [_]u32{0} ** 16;
+                for (result) |*mask, i| mask.* = std.math.rotr(u32, base_mask, 2 * i);
+                break :blk result;
+            };
+
+            return for (masks) |mask, i| {
+                if (x & mask == x) {
+                    break Operand{
+                        .Immediate = .{
+                            .imm = @intCast(u8, std.math.rotl(u32, x, 2 * i)),
+                            .rotate = @intCast(u4, i),
+                        },
+                    };
+                }
+            } else null;
+        }
     };
 
     /// Represents the offset operand of a load or store
@@ -349,9 +477,32 @@ pub const Instruction = union(enum) {
             };
         }
 
-        pub fn imm(immediate: u8) Offset {
+        pub fn imm(immediate: u12) Offset {
             return Offset{
                 .Immediate = immediate,
+            };
+        }
+    };
+
+    /// Represents the offset operand of an extra load or store
+    /// instruction.
+    pub const ExtraLoadStoreOffset = union(enum) {
+        immediate: u8,
+        register: u4,
+
+        pub const none = ExtraLoadStoreOffset{
+            .immediate = 0,
+        };
+
+        pub fn reg(register: Register) ExtraLoadStoreOffset {
+            return ExtraLoadStoreOffset{
+                .register = register.id(),
+            };
+        }
+
+        pub fn imm(immediate: u8) ExtraLoadStoreOffset {
+            return ExtraLoadStoreOffset{
+                .immediate = immediate,
             };
         }
     };
@@ -380,7 +531,10 @@ pub const Instruction = union(enum) {
     pub fn toU32(self: Instruction) u32 {
         return switch (self) {
             .DataProcessing => |v| @bitCast(u32, v),
+            .Multiply => |v| @bitCast(u32, v),
+            .MultiplyLong => |v| @bitCast(u32, v),
             .SingleDataTransfer => |v| @bitCast(u32, v),
+            .ExtraLoadStore => |v| @bitCast(u32, v),
             .BlockDataTransfer => |v| @bitCast(u32, v),
             .Branch => |v| @bitCast(u32, v),
             .BranchExchange => |v| @bitCast(u32, v),
@@ -412,6 +566,70 @@ pub const Instruction = union(enum) {
         };
     }
 
+    fn specialMov(
+        cond: Condition,
+        rd: Register,
+        imm: u16,
+        top: bool,
+    ) Instruction {
+        return Instruction{
+            .DataProcessing = .{
+                .cond = @enumToInt(cond),
+                .i = 1,
+                .opcode = if (top) 0b1010 else 0b1000,
+                .s = 0,
+                .rn = @truncate(u4, imm >> 12),
+                .rd = rd.id(),
+                .op2 = @truncate(u12, imm),
+            },
+        };
+    }
+
+    fn multiply(
+        cond: Condition,
+        set_cond: u1,
+        rd: Register,
+        rn: Register,
+        rm: Register,
+        ra: ?Register,
+    ) Instruction {
+        return Instruction{
+            .Multiply = .{
+                .cond = @enumToInt(cond),
+                .accumulate = @boolToInt(ra != null),
+                .set_cond = set_cond,
+                .rd = rd.id(),
+                .rn = rn.id(),
+                .ra = if (ra) |reg| reg.id() else 0b0000,
+                .rm = rm.id(),
+            },
+        };
+    }
+
+    fn multiplyLong(
+        cond: Condition,
+        signed: u1,
+        accumulate: u1,
+        set_cond: u1,
+        rdhi: Register,
+        rdlo: Register,
+        rm: Register,
+        rn: Register,
+    ) Instruction {
+        return Instruction{
+            .MultiplyLong = .{
+                .cond = @enumToInt(cond),
+                .unsigned = signed,
+                .accumulate = accumulate,
+                .set_cond = set_cond,
+                .rdlo = rdlo.id(),
+                .rdhi = rdhi.id(),
+                .rn = rn.id(),
+                .rm = rm.id(),
+            },
+        };
+    }
+
     fn singleDataTransfer(
         cond: Condition,
         rd: Register,
@@ -435,6 +653,43 @@ pub const Instruction = union(enum) {
                 .up_down = @boolToInt(positive),
                 .pre_post = @boolToInt(pre_index),
                 .imm = @boolToInt(offset != .Immediate),
+            },
+        };
+    }
+
+    fn extraLoadStore(
+        cond: Condition,
+        pre_index: bool,
+        positive: bool,
+        write_back: bool,
+        o1: u1,
+        op2: u2,
+        rn: Register,
+        rt: Register,
+        offset: ExtraLoadStoreOffset,
+    ) Instruction {
+        const imm4l: u4 = switch (offset) {
+            .immediate => |imm| @truncate(u4, imm),
+            .register => |reg| reg,
+        };
+        const imm4h: u4 = switch (offset) {
+            .immediate => |imm| @truncate(u4, imm >> 4),
+            .register => |reg| 0b0000,
+        };
+
+        return Instruction{
+            .ExtraLoadStore = .{
+                .imm4l = imm4l,
+                .op2 = op2,
+                .imm4h = imm4h,
+                .rt = rt.id(),
+                .rn = rn.id(),
+                .o1 = o1,
+                .write_back = @boolToInt(write_back),
+                .imm = @boolToInt(offset == .immediate),
+                .up_down = @boolToInt(positive),
+                .pre_index = @boolToInt(pre_index),
+                .cond = @enumToInt(cond),
             },
         };
     }
@@ -463,12 +718,12 @@ pub const Instruction = union(enum) {
         };
     }
 
-    fn branch(cond: Condition, offset: i24, link: u1) Instruction {
+    fn branch(cond: Condition, offset: i26, link: u1) Instruction {
         return Instruction{
             .Branch = .{
                 .cond = @enumToInt(cond),
                 .link = link,
-                .offset = @bitCast(u24, offset),
+                .offset = @bitCast(u24, @intCast(i24, offset >> 2)),
             },
         };
     }
@@ -618,10 +873,96 @@ pub const Instruction = union(enum) {
         return dataProcessing(cond, .mvn, 1, rd, .r0, op2);
     }
 
+    // movw and movt
+
+    pub fn movw(cond: Condition, rd: Register, imm: u16) Instruction {
+        return specialMov(cond, rd, imm, false);
+    }
+
+    pub fn movt(cond: Condition, rd: Register, imm: u16) Instruction {
+        return specialMov(cond, rd, imm, true);
+    }
+
     // PSR transfer
 
     pub fn mrs(cond: Condition, rd: Register, psr: Psr) Instruction {
-        return dataProcessing(cond, if (psr == .cpsr) .tst else .cmp, 0, rd, .r15, Operand.reg(.r0, Operand.Shift.none));
+        return Instruction{
+            .DataProcessing = .{
+                .cond = @enumToInt(cond),
+                .i = 0,
+                .opcode = if (psr == .spsr) 0b1010 else 0b1000,
+                .s = 0,
+                .rn = 0b1111,
+                .rd = rd.id(),
+                .op2 = 0b0000_0000_0000,
+            },
+        };
+    }
+
+    pub fn msr(cond: Condition, psr: Psr, op: Operand) Instruction {
+        return Instruction{
+            .DataProcessing = .{
+                .cond = @enumToInt(cond),
+                .i = 0,
+                .opcode = if (psr == .spsr) 0b1011 else 0b1001,
+                .s = 0,
+                .rn = 0b1111,
+                .rd = 0b1111,
+                .op2 = op.toU12(),
+            },
+        };
+    }
+
+    // Multiply
+
+    pub fn mul(cond: Condition, rd: Register, rn: Register, rm: Register) Instruction {
+        return multiply(cond, 0, rd, rn, rm, null);
+    }
+
+    pub fn muls(cond: Condition, rd: Register, rn: Register, rm: Register) Instruction {
+        return multiply(cond, 1, rd, rn, rm, null);
+    }
+
+    pub fn mla(cond: Condition, rd: Register, rn: Register, rm: Register, ra: Register) Instruction {
+        return multiply(cond, 0, rd, rn, rm, ra);
+    }
+
+    pub fn mlas(cond: Condition, rd: Register, rn: Register, rm: Register, ra: Register) Instruction {
+        return multiply(cond, 1, rd, rn, rm, ra);
+    }
+
+    // Multiply long
+
+    pub fn umull(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 0, 0, 0, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn umulls(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 0, 0, 1, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn umlal(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 0, 1, 0, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn umlals(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 0, 1, 1, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn smull(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 1, 0, 0, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn smulls(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 1, 0, 1, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn smlal(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 1, 1, 0, rdhi, rdlo, rm, rn);
+    }
+
+    pub fn smlals(cond: Condition, rdlo: Register, rdhi: Register, rn: Register, rm: Register) Instruction {
+        return multiplyLong(cond, 1, 1, 1, rdhi, rdlo, rm, rn);
     }
 
     // Single data transfer
@@ -647,6 +988,23 @@ pub const Instruction = union(enum) {
 
     pub fn strb(cond: Condition, rd: Register, rn: Register, args: OffsetArgs) Instruction {
         return singleDataTransfer(cond, rd, rn, args.offset, args.pre_index, args.positive, 1, args.write_back, 0);
+    }
+
+    // Extra load/store
+
+    pub const ExtraLoadStoreOffsetArgs = struct {
+        pre_index: bool = true,
+        positive: bool = true,
+        offset: ExtraLoadStoreOffset,
+        write_back: bool = false,
+    };
+
+    pub fn strh(cond: Condition, rt: Register, rn: Register, args: ExtraLoadStoreOffsetArgs) Instruction {
+        return extraLoadStore(cond, args.pre_index, args.positive, args.write_back, 0, 0b01, rn, rt, args.offset);
+    }
+
+    pub fn ldrh(cond: Condition, rt: Register, rn: Register, args: ExtraLoadStoreOffsetArgs) Instruction {
+        return extraLoadStore(cond, args.pre_index, args.positive, args.write_back, 1, 0b01, rn, rt, args.offset);
     }
 
     // Block data transfer
@@ -697,11 +1055,11 @@ pub const Instruction = union(enum) {
 
     // Branch
 
-    pub fn b(cond: Condition, offset: i24) Instruction {
+    pub fn b(cond: Condition, offset: i26) Instruction {
         return branch(cond, offset, 0);
     }
 
-    pub fn bl(cond: Condition, offset: i24) Instruction {
+    pub fn bl(cond: Condition, offset: i26) Instruction {
         return branch(cond, offset, 1);
     }
 
@@ -730,6 +1088,10 @@ pub const Instruction = union(enum) {
     }
 
     // Aliases
+
+    pub fn nop() Instruction {
+        return mov(.al, .r0, Instruction.Operand.reg(.r0, Instruction.Operand.Shift.none));
+    }
 
     pub fn pop(cond: Condition, args: anytype) Instruction {
         if (@typeInfo(@TypeOf(args)) != .Struct) {
@@ -805,6 +1167,14 @@ test "serialize instructions" {
             .inst = Instruction.mrs(.al, .r5, .cpsr),
             .expected = 0b1110_00010_0_001111_0101_000000000000,
         },
+        .{ // mul r0, r1, r2
+            .inst = Instruction.mul(.al, .r0, .r1, .r2),
+            .expected = 0b1110_000000_0_0_0000_0000_0010_1001_0001,
+        },
+        .{ // umlal r0, r1, r5, r6
+            .inst = Instruction.umlal(.al, .r0, .r1, .r5, .r6),
+            .expected = 0b1110_00001_0_1_0_0001_0000_0110_1001_0101,
+        },
         .{ // ldr r0, [r2, #42]
             .inst = Instruction.ldr(.al, .r0, .r2, .{
                 .offset = Instruction.Offset.imm(42),
@@ -817,13 +1187,19 @@ test "serialize instructions" {
             }),
             .expected = 0b1110_01_0_1_1_0_0_0_0011_0000_000000000000,
         },
+        .{ // strh r1, [r5]
+            .inst = Instruction.strh(.al, .r1, .r5, .{
+                .offset = Instruction.ExtraLoadStoreOffset.none,
+            }),
+            .expected = 0b1110_000_1_1_1_0_0_0101_0001_0000_1011_0000,
+        },
         .{ // b #12
             .inst = Instruction.b(.al, 12),
-            .expected = 0b1110_101_0_0000_0000_0000_0000_0000_1100,
+            .expected = 0b1110_101_0_0000_0000_0000_0000_0000_0011,
         },
         .{ // bl #-4
             .inst = Instruction.bl(.al, -4),
-            .expected = 0b1110_101_1_1111_1111_1111_1111_1111_1100,
+            .expected = 0b1110_101_1_1111_1111_1111_1111_1111_1111,
         },
         .{ // bx lr
             .inst = Instruction.bx(.al, .lr),
@@ -849,7 +1225,7 @@ test "serialize instructions" {
 
     for (testcases) |case| {
         const actual = case.inst.toU32();
-        testing.expectEqual(case.expected, actual);
+        try testing.expectEqual(case.expected, actual);
     }
 }
 
@@ -889,6 +1265,6 @@ test "aliases" {
     };
 
     for (testcases) |case| {
-        testing.expectEqual(case.expected.toU32(), case.actual.toU32());
+        try testing.expectEqual(case.expected.toU32(), case.actual.toU32());
     }
 }

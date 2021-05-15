@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -7,10 +7,10 @@
 // SipHash is a moderately fast pseudorandom function, returning a 64-bit or 128-bit tag for an arbitrary long input.
 //
 // Typical use cases include:
-// - protection against against DoS attacks for hash tables and bloom filters
+// - protection against DoS attacks for hash tables and bloom filters
 // - authentication of short-lived messages in online protocols
 //
-// https://131002.net/siphash/
+// https://www.aumasson.jp/siphash/siphash.pdf
 const std = @import("../std.zig");
 const assert = std.debug.assert;
 const testing = std.testing;
@@ -319,7 +319,7 @@ test "siphash64-2-4 sanity" {
 
         var out: [siphash.mac_length]u8 = undefined;
         siphash.create(&out, buffer[0..i], test_key);
-        testing.expectEqual(out, vector);
+        try testing.expectEqual(out, vector);
     }
 }
 
@@ -399,7 +399,7 @@ test "siphash128-2-4 sanity" {
 
         var out: [siphash.mac_length]u8 = undefined;
         siphash.create(&out, buffer[0..i], test_key[0..]);
-        testing.expectEqual(out, vector);
+        try testing.expectEqual(out, vector);
     }
 }
 
@@ -423,6 +423,6 @@ test "iterative non-divisible update" {
         }
         const iterative_hash = siphash.finalInt();
 
-        std.testing.expectEqual(iterative_hash, non_iterative_hash);
+        try std.testing.expectEqual(iterative_hash, non_iterative_hash);
     }
 }

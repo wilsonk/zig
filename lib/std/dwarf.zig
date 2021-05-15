@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -10,7 +10,7 @@ const fs = std.fs;
 const io = std.io;
 const mem = std.mem;
 const math = std.math;
-const leb = @import("debug/leb128.zig");
+const leb = @import("leb128.zig");
 
 const ArrayList = std.ArrayList;
 
@@ -87,7 +87,7 @@ const Die = struct {
     };
 
     fn getAttr(self: *const Die, id: u64) ?*const FormValue {
-        for (self.attrs.span()) |*attr| {
+        for (self.attrs.items) |*attr| {
             if (attr.id == id) return &attr.value;
         }
         return null;
@@ -157,6 +157,7 @@ const LineNumberProgram = struct {
     include_dirs: []const []const u8,
     file_entries: *ArrayList(FileEntry),
 
+    prev_valid: bool,
     prev_address: usize,
     prev_file: usize,
     prev_line: i64,
@@ -175,6 +176,7 @@ const LineNumberProgram = struct {
         self.basic_block = false;
         self.end_sequence = false;
         // Invalidate all the remaining fields
+        self.prev_valid = false;
         self.prev_address = 0;
         self.prev_file = undefined;
         self.prev_line = undefined;
@@ -197,6 +199,7 @@ const LineNumberProgram = struct {
             .file_entries = file_entries,
             .default_is_stmt = is_stmt,
             .target_address = target_address,
+            .prev_valid = false,
             .prev_address = 0,
             .prev_file = undefined,
             .prev_line = undefined,
@@ -208,18 +211,16 @@ const LineNumberProgram = struct {
     }
 
     pub fn checkLineMatch(self: *LineNumberProgram) !?debug.LineInfo {
-        if (self.target_address >= self.prev_address and self.target_address < self.address) {
+        if (self.prev_valid and self.target_address >= self.prev_address and self.target_address < self.address) {
             const file_entry = if (self.prev_file == 0) {
                 return error.MissingDebugInfo;
             } else if (self.prev_file - 1 >= self.file_entries.items.len) {
                 return error.InvalidDebugInfo;
-            } else
-                &self.file_entries.items[self.prev_file - 1];
+            } else &self.file_entries.items[self.prev_file - 1];
 
             const dir_name = if (file_entry.dir_index >= self.include_dirs.len) {
                 return error.InvalidDebugInfo;
-            } else
-                self.include_dirs[file_entry.dir_index];
+            } else self.include_dirs[file_entry.dir_index];
             const file_name = try fs.path.join(self.file_entries.allocator, &[_][]const u8{ dir_name, file_entry.file_name });
             errdefer self.file_entries.allocator.free(file_name);
             return debug.LineInfo{
@@ -230,6 +231,7 @@ const LineNumberProgram = struct {
             };
         }
 
+        self.prev_valid = true;
         self.prev_address = self.address;
         self.prev_file = self.file;
         self.prev_line = self.line;
@@ -371,7 +373,7 @@ fn parseFormValue(allocator: *mem.Allocator, in_stream: anytype, form_id: u64, e
 }
 
 fn getAbbrevTableEntry(abbrev_table: *const AbbrevTable, abbrev_code: u64) ?*const AbbrevTableEntry {
-    for (abbrev_table.span()) |*table_entry| {
+    for (abbrev_table.items) |*table_entry| {
         if (table_entry.abbrev_code == abbrev_code) return table_entry;
     }
     return null;
@@ -395,7 +397,7 @@ pub const DwarfInfo = struct {
     }
 
     pub fn getSymbolName(di: *DwarfInfo, address: u64) ?[]const u8 {
-        for (di.func_list.span()) |*func| {
+        for (di.func_list.items) |*func| {
             if (func.pc_range) |range| {
                 if (address >= range.start and address < range.end) {
                     return func.name;
@@ -408,15 +410,12 @@ pub const DwarfInfo = struct {
 
     fn scanAllFunctions(di: *DwarfInfo) !void {
         var stream = io.fixedBufferStream(di.debug_info);
-        const in = &stream.inStream();
+        const in = &stream.reader();
         const seekable = &stream.seekableStream();
         var this_unit_offset: u64 = 0;
 
         while (this_unit_offset < try seekable.getEndPos()) {
-            seekable.seekTo(this_unit_offset) catch |err| switch (err) {
-                error.EndOfStream => unreachable,
-                else => return err,
-            };
+            try seekable.seekTo(this_unit_offset);
 
             var is_64: bool = undefined;
             const unit_length = try readUnitLength(in, di.endian, &is_64);
@@ -515,15 +514,12 @@ pub const DwarfInfo = struct {
 
     fn scanAllCompileUnits(di: *DwarfInfo) !void {
         var stream = io.fixedBufferStream(di.debug_info);
-        const in = &stream.inStream();
+        const in = &stream.reader();
         const seekable = &stream.seekableStream();
         var this_unit_offset: u64 = 0;
 
         while (this_unit_offset < try seekable.getEndPos()) {
-            seekable.seekTo(this_unit_offset) catch |err| switch (err) {
-                error.EndOfStream => unreachable,
-                else => return err,
-            };
+            try seekable.seekTo(this_unit_offset);
 
             var is_64: bool = undefined;
             const unit_length = try readUnitLength(in, di.endian, &is_64);
@@ -584,14 +580,14 @@ pub const DwarfInfo = struct {
     }
 
     pub fn findCompileUnit(di: *DwarfInfo, target_address: u64) !*const CompileUnit {
-        for (di.compile_unit_list.span()) |*compile_unit| {
+        for (di.compile_unit_list.items) |*compile_unit| {
             if (compile_unit.pc_range) |range| {
                 if (target_address >= range.start and target_address < range.end) return compile_unit;
             }
             if (di.debug_ranges) |debug_ranges| {
                 if (compile_unit.die.getAttrSecOffset(AT_ranges)) |ranges_offset| {
                     var stream = io.fixedBufferStream(debug_ranges);
-                    const in = &stream.inStream();
+                    const in = &stream.reader();
                     const seekable = &stream.seekableStream();
 
                     // All the addresses in the list are relative to the value
@@ -632,7 +628,7 @@ pub const DwarfInfo = struct {
     /// Gets an already existing AbbrevTable given the abbrev_offset, or if not found,
     /// seeks in the stream and parses it.
     fn getAbbrevTable(di: *DwarfInfo, abbrev_offset: u64) !*const AbbrevTable {
-        for (di.abbrev_table_list.span()) |*header| {
+        for (di.abbrev_table_list.items) |*header| {
             if (header.offset == abbrev_offset) {
                 return &header.table;
             }
@@ -646,7 +642,7 @@ pub const DwarfInfo = struct {
 
     fn parseAbbrevTable(di: *DwarfInfo, offset: u64) !AbbrevTable {
         var stream = io.fixedBufferStream(di.debug_abbrev);
-        const in = &stream.inStream();
+        const in = &stream.reader();
         const seekable = &stream.seekableStream();
 
         try seekable.seekTo(offset);
@@ -686,7 +682,7 @@ pub const DwarfInfo = struct {
             .attrs = ArrayList(Die.Attr).init(di.allocator()),
         };
         try result.attrs.resize(table_entry.attrs.items.len);
-        for (table_entry.attrs.span()) |attr, i| {
+        for (table_entry.attrs.items) |attr, i| {
             result.attrs.items[i] = Die.Attr{
                 .id = attr.attr_id,
                 .value = try parseFormValue(di.allocator(), in_stream, attr.form_id, di.endian, is_64),
@@ -697,7 +693,7 @@ pub const DwarfInfo = struct {
 
     pub fn getLineNumberInfo(di: *DwarfInfo, compile_unit: CompileUnit, target_address: usize) !debug.LineInfo {
         var stream = io.fixedBufferStream(di.debug_line);
-        const in = &stream.inStream();
+        const in = &stream.reader();
         const seekable = &stream.seekableStream();
 
         const compile_unit_cwd = try compile_unit.die.getAttrString(di, AT_comp_dir);
@@ -753,7 +749,7 @@ pub const DwarfInfo = struct {
         }
 
         var file_entries = ArrayList(FileEntry).init(di.allocator());
-        var prog = LineNumberProgram.init(default_is_stmt, include_directories.span(), &file_entries, target_address);
+        var prog = LineNumberProgram.init(default_is_stmt, include_directories.items, &file_entries, target_address);
 
         while (true) {
             const file_name = try in.readUntilDelimiterAlloc(di.allocator(), 0, math.maxInt(usize));

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -76,7 +76,7 @@ pub const RunStep = struct {
         self.argv.append(Arg{
             .WriteFile = .{
                 .step = write_file,
-                .file_name = file_name,
+                .file_name = self.builder.dupePath(file_name),
             },
         }) catch unreachable;
         self.step.dependOn(&write_file.step);
@@ -116,10 +116,10 @@ pub const RunStep = struct {
         }
 
         if (prev_path) |pp| {
-            const new_path = self.builder.fmt("{}" ++ [1]u8{fs.path.delimiter} ++ "{}", .{ pp, search_path });
+            const new_path = self.builder.fmt("{s}" ++ [1]u8{fs.path.delimiter} ++ "{s}", .{ pp, search_path });
             env_map.set(key, new_path) catch unreachable;
         } else {
-            env_map.set(key, search_path) catch unreachable;
+            env_map.set(key, self.builder.dupePath(search_path)) catch unreachable;
         }
     }
 
@@ -134,15 +134,18 @@ pub const RunStep = struct {
 
     pub fn setEnvironmentVariable(self: *RunStep, key: []const u8, value: []const u8) void {
         const env_map = self.getEnvMap();
-        env_map.set(key, value) catch unreachable;
+        env_map.set(
+            self.builder.dupe(key),
+            self.builder.dupe(value),
+        ) catch unreachable;
     }
 
     pub fn expectStdErrEqual(self: *RunStep, bytes: []const u8) void {
-        self.stderr_action = .{ .expect_exact = bytes };
+        self.stderr_action = .{ .expect_exact = self.builder.dupe(bytes) };
     }
 
     pub fn expectStdOutEqual(self: *RunStep, bytes: []const u8) void {
-        self.stdout_action = .{ .expect_exact = bytes };
+        self.stdout_action = .{ .expect_exact = self.builder.dupe(bytes) };
     }
 
     fn stdIoActionToBehavior(action: StdIoAction) std.ChildProcess.StdIo {
@@ -159,7 +162,7 @@ pub const RunStep = struct {
         const cwd = if (self.cwd) |cwd| self.builder.pathFromRoot(cwd) else self.builder.build_root;
 
         var argv_list = ArrayList([]const u8).init(self.builder.allocator);
-        for (self.argv.span()) |arg| {
+        for (self.argv.items) |arg| {
             switch (arg) {
                 Arg.Bytes => |bytes| try argv_list.append(bytes),
                 Arg.WriteFile => |file| {
@@ -176,7 +179,7 @@ pub const RunStep = struct {
             }
         }
 
-        const argv = argv_list.span();
+        const argv = argv_list.items;
 
         const child = std.ChildProcess.init(argv, self.builder.allocator) catch unreachable;
         defer child.deinit();
@@ -188,8 +191,15 @@ pub const RunStep = struct {
         child.stdout_behavior = stdIoActionToBehavior(self.stdout_action);
         child.stderr_behavior = stdIoActionToBehavior(self.stderr_action);
 
+        if (self.builder.verbose) {
+            for (argv) |arg| {
+                warn("{s} ", .{arg});
+            }
+            warn("\n", .{});
+        }
+
         child.spawn() catch |err| {
-            warn("Unable to spawn {}: {}\n", .{ argv[0], @errorName(err) });
+            warn("Unable to spawn {s}: {s}\n", .{ argv[0], @errorName(err) });
             return err;
         };
 
@@ -200,7 +210,7 @@ pub const RunStep = struct {
 
         switch (self.stdout_action) {
             .expect_exact, .expect_matches => {
-                stdout = child.stdout.?.inStream().readAllAlloc(self.builder.allocator, max_stdout_size) catch unreachable;
+                stdout = child.stdout.?.reader().readAllAlloc(self.builder.allocator, max_stdout_size) catch unreachable;
             },
             .inherit, .ignore => {},
         }
@@ -210,13 +220,13 @@ pub const RunStep = struct {
 
         switch (self.stderr_action) {
             .expect_exact, .expect_matches => {
-                stderr = child.stderr.?.inStream().readAllAlloc(self.builder.allocator, max_stdout_size) catch unreachable;
+                stderr = child.stderr.?.reader().readAllAlloc(self.builder.allocator, max_stdout_size) catch unreachable;
             },
             .inherit, .ignore => {},
         }
 
         const term = child.wait() catch |err| {
-            warn("Unable to spawn {}: {}\n", .{ argv[0], @errorName(err) });
+            warn("Unable to spawn {s}: {s}\n", .{ argv[0], @errorName(err) });
             return err;
         };
 
@@ -245,9 +255,9 @@ pub const RunStep = struct {
                     warn(
                         \\
                         \\========= Expected this stderr: =========
-                        \\{}
+                        \\{s}
                         \\========= But found: ====================
-                        \\{}
+                        \\{s}
                         \\
                     , .{ expected_bytes, stderr.? });
                     printCmd(cwd, argv);
@@ -259,9 +269,9 @@ pub const RunStep = struct {
                     warn(
                         \\
                         \\========= Expected to find in stderr: =========
-                        \\{}
+                        \\{s}
                         \\========= But stderr does not contain it: =====
-                        \\{}
+                        \\{s}
                         \\
                     , .{ match, stderr.? });
                     printCmd(cwd, argv);
@@ -277,9 +287,9 @@ pub const RunStep = struct {
                     warn(
                         \\
                         \\========= Expected this stdout: =========
-                        \\{}
+                        \\{s}
                         \\========= But found: ====================
-                        \\{}
+                        \\{s}
                         \\
                     , .{ expected_bytes, stdout.? });
                     printCmd(cwd, argv);
@@ -291,9 +301,9 @@ pub const RunStep = struct {
                     warn(
                         \\
                         \\========= Expected to find in stdout: =========
-                        \\{}
+                        \\{s}
                         \\========= But stdout does not contain it: =====
-                        \\{}
+                        \\{s}
                         \\
                     , .{ match, stdout.? });
                     printCmd(cwd, argv);
@@ -304,15 +314,15 @@ pub const RunStep = struct {
     }
 
     fn printCmd(cwd: ?[]const u8, argv: []const []const u8) void {
-        if (cwd) |yes_cwd| warn("cd {} && ", .{yes_cwd});
+        if (cwd) |yes_cwd| warn("cd {s} && ", .{yes_cwd});
         for (argv) |arg| {
-            warn("{} ", .{arg});
+            warn("{s} ", .{arg});
         }
         warn("\n", .{});
     }
 
     fn addPathForDynLibs(self: *RunStep, artifact: *LibExeObjStep) void {
-        for (artifact.link_objects.span()) |link_object| {
+        for (artifact.link_objects.items) |link_object| {
             switch (link_object) {
                 .OtherStep => |other| {
                     if (other.target.isWindows() and other.isDynamicLibrary()) {

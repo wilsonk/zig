@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -113,9 +113,11 @@ comptime {
     @export(@import("compiler_rt/extendXfYf2.zig").__extenddftf2, .{ .name = "__extenddftf2", .linkage = linkage });
     @export(@import("compiler_rt/extendXfYf2.zig").__extendsftf2, .{ .name = "__extendsftf2", .linkage = linkage });
     @export(@import("compiler_rt/extendXfYf2.zig").__extendhfsf2, .{ .name = "__extendhfsf2", .linkage = linkage });
+    @export(@import("compiler_rt/extendXfYf2.zig").__extendhftf2, .{ .name = "__extendhftf2", .linkage = linkage });
 
     @export(@import("compiler_rt/truncXfYf2.zig").__truncsfhf2, .{ .name = "__truncsfhf2", .linkage = linkage });
     @export(@import("compiler_rt/truncXfYf2.zig").__truncdfhf2, .{ .name = "__truncdfhf2", .linkage = linkage });
+    @export(@import("compiler_rt/truncXfYf2.zig").__trunctfhf2, .{ .name = "__trunctfhf2", .linkage = linkage });
     @export(@import("compiler_rt/truncXfYf2.zig").__trunctfdf2, .{ .name = "__trunctfdf2", .linkage = linkage });
     @export(@import("compiler_rt/truncXfYf2.zig").__trunctfsf2, .{ .name = "__trunctfsf2", .linkage = linkage });
 
@@ -166,6 +168,10 @@ comptime {
     @export(@import("compiler_rt/negXf2.zig").__negdf2, .{ .name = "__negdf2", .linkage = linkage });
 
     @export(@import("compiler_rt/clzsi2.zig").__clzsi2, .{ .name = "__clzsi2", .linkage = linkage });
+
+    if (builtin.link_libc and builtin.os.tag == .openbsd) {
+        @export(@import("compiler_rt/emutls.zig").__emutls_get_address, .{ .name = "__emutls_get_address", .linkage = linkage });
+    }
 
     if ((builtin.arch.isARM() or builtin.arch.isThumb()) and !is_test) {
         @export(@import("compiler_rt/arm.zig").__aeabi_unwind_cpp_pr0, .{ .name = "__aeabi_unwind_cpp_pr0", .linkage = linkage });
@@ -273,6 +279,62 @@ comptime {
         @export(@import("compiler_rt/aullrem.zig")._aullrem, .{ .name = "\x01__aullrem", .linkage = strong_linkage });
     }
 
+    if (builtin.arch.isSPARC()) {
+        // SPARC systems use a different naming scheme
+        @export(@import("compiler_rt/sparc.zig")._Qp_add, .{ .name = "_Qp_add", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_div, .{ .name = "_Qp_div", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_mul, .{ .name = "_Qp_mul", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_sub, .{ .name = "_Qp_sub", .linkage = linkage });
+
+        @export(@import("compiler_rt/sparc.zig")._Qp_cmp, .{ .name = "_Qp_cmp", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_feq, .{ .name = "_Qp_feq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_fne, .{ .name = "_Qp_fne", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_flt, .{ .name = "_Qp_flt", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_fle, .{ .name = "_Qp_fle", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_fgt, .{ .name = "_Qp_fgt", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_fge, .{ .name = "_Qp_fge", .linkage = linkage });
+
+        @export(@import("compiler_rt/sparc.zig")._Qp_itoq, .{ .name = "_Qp_itoq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_uitoq, .{ .name = "_Qp_uitoq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_xtoq, .{ .name = "_Qp_xtoq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_uxtoq, .{ .name = "_Qp_uxtoq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_stoq, .{ .name = "_Qp_stoq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_dtoq, .{ .name = "_Qp_dtoq", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_qtoi, .{ .name = "_Qp_qtoi", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_qtoui, .{ .name = "_Qp_qtoui", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_qtox, .{ .name = "_Qp_qtox", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_qtoux, .{ .name = "_Qp_qtoux", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_qtos, .{ .name = "_Qp_qtos", .linkage = linkage });
+        @export(@import("compiler_rt/sparc.zig")._Qp_qtod, .{ .name = "_Qp_qtod", .linkage = linkage });
+    }
+
+    if ((builtin.arch == .powerpc or builtin.arch.isPPC64()) and !is_test) {
+        @export(@import("compiler_rt/addXf3.zig").__addtf3, .{ .name = "__addkf3", .linkage = linkage });
+        @export(@import("compiler_rt/addXf3.zig").__subtf3, .{ .name = "__subkf3", .linkage = linkage });
+        @export(@import("compiler_rt/mulXf3.zig").__multf3, .{ .name = "__mulkf3", .linkage = linkage });
+        @export(@import("compiler_rt/divtf3.zig").__divtf3, .{ .name = "__divkf3", .linkage = linkage });
+        @export(@import("compiler_rt/extendXfYf2.zig").__extendsftf2, .{ .name = "__extendsfkf2", .linkage = linkage });
+        @export(@import("compiler_rt/extendXfYf2.zig").__extenddftf2, .{ .name = "__extenddfkf2", .linkage = linkage });
+        @export(@import("compiler_rt/truncXfYf2.zig").__trunctfsf2, .{ .name = "__trunckfsf2", .linkage = linkage });
+        @export(@import("compiler_rt/truncXfYf2.zig").__trunctfdf2, .{ .name = "__trunckfdf2", .linkage = linkage });
+        @export(@import("compiler_rt/fixtfdi.zig").__fixtfdi, .{ .name = "__fixkfdi", .linkage = linkage });
+        @export(@import("compiler_rt/fixtfsi.zig").__fixtfsi, .{ .name = "__fixkfsi", .linkage = linkage });
+        @export(@import("compiler_rt/fixunstfsi.zig").__fixunstfsi, .{ .name = "__fixunskfsi", .linkage = linkage });
+        @export(@import("compiler_rt/fixunstfdi.zig").__fixunstfdi, .{ .name = "__fixunskfdi", .linkage = linkage });
+        @export(@import("compiler_rt/floatsiXf.zig").__floatsitf, .{ .name = "__floatsikf", .linkage = linkage });
+        @export(@import("compiler_rt/floatditf.zig").__floatditf, .{ .name = "__floatdikf", .linkage = linkage });
+        @export(@import("compiler_rt/floatunditf.zig").__floatunditf, .{ .name = "__floatundikf", .linkage = linkage });
+        @export(@import("compiler_rt/floatunsitf.zig").__floatunsitf, .{ .name = "__floatunsikf", .linkage = linkage });
+
+        @export(@import("compiler_rt/compareXf2.zig").__letf2, .{ .name = "__eqkf2", .linkage = linkage });
+        @export(@import("compiler_rt/compareXf2.zig").__letf2, .{ .name = "__nekf2", .linkage = linkage });
+        @export(@import("compiler_rt/compareXf2.zig").__getf2, .{ .name = "__gekf2", .linkage = linkage });
+        @export(@import("compiler_rt/compareXf2.zig").__letf2, .{ .name = "__ltkf2", .linkage = linkage });
+        @export(@import("compiler_rt/compareXf2.zig").__letf2, .{ .name = "__lekf2", .linkage = linkage });
+        @export(@import("compiler_rt/compareXf2.zig").__getf2, .{ .name = "__gtkf2", .linkage = linkage });
+        @export(@import("compiler_rt/compareXf2.zig").__unordtf2, .{ .name = "__unordkf2", .linkage = linkage });
+    }
+
     if (builtin.os.tag == .windows) {
         // Default stack-probe functions emitted by LLVM
         if (is_mingw) {
@@ -324,7 +386,7 @@ pub usingnamespace @import("compiler_rt/atomics.zig");
 pub fn panic(msg: []const u8, error_return_trace: ?*builtin.StackTrace) noreturn {
     @setCold(true);
     if (is_test) {
-        std.debug.panic("{}", .{msg});
+        std.debug.panic("{s}", .{msg});
     } else {
         unreachable;
     }

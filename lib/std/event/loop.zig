@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -29,7 +29,7 @@ pub const Loop = struct {
     fs_thread: *Thread,
     fs_queue: std.atomic.Queue(Request),
     fs_end_request: Request.Node,
-    fs_thread_wakeup: std.ResetEvent,
+    fs_thread_wakeup: std.Thread.ResetEvent,
 
     /// For resources that have the same lifetime as the `Loop`.
     /// This is only used by `Loop` for the thread pool and associated resources.
@@ -164,9 +164,10 @@ pub const Loop = struct {
             .fs_end_request = .{ .data = .{ .msg = .end, .finish = .NoAction } },
             .fs_queue = std.atomic.Queue(Request).init(),
             .fs_thread = undefined,
-            .fs_thread_wakeup = std.ResetEvent.init(),
+            .fs_thread_wakeup = undefined,
             .delay_queue = undefined,
         };
+        try self.fs_thread_wakeup.init();
         errdefer self.fs_thread_wakeup.deinit();
         errdefer self.arena.deinit();
 
@@ -184,7 +185,7 @@ pub const Loop = struct {
         errdefer self.deinitOsData();
 
         if (!builtin.single_threaded) {
-            self.fs_thread = try Thread.spawn(self, posixFsRun);
+            self.fs_thread = try Thread.spawn(posixFsRun, self);
         }
         errdefer if (!builtin.single_threaded) {
             self.posixFsRequest(&self.fs_end_request);
@@ -263,7 +264,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             .macos, .freebsd, .netbsd, .dragonfly, .openbsd => {
@@ -328,7 +329,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             .windows => {
@@ -377,7 +378,7 @@ pub const Loop = struct {
                     }
                 }
                 while (extra_thread_index < extra_thread_count) : (extra_thread_index += 1) {
-                    self.extra_threads[extra_thread_index] = try Thread.spawn(self, workerRun);
+                    self.extra_threads[extra_thread_index] = try Thread.spawn(workerRun, self);
                 }
             },
             else => {},
@@ -439,13 +440,11 @@ pub const Loop = struct {
                 .overlapped = ResumeNode.overlapped_init,
             },
         };
-        var need_to_delete = false;
+        var need_to_delete = true;
         defer if (need_to_delete) self.linuxRemoveFd(fd);
 
         suspend {
-            if (self.linuxAddFd(fd, &resume_node.base, flags)) |_| {
-                need_to_delete = true;
-            } else |err| switch (err) {
+            self.linuxAddFd(fd, &resume_node.base, flags) catch |err| switch (err) {
                 error.FileDescriptorNotRegistered => unreachable,
                 error.OperationCausesCircularLoop => unreachable,
                 error.FileDescriptorIncompatibleWithEpoll => unreachable,
@@ -455,6 +454,7 @@ pub const Loop = struct {
                 error.UserResourceLimitReached,
                 error.Unexpected,
                 => {
+                    need_to_delete = false;
                     // Fall back to a blocking poll(). Ideally this codepath is never hit, since
                     // epoll should be just fine. But this is better than incorrect behavior.
                     var poll_flags: i16 = 0;
@@ -466,6 +466,8 @@ pub const Loop = struct {
                         .revents = undefined,
                     }};
                     _ = os.poll(&pfd, -1) catch |poll_err| switch (poll_err) {
+                        error.NetworkSubsystemFailed => unreachable, // only possible on windows
+
                         error.SystemResources,
                         error.Unexpected,
                         => {
@@ -476,7 +478,7 @@ pub const Loop = struct {
                     };
                     resume @frame();
                 },
-            }
+            };
         }
     }
 
@@ -772,7 +774,7 @@ pub const Loop = struct {
             self.delay_queue.waiters.insert(&entry);
 
             // Speculatively wake up the timer thread when we add a new entry.
-            // If the timer thread is sleeping on a longer entry, we need to 
+            // If the timer thread is sleeping on a longer entry, we need to
             // interrupt it so that our entry can be expired in time.
             self.delay_queue.event.set();
         }
@@ -782,9 +784,9 @@ pub const Loop = struct {
         timer: std.time.Timer,
         waiters: Waiters,
         thread: *std.Thread,
-        event: std.AutoResetEvent,
+        event: std.Thread.AutoResetEvent,
         is_running: bool,
-        
+
         /// Initialize the delay queue by spawning the timer thread
         /// and starting any timer resources.
         fn init(self: *DelayQueue) !void {
@@ -793,13 +795,14 @@ pub const Loop = struct {
                 .waiters = DelayQueue.Waiters{
                     .entries = std.atomic.Queue(anyframe).init(),
                 },
-                .thread = try std.Thread.spawn(self, DelayQueue.run),
-                .event = std.AutoResetEvent{},
+                .event = std.Thread.AutoResetEvent{},
                 .is_running = true,
+                // Must be last so that it can read the other state, such as `is_running`.
+                .thread = try std.Thread.spawn(DelayQueue.run, self),
             };
         }
 
-        /// Entry point for the timer thread 
+        /// Entry point for the timer thread
         /// which waits for timer entries to expire and reschedules them.
         fn run(self: *DelayQueue) void {
             const loop = @fieldParentPtr(Loop, "delay_queue", self);
@@ -847,12 +850,12 @@ pub const Loop = struct {
                 const entry = self.peekExpiringEntry() orelse return null;
                 if (entry.expires > now)
                     return null;
-                
+
                 assert(self.entries.remove(&entry.node));
                 return entry;
             }
-            
-            /// Returns an estimate for the amount of time 
+
+            /// Returns an estimate for the amount of time
             /// to wait until the next waiting entry expires.
             fn nextExpire(self: *Waiters) ?u64 {
                 const entry = self.peekExpiringEntry() orelse return null;
@@ -1259,7 +1262,7 @@ pub const Loop = struct {
         flags: u32,
         dest_addr: ?*const os.sockaddr,
         addrlen: os.socklen_t,
-    ) os.SendError!usize {
+    ) os.SendToError!usize {
         while (true) {
             return os.sendto(sockfd, buf, flags, dest_addr, addrlen) catch |err| switch (err) {
                 error.WouldBlock => {
@@ -1272,6 +1275,7 @@ pub const Loop = struct {
     }
 
     pub fn recvfrom(
+        self: *Loop,
         sockfd: os.fd_t,
         buf: []u8,
         flags: u32,
@@ -1651,7 +1655,7 @@ fn testEventLoop() i32 {
 
 fn testEventLoop2(h: anyframe->i32, did_it: *bool) void {
     const value = await h;
-    testing.expect(value == 1234);
+    try testing.expect(value == 1234);
     did_it.* = true;
 }
 
@@ -1678,7 +1682,7 @@ test "std.event.Loop - runDetached" {
     // with the previous runDetached.
     loop.run();
 
-    testing.expect(testRunDetachedData == 1);
+    try testing.expect(testRunDetachedData == 1);
 }
 
 fn testRunDetached() void {
@@ -1701,7 +1705,7 @@ test "std.event.Loop - sleep" {
     for (frames) |*frame|
         await frame;
 
-    testing.expect(sleep_count == frames.len);
+    try testing.expect(sleep_count == frames.len);
 }
 
 fn testSleep(wait_ns: u64, sleep_count: *usize) void {

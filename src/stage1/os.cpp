@@ -42,7 +42,9 @@
 #include <fcntl.h>
 #include <ntsecapi.h>
 
-#if defined(_MSC_VER)
+// Workaround an upstream LLVM issue.
+// See https://github.com/ziglang/zig/issues/7614#issuecomment-752939981
+#if defined(_MSC_VER) && defined(_WIN64)
 typedef SSIZE_T ssize_t;
 #endif
 #else
@@ -59,7 +61,7 @@ typedef SSIZE_T ssize_t;
 
 #endif
 
-#if defined(ZIG_OS_LINUX) || defined(ZIG_OS_FREEBSD) || defined(ZIG_OS_NETBSD) || defined(ZIG_OS_DRAGONFLY) || defined(ZIG_OS_OPENBSD)
+#if defined(ZIG_OS_LINUX) || defined(ZIG_OS_FREEBSD) || defined(ZIG_OS_NETBSD) || defined(ZIG_OS_DRAGONFLY) || defined(ZIG_OS_OPENBSD) || defined(ZIG_OS_HAIKU)
 #include <link.h>
 #endif
 
@@ -682,19 +684,6 @@ static Error copy_open_files(FILE *src_f, FILE *dest_f) {
     }
 }
 
-#if defined(ZIG_OS_WINDOWS)
-static void windows_filetime_to_os_timestamp(FILETIME *ft, OsTimeStamp *mtime) {
-    mtime->sec = (((ULONGLONG) ft->dwHighDateTime) << 32) + ft->dwLowDateTime;
-    mtime->nsec = 0;
-}
-static FILETIME windows_os_timestamp_to_filetime(OsTimeStamp mtime) {
-    FILETIME result;
-    result.dwHighDateTime = mtime.sec >> 32;
-    result.dwLowDateTime = mtime.sec;
-    return result;
-}
-#endif
-
 Error os_copy_file(Buf *src_path, Buf *dest_path) {
 #if defined(ZIG_OS_WINDOWS)
     PathSpace src_path_space = slice_to_prefixed_file_w(buf_to_slice(src_path));
@@ -977,29 +966,6 @@ int os_init(void) {
 #elif defined(__MACH__)
     host_get_clock_service(mach_host_self(), SYSTEM_CLOCK, &macos_monotonic_clock);
     host_get_clock_service(mach_host_self(), CALENDAR_CLOCK, &macos_calendar_clock);
-#endif
-#if defined(ZIG_OS_POSIX)
-    // Raise the open file descriptor limit.
-    // Code lifted from node.js
-    struct rlimit lim;
-    if (getrlimit(RLIMIT_NOFILE, &lim) == 0 && lim.rlim_cur != lim.rlim_max) {
-        // Do a binary search for the limit.
-        rlim_t min = lim.rlim_cur;
-        rlim_t max = 1 << 20;
-        // But if there's a defined upper bound, don't search, just set it.
-        if (lim.rlim_max != RLIM_INFINITY) {
-            min = lim.rlim_max;
-            max = lim.rlim_max;
-        }
-        do {
-            lim.rlim_cur = min + (max - min) / 2;
-            if (setrlimit(RLIMIT_NOFILE, &lim)) {
-                max = lim.rlim_cur;
-            } else {
-                min = lim.rlim_cur;
-            }
-        } while (min + 1 < max);
-    }
 #endif
     return 0;
 }

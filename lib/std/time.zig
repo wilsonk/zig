@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -242,14 +242,23 @@ pub const Timer = struct {
 
     fn nativeDurationToNanos(self: Timer, duration: u64) u64 {
         if (is_windows) {
-            return @divFloor(duration * ns_per_s, self.frequency);
+            return safeMulDiv(duration, ns_per_s, self.frequency);
         }
         if (comptime std.Target.current.isDarwin()) {
-            return @divFloor(duration * self.frequency.numer, self.frequency.denom);
+            return safeMulDiv(duration, self.frequency.numer, self.frequency.denom);
         }
         return duration;
     }
 };
+
+// Calculate (a * b) / c without risk of overflowing too early because of the
+// multiplication.
+fn safeMulDiv(a: u64, b: u64, c: u64) u64 {
+    const q = a / c;
+    const r = a % c;
+    // (a * b) / c == (a / c) * b + ((a % c) * b) / c
+    return (q * b) + (r * b) / c;
+}
 
 test "sleep" {
     sleep(1);
@@ -262,7 +271,9 @@ test "timestamp" {
     sleep(ns_per_ms);
     const time_1 = milliTimestamp();
     const interval = time_1 - time_0;
-    testing.expect(interval > 0 and interval < margin);
+    try testing.expect(interval > 0);
+    // Tests should not depend on timings: skip test if outside margin.
+    if (!(interval < margin)) return error.SkipZigTest;
 }
 
 test "Timer" {
@@ -271,11 +282,13 @@ test "Timer" {
     var timer = try Timer.start();
     sleep(10 * ns_per_ms);
     const time_0 = timer.read();
-    testing.expect(time_0 > 0 and time_0 < margin);
+    try testing.expect(time_0 > 0);
+    // Tests should not depend on timings: skip test if outside margin.
+    if (!(time_0 < margin)) return error.SkipZigTest;
 
     const time_1 = timer.lap();
-    testing.expect(time_1 >= time_0);
+    try testing.expect(time_1 >= time_0);
 
     timer.reset();
-    testing.expect(timer.read() < time_1);
+    try testing.expect(timer.read() < time_1);
 }

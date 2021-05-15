@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -22,6 +22,7 @@ pub const socklen_t = u32;
 pub const time_t = i64;
 pub const uid_t = u32;
 pub const lwpid_t = i32;
+pub const suseconds_t = c_int;
 
 /// Renamed from `kevent` to `Kevent` to avoid conflict with function name.
 pub const Kevent = extern struct {
@@ -153,13 +154,7 @@ pub const msghdr_const = extern struct {
     msg_flags: i32,
 };
 
-/// Renamed to Stat to not conflict with the stat function.
-/// atime, mtime, and ctime have functions to return `timespec`,
-/// because although this is a POSIX API, the layout and names of
-/// the structs are inconsistent across operating systems, and
-/// in C, macros are used to hide the differences. Here we use
-/// methods to accomplish this.
-pub const Stat = extern struct {
+pub const libc_stat = extern struct {
     dev: dev_t,
     mode: mode_t,
     ino: ino_t,
@@ -178,15 +173,15 @@ pub const Stat = extern struct {
     gen: u32,
     __spare: [2]u32,
 
-    pub fn atime(self: Stat) timespec {
+    pub fn atime(self: @This()) timespec {
         return self.atim;
     }
 
-    pub fn mtime(self: Stat) timespec {
+    pub fn mtime(self: @This()) timespec {
         return self.mtim;
     }
 
-    pub fn ctime(self: Stat) timespec {
+    pub fn ctime(self: @This()) timespec {
         return self.ctim;
     }
 };
@@ -194,6 +189,13 @@ pub const Stat = extern struct {
 pub const timespec = extern struct {
     tv_sec: i64,
     tv_nsec: isize,
+};
+
+pub const timeval = extern struct {
+    /// seconds
+    tv_sec: time_t,
+    /// microseconds
+    tv_usec: suseconds_t,
 };
 
 pub const MAXNAMLEN = 511;
@@ -222,6 +224,14 @@ pub const sockaddr = extern struct {
 
     /// actually longer; address value
     data: [14]u8,
+};
+
+pub const sockaddr_storage = extern struct {
+    len: u8,
+    family: sa_family_t,
+    __pad1: [5]u8,
+    __align: i64,
+    __pad2: [112]u8,
 };
 
 pub const sockaddr_in = extern struct {
@@ -722,13 +732,18 @@ pub const SIG_IGN = @intToPtr(?Sigaction.sigaction_fn, 1);
 
 /// Renamed from `sigaction` to `Sigaction` to avoid conflict with the syscall.
 pub const Sigaction = extern struct {
-    pub const sigaction_fn = fn (i32, *siginfo_t, ?*c_void) callconv(.C) void;
+    pub const handler_fn = fn (c_int) callconv(.C) void;
+    pub const sigaction_fn = fn (c_int, *const siginfo_t, ?*const c_void) callconv(.C) void;
+
     /// signal handler
-    sigaction: ?sigaction_fn,
+    handler: extern union {
+        handler: ?handler_fn,
+        sigaction: ?sigaction_fn,
+    },
     /// signal mask to apply
     mask: sigset_t,
     /// signal options
-    flags: u32,
+    flags: c_uint,
 };
 
 pub const sigval_t = extern union {
@@ -789,16 +804,16 @@ pub const _ksiginfo = extern struct {
 pub const _SIG_WORDS = 4;
 pub const _SIG_MAXSIG = 128;
 
-pub inline fn _SIG_IDX(sig: usize) usize {
+pub fn _SIG_IDX(sig: usize) callconv(.Inline) usize {
     return sig - 1;
 }
-pub inline fn _SIG_WORD(sig: usize) usize {
+pub fn _SIG_WORD(sig: usize) callconv(.Inline) usize {
     return_SIG_IDX(sig) >> 5;
 }
-pub inline fn _SIG_BIT(sig: usize) usize {
+pub fn _SIG_BIT(sig: usize) callconv(.Inline) usize {
     return 1 << (_SIG_IDX(sig) & 31);
 }
-pub inline fn _SIG_VALID(sig: usize) usize {
+pub fn _SIG_VALID(sig: usize) callconv(.Inline) usize {
     return sig <= _SIG_MAXSIG and sig > 0;
 }
 
@@ -825,13 +840,15 @@ pub const ucontext_t = extern struct {
     sigmask: sigset_t,
     stack: stack_t,
     mcontext: mcontext_t,
-    __pad: [switch (builtin.arch) {
-        .i386 => 4,
-        .mips, .mipsel, .mips64, .mips64el => 14,
-        .arm, .armeb, .thumb, .thumbeb => 1,
-        .sparc, .sparcel, .sparcv9 => if (@sizeOf(usize) == 4) 43 else 8,
-        else => 0,
-    }]u32,
+    __pad: [
+        switch (builtin.arch) {
+            .i386 => 4,
+            .mips, .mipsel, .mips64, .mips64el => 14,
+            .arm, .armeb, .thumb, .thumbeb => 1,
+            .sparc, .sparcel, .sparcv9 => if (@sizeOf(usize) == 4) 43 else 8,
+            else => 0,
+        }
+    ]u32,
 };
 
 pub const EPERM = 1; // Operation not permitted
@@ -1169,3 +1186,62 @@ pub const IPPROTO_PFSYNC = 240;
 
 /// raw IP packet
 pub const IPPROTO_RAW = 255;
+
+pub const rlimit_resource = extern enum(c_int) {
+    CPU = 0,
+    FSIZE = 1,
+    DATA = 2,
+    STACK = 3,
+    CORE = 4,
+    RSS = 5,
+    MEMLOCK = 6,
+    NPROC = 7,
+    NOFILE = 8,
+    SBSIZE = 9,
+    AS = 10,
+    VMEM = 10,
+    NTHR = 11,
+
+    _,
+};
+
+pub const rlim_t = u64;
+
+/// No limit
+pub const RLIM_INFINITY: rlim_t = (1 << 63) - 1;
+
+pub const RLIM_SAVED_MAX = RLIM_INFINITY;
+pub const RLIM_SAVED_CUR = RLIM_INFINITY;
+
+pub const rlimit = extern struct {
+    /// Soft limit
+    cur: rlim_t,
+    /// Hard limit
+    max: rlim_t,
+};
+
+pub const SHUT_RD = 0;
+pub const SHUT_WR = 1;
+pub const SHUT_RDWR = 2;
+
+pub const nfds_t = u32;
+
+pub const pollfd = extern struct {
+    fd: fd_t,
+    events: i16,
+    revents: i16,
+};
+
+/// Testable events (may be specified in events field).
+pub const POLLIN = 0x0001;
+pub const POLLPRI = 0x0002;
+pub const POLLOUT = 0x0004;
+pub const POLLRDNORM = 0x0040;
+pub const POLLWRNORM = POLLOUT;
+pub const POLLRDBAND = 0x0080;
+pub const POLLWRBAND = 0x0100;
+
+/// Non-testable events (may not be specified in events field).
+pub const POLLERR = 0x0008;
+pub const POLLHUP = 0x0010;
+pub const POLLNVAL = 0x0020;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -62,7 +62,7 @@ pub fn SinglyLinkedList(comptime T: type) type {
             /// This operation is O(N).
             pub fn countChildren(node: *const Node) usize {
                 var count: usize = 0;
-                var it: ?*const Node = node;
+                var it: ?*const Node = node.next;
                 while (it) |n| : (it = n.next) {
                     count += 1;
                 }
@@ -123,6 +123,8 @@ test "basic SinglyLinkedList test" {
     const L = SinglyLinkedList(u32);
     var list = L{};
 
+    try testing.expect(list.len() == 0);
+
     var one = L.Node{ .data = 1 };
     var two = L.Node{ .data = 2 };
     var three = L.Node{ .data = 3 };
@@ -135,12 +137,14 @@ test "basic SinglyLinkedList test" {
     two.insertAfter(&three); // {1, 2, 3, 5}
     three.insertAfter(&four); // {1, 2, 3, 4, 5}
 
+    try testing.expect(list.len() == 5);
+
     // Traverse forwards.
     {
         var it = list.first;
         var index: u32 = 1;
         while (it) |node| : (it = node.next) {
-            testing.expect(node.data == index);
+            try testing.expect(node.data == index);
             index += 1;
         }
     }
@@ -149,9 +153,9 @@ test "basic SinglyLinkedList test" {
     _ = list.remove(&five); // {2, 3, 4}
     _ = two.removeNext(); // {2, 4}
 
-    testing.expect(list.first.?.data == 2);
-    testing.expect(list.first.?.next.?.data == 4);
-    testing.expect(list.first.?.next.?.next == null);
+    try testing.expect(list.first.?.data == 2);
+    try testing.expect(list.first.?.next.?.data == 4);
+    try testing.expect(list.first.?.next.?.next == null);
 }
 
 /// A tail queue is headed by a pair of pointers, one to the head of the
@@ -340,7 +344,7 @@ test "basic TailQueue test" {
         var it = list.first;
         var index: u32 = 1;
         while (it) |node| : (it = node.next) {
-            testing.expect(node.data == index);
+            try testing.expect(node.data == index);
             index += 1;
         }
     }
@@ -350,7 +354,7 @@ test "basic TailQueue test" {
         var it = list.last;
         var index: u32 = 1;
         while (it) |node| : (it = node.prev) {
-            testing.expect(node.data == (6 - index));
+            try testing.expect(node.data == (6 - index));
             index += 1;
         }
     }
@@ -359,9 +363,9 @@ test "basic TailQueue test" {
     var last = list.pop(); // {2, 3, 4}
     list.remove(&three); // {2, 4}
 
-    testing.expect(list.first.?.data == 2);
-    testing.expect(list.last.?.data == 4);
-    testing.expect(list.len == 2);
+    try testing.expect(list.first.?.data == 2);
+    try testing.expect(list.last.?.data == 4);
+    try testing.expect(list.len == 2);
 }
 
 test "TailQueue concatenation" {
@@ -383,18 +387,18 @@ test "TailQueue concatenation" {
 
     list1.concatByMoving(&list2);
 
-    testing.expect(list1.last == &five);
-    testing.expect(list1.len == 5);
-    testing.expect(list2.first == null);
-    testing.expect(list2.last == null);
-    testing.expect(list2.len == 0);
+    try testing.expect(list1.last == &five);
+    try testing.expect(list1.len == 5);
+    try testing.expect(list2.first == null);
+    try testing.expect(list2.last == null);
+    try testing.expect(list2.len == 0);
 
     // Traverse forwards.
     {
         var it = list1.first;
         var index: u32 = 1;
         while (it) |node| : (it = node.next) {
-            testing.expect(node.data == index);
+            try testing.expect(node.data == index);
             index += 1;
         }
     }
@@ -404,7 +408,7 @@ test "TailQueue concatenation" {
         var it = list1.last;
         var index: u32 = 1;
         while (it) |node| : (it = node.prev) {
-            testing.expect(node.data == (6 - index));
+            try testing.expect(node.data == (6 - index));
             index += 1;
         }
     }
@@ -417,7 +421,7 @@ test "TailQueue concatenation" {
         var it = list2.first;
         var index: u32 = 1;
         while (it) |node| : (it = node.next) {
-            testing.expect(node.data == index);
+            try testing.expect(node.data == index);
             index += 1;
         }
     }
@@ -427,7 +431,7 @@ test "TailQueue concatenation" {
         var it = list2.last;
         var index: u32 = 1;
         while (it) |node| : (it = node.prev) {
-            testing.expect(node.data == (6 - index));
+            try testing.expect(node.data == (6 - index));
             index += 1;
         }
     }

@@ -99,26 +99,26 @@ pub const TranslateCContext = struct {
         const b = self.b;
 
         const translate_c_cmd = "translate-c";
-        const annotated_case_name = fmt.allocPrint(self.b.allocator, "{} {}", .{ translate_c_cmd, case.name }) catch unreachable;
+        const annotated_case_name = fmt.allocPrint(self.b.allocator, "{s} {s}", .{ translate_c_cmd, case.name }) catch unreachable;
         if (self.test_filter) |filter| {
             if (mem.indexOf(u8, annotated_case_name, filter) == null) return;
         }
 
         const write_src = b.addWriteFiles();
-        for (case.sources.span()) |src_file| {
+        for (case.sources.items) |src_file| {
             write_src.add(src_file.filename, src_file.source);
         }
 
         const translate_c = b.addTranslateC(.{
             .write_file = .{
                 .step = write_src,
-                .basename = case.sources.span()[0].filename,
+                .basename = case.sources.items[0].filename,
             },
         });
         translate_c.step.name = annotated_case_name;
         translate_c.setTarget(case.target);
 
-        const check_file = translate_c.addCheckFile(case.expected_lines.span());
+        const check_file = translate_c.addCheckFile(case.expected_lines.items);
 
         self.step.dependOn(&check_file.step);
     }

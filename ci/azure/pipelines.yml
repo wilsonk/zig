@@ -2,9 +2,7 @@ jobs:
 - job: BuildMacOS
   pool:
     vmImage: 'macOS-10.15'
-
   timeoutInMinutes: 360
-
   steps:
   - task: DownloadSecureFile@1
     inputs:
@@ -12,12 +10,21 @@ jobs:
   - script: ci/azure/macos_script
     name: main
     displayName: 'Build and test'
+- job: BuildMacOS_arm64
+  pool:
+    vmImage: 'macOS-10.15'
+  timeoutInMinutes: 180
+  steps:
+  - task: DownloadSecureFile@1
+    inputs:
+      secureFile: s3cfg
+  - script: ci/azure/macos_arm64_script
+    name: main
+    displayName: 'Build'
 - job: BuildLinux
   pool:
     vmImage: 'ubuntu-18.04'
-
   timeoutInMinutes: 360
-
   steps:
   - task: DownloadSecureFile@1
     inputs:
@@ -31,7 +38,7 @@ jobs:
   timeoutInMinutes: 360
   steps:
   - powershell: |
-      (New-Object Net.WebClient).DownloadFile("https://github.com/msys2/msys2-installer/releases/download/2020-09-03/msys2-base-x86_64-20200903.sfx.exe", "sfx.exe")
+      (New-Object Net.WebClient).DownloadFile("https://github.com/msys2/msys2-installer/releases/download/2021-02-28/msys2-base-x86_64-20210228.sfx.exe", "sfx.exe")
       .\sfx.exe -y -o\
       del sfx.exe
     displayName: Download/Extract/Install MSYS2
@@ -53,6 +60,7 @@ jobs:
 - job: OnMasterSuccess
   dependsOn:
   - BuildMacOS
+  - BuildMacOS_arm64
   - BuildLinux
   - BuildWindows
   condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'))

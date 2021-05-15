@@ -4,6 +4,85 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
     {
         const check_panic_msg =
             \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+            \\    if (std.mem.eql(u8, message, "reached unreachable code")) {
+            \\        std.process.exit(126); // good
+            \\    }
+            \\    std.process.exit(0); // test failed
+            \\}
+        ;
+
+        cases.addRuntimeSafety("switch on corrupted enum value",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\const E = enum(u32) {
+            \\    X = 1,
+            \\};
+            \\pub fn main() void {
+            \\    var e: E = undefined;
+            \\    @memset(@ptrCast([*]u8, &e), 0x55, @sizeOf(E));
+            \\    switch (e) {
+            \\        .X => @breakpoint(),
+            \\    }
+            \\}
+        );
+
+        cases.addRuntimeSafety("switch on corrupted union value",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\const U = union(enum(u32)) {
+            \\    X: u8,
+            \\};
+            \\pub fn main() void {
+            \\    var u: U = undefined;
+            \\    @memset(@ptrCast([*]u8, &u), 0x55, @sizeOf(U));
+            \\    switch (u) {
+            \\        .X => @breakpoint(),
+            \\    }
+            \\}
+        );
+    }
+
+    {
+        const check_panic_msg =
+            \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+            \\    if (std.mem.eql(u8, message, "invalid enum value")) {
+            \\        std.process.exit(126); // good
+            \\    }
+            \\    std.process.exit(0); // test failed
+            \\}
+        ;
+
+        cases.addRuntimeSafety("@tagName on corrupted enum value",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\const E = enum(u32) {
+            \\    X = 1,
+            \\};
+            \\pub fn main() void {
+            \\    var e: E = undefined;
+            \\    @memset(@ptrCast([*]u8, &e), 0x55, @sizeOf(E));
+            \\    var n = @tagName(e);
+            \\}
+        );
+
+        cases.addRuntimeSafety("@tagName on corrupted union value",
+            \\const std = @import("std");
+        ++ check_panic_msg ++
+            \\const U = union(enum(u32)) {
+            \\    X: u8,
+            \\};
+            \\pub fn main() void {
+            \\    var u: U = undefined;
+            \\    @memset(@ptrCast([*]u8, &u), 0x55, @sizeOf(U));
+            \\    var t: @typeInfo(U).Union.tag_type.? = u;
+            \\    var n = @tagName(t);
+            \\}
+        );
+    }
+
+    {
+        const check_panic_msg =
+            \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
             \\    if (std.mem.eql(u8, message, "index out of bounds")) {
             \\        std.process.exit(126); // good
             \\    }
@@ -13,7 +92,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
 
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf = [4]u8{'a','b','c',0};
             \\    const slice = buf[0..4 :0];
@@ -21,7 +100,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         );
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf = [4]u8{'a','b','c',0};
             \\    const slice = buf[0..:0];
@@ -29,7 +108,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         );
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf_zero = [0]u8{};
             \\    const slice = buf_zero[0..0 :0];
@@ -37,7 +116,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         );
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf_zero = [0]u8{};
             \\    const slice = buf_zero[0..:0];
@@ -45,7 +124,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         );
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf_sentinel = [2:0]u8{'a','b'};
             \\    @ptrCast(*[3]u8, &buf_sentinel)[2] = 0;
@@ -54,7 +133,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         );
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf_slice: []const u8 = &[3]u8{ 'a', 'b', 0 };
             \\    const slice = buf_slice[0..3 :0];
@@ -62,7 +141,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         );
         cases.addRuntimeSafety("slicing operator with sentinel",
             \\const std = @import("std");
-            ++ check_panic_msg ++
+        ++ check_panic_msg ++
             \\pub fn main() void {
             \\    var buf_slice: []const u8 = &[3]u8{ 'a', 'b', 0 };
             \\    const slice = buf_slice[0.. :0];
@@ -89,7 +168,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\const std = @import("std");
         \\const V = @import("std").meta.Vector;
         \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
-        \\    if (std.mem.eql(u8, message, "attempt to cast negative value to unsigned integer")) {
+        \\    if (std.mem.eql(u8, message, "integer cast truncated bits")) {
         \\        std.process.exit(126); // good
         \\    }
         \\    std.process.exit(0); // test failed
@@ -97,6 +176,21 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\pub fn main() void {
         \\    var x = @splat(4, @as(u32, 0x80000000));
         \\    var y = @intCast(V(4, i32), x);
+        \\}
+    );
+
+    cases.addRuntimeSafety("signed-unsigned vector cast",
+        \\const std = @import("std");
+        \\const V = @import("std").meta.Vector;
+        \\pub fn panic(message: []const u8, stack_trace: ?*@import("builtin").StackTrace) noreturn {
+        \\    if (std.mem.eql(u8, message, "attempt to cast negative value to unsigned integer")) {
+        \\        std.process.exit(126); // good
+        \\    }
+        \\    std.process.exit(0); // test failed
+        \\}
+        \\pub fn main() void {
+        \\    var x = @splat(4, @as(i32, -2147483647));
+        \\    var y = @intCast(V(4, u32), x);
         \\}
     );
 
@@ -273,7 +367,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\}
         \\fn add(a: i32, b: i32) i32 {
         \\    if (a > 100) {
-        \\        suspend;
+        \\        suspend {}
         \\    }
         \\    return a + b;
         \\}
@@ -313,7 +407,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    var frame = @asyncCall(&bytes, {}, ptr, .{});
         \\}
         \\fn other() callconv(.Async) void {
-        \\    suspend;
+        \\    suspend {}
         \\}
     );
 
@@ -330,7 +424,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    await frame;
         \\}
         \\fn other() void {
-        \\    suspend;
+        \\    suspend {}
         \\}
     );
 
@@ -346,7 +440,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    other();
         \\}
         \\fn other() void {
-        \\    suspend;
+        \\    suspend {}
         \\}
     );
 
@@ -360,7 +454,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\    resume p; //bad
         \\}
         \\fn suspendOnce() void {
-        \\    suspend;
+        \\    suspend {}
         \\}
     );
 
@@ -925,7 +1019,7 @@ pub fn addCases(cases: *tests.CompareOutputContext) void {
         \\}
         \\
         \\fn failing() anyerror!void {
-        \\    suspend;
+        \\    suspend {}
         \\    return second();
         \\}
         \\

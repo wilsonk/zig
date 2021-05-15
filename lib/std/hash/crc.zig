@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -102,20 +102,26 @@ pub fn Crc32WithPoly(comptime poly: Polynomial) type {
     };
 }
 
+const please_windows_dont_oom = std.Target.current.os.tag == .windows;
+
 test "crc32 ieee" {
+    if (please_windows_dont_oom) return error.SkipZigTest;
+
     const Crc32Ieee = Crc32WithPoly(.IEEE);
 
-    testing.expect(Crc32Ieee.hash("") == 0x00000000);
-    testing.expect(Crc32Ieee.hash("a") == 0xe8b7be43);
-    testing.expect(Crc32Ieee.hash("abc") == 0x352441c2);
+    try testing.expect(Crc32Ieee.hash("") == 0x00000000);
+    try testing.expect(Crc32Ieee.hash("a") == 0xe8b7be43);
+    try testing.expect(Crc32Ieee.hash("abc") == 0x352441c2);
 }
 
 test "crc32 castagnoli" {
+    if (please_windows_dont_oom) return error.SkipZigTest;
+
     const Crc32Castagnoli = Crc32WithPoly(.Castagnoli);
 
-    testing.expect(Crc32Castagnoli.hash("") == 0x00000000);
-    testing.expect(Crc32Castagnoli.hash("a") == 0xc1d04330);
-    testing.expect(Crc32Castagnoli.hash("abc") == 0x364b3fb7);
+    try testing.expect(Crc32Castagnoli.hash("") == 0x00000000);
+    try testing.expect(Crc32Castagnoli.hash("a") == 0xc1d04330);
+    try testing.expect(Crc32Castagnoli.hash("abc") == 0x364b3fb7);
 }
 
 // half-byte lookup table implementation.
@@ -167,17 +173,21 @@ pub fn Crc32SmallWithPoly(comptime poly: Polynomial) type {
 }
 
 test "small crc32 ieee" {
+    if (please_windows_dont_oom) return error.SkipZigTest;
+
     const Crc32Ieee = Crc32SmallWithPoly(.IEEE);
 
-    testing.expect(Crc32Ieee.hash("") == 0x00000000);
-    testing.expect(Crc32Ieee.hash("a") == 0xe8b7be43);
-    testing.expect(Crc32Ieee.hash("abc") == 0x352441c2);
+    try testing.expect(Crc32Ieee.hash("") == 0x00000000);
+    try testing.expect(Crc32Ieee.hash("a") == 0xe8b7be43);
+    try testing.expect(Crc32Ieee.hash("abc") == 0x352441c2);
 }
 
 test "small crc32 castagnoli" {
+    if (please_windows_dont_oom) return error.SkipZigTest;
+
     const Crc32Castagnoli = Crc32SmallWithPoly(.Castagnoli);
 
-    testing.expect(Crc32Castagnoli.hash("") == 0x00000000);
-    testing.expect(Crc32Castagnoli.hash("a") == 0xc1d04330);
-    testing.expect(Crc32Castagnoli.hash("abc") == 0x364b3fb7);
+    try testing.expect(Crc32Castagnoli.hash("") == 0x00000000);
+    try testing.expect(Crc32Castagnoli.hash("a") == 0xc1d04330);
+    try testing.expect(Crc32Castagnoli.hash("abc") == 0x364b3fb7);
 }

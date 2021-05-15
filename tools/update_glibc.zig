@@ -157,7 +157,7 @@ pub fn main() !void {
 
         for (lib_names) |lib_name, lib_name_index| {
             const lib_prefix = if (std.mem.eql(u8, lib_name, "ld")) "" else "lib";
-            const basename = try fmt.allocPrint(allocator, "{}{}.abilist", .{ lib_prefix, lib_name });
+            const basename = try fmt.allocPrint(allocator, "{s}{s}.abilist", .{ lib_prefix, lib_name });
             const abi_list_filename = blk: {
                 const is_c = std.mem.eql(u8, lib_name, "c");
                 const is_m = std.mem.eql(u8, lib_name, "m");
@@ -185,7 +185,7 @@ pub fn main() !void {
             };
             const max_bytes = 10 * 1024 * 1024;
             const contents = std.fs.cwd().readFileAlloc(allocator, abi_list_filename, max_bytes) catch |err| {
-                std.debug.warn("unable to open {}: {}\n", .{ abi_list_filename, err });
+                std.debug.warn("unable to open {s}: {}\n", .{ abi_list_filename, err });
                 std.process.exit(1);
             };
             var lines_it = std.mem.tokenize(contents, "\n");
@@ -200,7 +200,7 @@ pub fn main() !void {
                     continue;
                 }
                 if (std.mem.startsWith(u8, ver, "GCC_")) continue;
-                _ = try global_ver_set.put(ver, undefined);
+                try global_ver_set.put(ver, undefined);
                 const gop = try global_fn_set.getOrPut(name);
                 if (gop.found_existing) {
                     if (!std.mem.eql(u8, gop.entry.value.lib, "c")) {
@@ -225,25 +225,25 @@ pub fn main() !void {
         var list = std.ArrayList([]const u8).init(allocator);
         var it = global_fn_set.iterator();
         while (it.next()) |entry| try list.append(entry.key);
-        std.sort.sort([]const u8, list.span(), {}, strCmpLessThan);
-        break :blk list.span();
+        std.sort.sort([]const u8, list.items, {}, strCmpLessThan);
+        break :blk list.items;
     };
     const global_ver_list = blk: {
         var list = std.ArrayList([]const u8).init(allocator);
         var it = global_ver_set.iterator();
         while (it.next()) |entry| try list.append(entry.key);
-        std.sort.sort([]const u8, list.span(), {}, versionLessThan);
-        break :blk list.span();
+        std.sort.sort([]const u8, list.items, {}, versionLessThan);
+        break :blk list.items;
     };
     {
         const vers_txt_path = try fs.path.join(allocator, &[_][]const u8{ glibc_out_dir, "vers.txt" });
         const vers_txt_file = try fs.cwd().createFile(vers_txt_path, .{});
         defer vers_txt_file.close();
-        var buffered = std.io.bufferedOutStream(vers_txt_file.outStream());
-        const vers_txt = buffered.outStream();
+        var buffered = std.io.bufferedWriter(vers_txt_file.writer());
+        const vers_txt = buffered.writer();
         for (global_ver_list) |name, i| {
-            _ = global_ver_set.put(name, i) catch unreachable;
-            try vers_txt.print("{}\n", .{name});
+            global_ver_set.put(name, i) catch unreachable;
+            try vers_txt.print("{s}\n", .{name});
         }
         try buffered.flush();
     }
@@ -251,12 +251,12 @@ pub fn main() !void {
         const fns_txt_path = try fs.path.join(allocator, &[_][]const u8{ glibc_out_dir, "fns.txt" });
         const fns_txt_file = try fs.cwd().createFile(fns_txt_path, .{});
         defer fns_txt_file.close();
-        var buffered = std.io.bufferedOutStream(fns_txt_file.outStream());
-        const fns_txt = buffered.outStream();
+        var buffered = std.io.bufferedWriter(fns_txt_file.writer());
+        const fns_txt = buffered.writer();
         for (global_fn_list) |name, i| {
             const entry = global_fn_set.getEntry(name).?;
             entry.value.index = i;
-            try fns_txt.print("{} {}\n", .{ name, entry.value.lib });
+            try fns_txt.print("{s} {s}\n", .{ name, entry.value.lib });
         }
         try buffered.flush();
     }
@@ -266,13 +266,13 @@ pub fn main() !void {
     for (abi_lists) |*abi_list, abi_index| {
         const entry = target_functions.getEntry(@ptrToInt(abi_list)).?;
         const fn_vers_list = &entry.value.fn_vers_list;
-        for (entry.value.list.span()) |*ver_fn| {
+        for (entry.value.list.items) |*ver_fn| {
             const gop = try fn_vers_list.getOrPut(ver_fn.name);
             if (!gop.found_existing) {
                 gop.entry.value = std.ArrayList(usize).init(allocator);
             }
             const ver_index = global_ver_set.getEntry(ver_fn.ver).?.value;
-            if (std.mem.indexOfScalar(usize, gop.entry.value.span(), ver_index) == null) {
+            if (std.mem.indexOfScalar(usize, gop.entry.value.items, ver_index) == null) {
                 try gop.entry.value.append(ver_index);
             }
         }
@@ -282,15 +282,15 @@ pub fn main() !void {
         const abilist_txt_path = try fs.path.join(allocator, &[_][]const u8{ glibc_out_dir, "abi.txt" });
         const abilist_txt_file = try fs.cwd().createFile(abilist_txt_path, .{});
         defer abilist_txt_file.close();
-        var buffered = std.io.bufferedOutStream(abilist_txt_file.outStream());
-        const abilist_txt = buffered.outStream();
+        var buffered = std.io.bufferedWriter(abilist_txt_file.writer());
+        const abilist_txt = buffered.writer();
 
         // first iterate over the abi lists
         for (abi_lists) |*abi_list, abi_index| {
             const fn_vers_list = &target_functions.getEntry(@ptrToInt(abi_list)).?.value.fn_vers_list;
             for (abi_list.targets) |target, it_i| {
                 if (it_i != 0) try abilist_txt.writeByte(' ');
-                try abilist_txt.print("{}-linux-{}", .{ @tagName(target.arch), @tagName(target.abi) });
+                try abilist_txt.print("{s}-linux-{s}", .{ @tagName(target.arch), @tagName(target.abi) });
             }
             try abilist_txt.writeByte('\n');
             // next, each line implicitly corresponds to a function
@@ -299,7 +299,7 @@ pub fn main() !void {
                     try abilist_txt.writeByte('\n');
                     continue;
                 };
-                for (entry.value.span()) |ver_index, it_i| {
+                for (entry.value.items) |ver_index, it_i| {
                     if (it_i != 0) try abilist_txt.writeByte(' ');
                     try abilist_txt.print("{d}", .{ver_index});
                 }

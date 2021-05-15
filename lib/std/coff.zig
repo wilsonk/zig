@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -127,7 +127,7 @@ pub const Coff = struct {
     pub fn loadHeader(self: *Coff) !void {
         const pe_pointer_offset = 0x3C;
 
-        const in = self.in_file.inStream();
+        const in = self.in_file.reader();
 
         var magic: [2]u8 = undefined;
         try in.readNoEof(magic[0..]);
@@ -163,7 +163,7 @@ pub const Coff = struct {
     }
 
     fn loadOptionalHeader(self: *Coff) !void {
-        const in = self.in_file.inStream();
+        const in = self.in_file.reader();
         self.pe_header.magic = try in.readIntLittle(u16);
         // For now we're only interested in finding the reference to the .pdb,
         // so we'll skip most of this header, which size is different in 32
@@ -173,8 +173,7 @@ pub const Coff = struct {
             skip_size = 2 * @sizeOf(u8) + 8 * @sizeOf(u16) + 18 * @sizeOf(u32);
         } else if (self.pe_header.magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC) {
             skip_size = 2 * @sizeOf(u8) + 8 * @sizeOf(u16) + 12 * @sizeOf(u32) + 5 * @sizeOf(u64);
-        } else
-            return error.InvalidPEMagic;
+        } else return error.InvalidPEMagic;
 
         try self.in_file.seekBy(skip_size);
 
@@ -206,7 +205,7 @@ pub const Coff = struct {
         const debug_dir = &self.pe_header.data_directory[DEBUG_DIRECTORY];
         const file_offset = debug_dir.virtual_address - header.virtual_address + header.pointer_to_raw_data;
 
-        const in = self.in_file.inStream();
+        const in = self.in_file.reader();
         try self.in_file.seekTo(file_offset);
 
         // Find the correct DebugDirectoryEntry, and where its data is stored.
@@ -216,7 +215,7 @@ pub const Coff = struct {
         blk: while (i < debug_dir_entry_count) : (i += 1) {
             const debug_dir_entry = try in.readStruct(DebugDirectoryEntry);
             if (debug_dir_entry.type == IMAGE_DEBUG_TYPE_CODEVIEW) {
-                for (self.sections.span()) |*section| {
+                for (self.sections.items) |*section| {
                     const section_start = section.header.virtual_address;
                     const section_size = section.header.misc.virtual_size;
                     const rva = debug_dir_entry.address_of_raw_data;
@@ -257,7 +256,7 @@ pub const Coff = struct {
 
         try self.sections.ensureCapacity(self.coff_header.number_of_sections);
 
-        const in = self.in_file.inStream();
+        const in = self.in_file.reader();
 
         var name: [8]u8 = undefined;
 
@@ -282,7 +281,7 @@ pub const Coff = struct {
     }
 
     pub fn getSection(self: *Coff, comptime name: []const u8) ?*Section {
-        for (self.sections.span()) |*sec| {
+        for (self.sections.items) |*sec| {
             if (mem.eql(u8, sec.header.name[0..name.len], name)) {
                 return sec;
             }

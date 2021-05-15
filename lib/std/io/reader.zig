@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -57,22 +57,31 @@ pub fn Reader(
         /// If the number of bytes appended would exceed `max_append_size`, `error.StreamTooLong` is returned
         /// and the `std.ArrayList` has exactly `max_append_size` bytes appended.
         pub fn readAllArrayList(self: Self, array_list: *std.ArrayList(u8), max_append_size: usize) !void {
+            return self.readAllArrayListAligned(null, array_list, max_append_size);
+        }
+
+        pub fn readAllArrayListAligned(
+            self: Self,
+            comptime alignment: ?u29,
+            array_list: *std.ArrayListAligned(u8, alignment),
+            max_append_size: usize,
+        ) !void {
             try array_list.ensureCapacity(math.min(max_append_size, 4096));
             const original_len = array_list.items.len;
             var start_index: usize = original_len;
             while (true) {
                 array_list.expandToCapacity();
-                const dest_slice = array_list.span()[start_index..];
+                const dest_slice = array_list.items[start_index..];
                 const bytes_read = try self.readAll(dest_slice);
                 start_index += bytes_read;
 
                 if (start_index - original_len > max_append_size) {
-                    array_list.shrink(original_len + max_append_size);
+                    array_list.shrinkAndFree(original_len + max_append_size);
                     return error.StreamTooLong;
                 }
 
                 if (bytes_read != dest_slice.len) {
-                    array_list.shrink(start_index);
+                    array_list.shrinkAndFree(start_index);
                     return;
                 }
 
@@ -102,7 +111,7 @@ pub fn Reader(
             delimiter: u8,
             max_size: usize,
         ) !void {
-            array_list.shrink(0);
+            array_list.shrinkRetainingCapacity(0);
             while (true) {
                 var byte: u8 = try self.readByte();
 
@@ -131,6 +140,32 @@ pub fn Reader(
             var array_list = std.ArrayList(u8).init(allocator);
             defer array_list.deinit();
             try self.readUntilDelimiterArrayList(&array_list, delimiter, max_size);
+            return array_list.toOwnedSlice();
+        }
+
+        /// Allocates enough memory to read until `delimiter` or end-of-stream.
+        /// If the allocated memory would be greater than `max_size`, returns
+        /// `error.StreamTooLong`. If end-of-stream is found, returns the rest
+        /// of the stream. If this function is called again after that, returns
+        /// null.
+        /// Caller owns returned memory.
+        /// If this function returns an error, the contents from the stream read so far are lost.
+        pub fn readUntilDelimiterOrEofAlloc(
+            self: Self,
+            allocator: *mem.Allocator,
+            delimiter: u8,
+            max_size: usize,
+        ) !?[]u8 {
+            var array_list = std.ArrayList(u8).init(allocator);
+            defer array_list.deinit();
+            self.readUntilDelimiterArrayList(&array_list, delimiter, max_size) catch |err| switch (err) {
+                error.EndOfStream => if (array_list.items.len == 0) {
+                    return null;
+                } else {
+                    return array_list.toOwnedSlice();
+                },
+                else => |e| return e,
+            };
             return array_list.toOwnedSlice();
         }
 
@@ -236,8 +271,9 @@ pub fn Reader(
             buf_size: usize = 512,
         };
 
+        // `num_bytes` is a `u64` to match `off_t`
         /// Reads `num_bytes` bytes from the stream and discards them
-        pub fn skipBytes(self: Self, num_bytes: usize, comptime options: SkipBytesOptions) !void {
+        pub fn skipBytes(self: Self, num_bytes: u64, comptime options: SkipBytesOptions) !void {
             var buf: [options.buf_size]u8 = undefined;
             var remaining = num_bytes;
 
@@ -293,26 +329,26 @@ pub fn Reader(
 test "Reader" {
     var buf = "a\x02".*;
     const reader = std.io.fixedBufferStream(&buf).reader();
-    testing.expect((try reader.readByte()) == 'a');
-    testing.expect((try reader.readEnum(enum(u8) {
+    try testing.expect((try reader.readByte()) == 'a');
+    try testing.expect((try reader.readEnum(enum(u8) {
         a = 0,
         b = 99,
         c = 2,
         d = 3,
     }, undefined)) == .c);
-    testing.expectError(error.EndOfStream, reader.readByte());
+    try testing.expectError(error.EndOfStream, reader.readByte());
 }
 
 test "Reader.isBytes" {
     const reader = std.io.fixedBufferStream("foobar").reader();
-    testing.expectEqual(true, try reader.isBytes("foo"));
-    testing.expectEqual(false, try reader.isBytes("qux"));
+    try testing.expectEqual(true, try reader.isBytes("foo"));
+    try testing.expectEqual(false, try reader.isBytes("qux"));
 }
 
 test "Reader.skipBytes" {
     const reader = std.io.fixedBufferStream("foobar").reader();
     try reader.skipBytes(3, .{});
-    testing.expect(try reader.isBytes("bar"));
+    try testing.expect(try reader.isBytes("bar"));
     try reader.skipBytes(0, .{});
-    testing.expectError(error.EndOfStream, reader.skipBytes(1, .{}));
+    try testing.expectError(error.EndOfStream, reader.skipBytes(1, .{}));
 }

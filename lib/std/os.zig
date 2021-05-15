@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -32,6 +32,7 @@ const MAX_PATH_BYTES = std.fs.MAX_PATH_BYTES;
 pub const darwin = @import("os/darwin.zig");
 pub const dragonfly = @import("os/dragonfly.zig");
 pub const freebsd = @import("os/freebsd.zig");
+pub const haiku = @import("os/haiku.zig");
 pub const netbsd = @import("os/netbsd.zig");
 pub const openbsd = @import("os/openbsd.zig");
 pub const linux = @import("os/linux.zig");
@@ -43,7 +44,7 @@ comptime {
     assert(@import("std") == std); // std lib tests require --override-lib-dir
 }
 
-test "" {
+test {
     _ = darwin;
     _ = freebsd;
     _ = linux;
@@ -52,6 +53,7 @@ test "" {
     _ = uefi;
     _ = wasi;
     _ = windows;
+    _ = haiku;
 
     _ = @import("os/test.zig");
 }
@@ -66,6 +68,7 @@ else if (builtin.link_libc)
 else switch (builtin.os.tag) {
     .macos, .ios, .watchos, .tvos => darwin,
     .freebsd => freebsd,
+    .haiku => haiku,
     .linux => linux,
     .netbsd => netbsd,
     .openbsd => openbsd,
@@ -141,25 +144,27 @@ pub fn getrandom(buffer: []u8) GetRandomError!void {
             std.c.versionCheck(builtin.Version{ .major = 2, .minor = 25, .patch = 0 }).ok;
 
         while (buf.len != 0) {
-            var err: u16 = undefined;
-
-            const num_read = if (use_c) blk: {
+            const res = if (use_c) blk: {
                 const rc = std.c.getrandom(buf.ptr, buf.len, 0);
-                err = std.c.getErrno(rc);
-                break :blk @bitCast(usize, rc);
+                break :blk .{
+                    .num_read = @bitCast(usize, rc),
+                    .err = std.c.getErrno(rc),
+                };
             } else blk: {
                 const rc = linux.getrandom(buf.ptr, buf.len, 0);
-                err = linux.getErrno(rc);
-                break :blk rc;
+                break :blk .{
+                    .num_read = rc,
+                    .err = linux.getErrno(rc),
+                };
             };
 
-            switch (err) {
-                0 => buf = buf[num_read..],
+            switch (res.err) {
+                0 => buf = buf[res.num_read..],
                 EINVAL => unreachable,
                 EFAULT => unreachable,
                 EINTR => continue,
                 ENOSYS => return getRandomBytesDevURandom(buf),
-                else => return unexpectedErrno(err),
+                else => return unexpectedErrno(res.err),
             }
         }
         return;
@@ -191,7 +196,7 @@ fn getRandomBytesDevURandom(buf: []u8) !void {
         .capable_io_mode = .blocking,
         .intended_io_mode = .blocking,
     };
-    const stream = file.inStream();
+    const stream = file.reader();
     stream.readNoEof(buf) catch return error.Unexpected;
 }
 
@@ -324,7 +329,7 @@ pub const ReadError = error{
 /// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
 /// well as stuffing the errno codes into the last `4096` values. This is noted on the `read` man page.
 /// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
-/// For POSIX the limit is `math.maxInt(isize)`.
+/// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn read(fd: fd_t, buf: []u8) ReadError!usize {
     if (builtin.os.tag == .windows) {
         return windows.ReadFile(fd, buf, null, std.io.default_mode);
@@ -447,6 +452,12 @@ pub const PReadError = ReadError || error{Unseekable};
 /// return error.WouldBlock when EAGAIN is received.
 /// On Windows, if the application has a global event loop enabled, I/O Completion Ports are
 /// used to perform the I/O. `error.WouldBlock` is not possible on Windows.
+///
+/// Linux has a limit on how many bytes may be transferred in one `pread` call, which is `0x7ffff000`
+/// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
+/// well as stuffing the errno codes into the last `4096` values. This is noted on the `read` man page.
+/// The limit on Darwin is `0x7fffffff`, trying to read more than that returns EINVAL.
+/// The corresponding POSIX limit is `math.maxInt(isize)`.
 pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
     if (builtin.os.tag == .windows) {
         return windows.ReadFile(fd, buf, offset, std.io.default_mode);
@@ -478,8 +489,22 @@ pub fn pread(fd: fd_t, buf: []u8, offset: u64) PReadError!usize {
         }
     }
 
+    // Prevent EINVAL.
+    const max_count = switch (std.Target.current.os.tag) {
+        .linux => 0x7ffff000,
+        .macos, .ios, .watchos, .tvos => math.maxInt(i32),
+        else => math.maxInt(isize),
+    };
+    const adjusted_len = math.min(max_count, buf.len);
+
+    const pread_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.pread64
+    else
+        system.pread;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
     while (true) {
-        const rc = system.pread(fd, buf.ptr, buf.len, offset);
+        const rc = pread_sym(fd, buf.ptr, adjusted_len, ioffset);
         switch (errno(rc)) {
             0 => return @intCast(usize, rc),
             EINTR => continue,
@@ -548,15 +573,13 @@ pub fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
     }
 
     while (true) {
-        const rc = if (builtin.link_libc)
-            if (std.Target.current.os.tag == .linux)
-                system.ftruncate64(fd, @bitCast(off_t, length))
-            else
-                system.ftruncate(fd, @bitCast(off_t, length))
+        const ftruncate_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+            system.ftruncate64
         else
-            system.ftruncate(fd, length);
+            system.ftruncate;
 
-        switch (errno(rc)) {
+        const ilen = @bitCast(i64, length); // the OS treats this as unsigned
+        switch (errno(ftruncate_sym(fd, ilen))) {
             0 => return,
             EINTR => continue,
             EFBIG => return error.FileTooBig,
@@ -585,7 +608,7 @@ pub fn ftruncate(fd: fd_t, length: u64) TruncateError!void {
 /// On these systems, the read races with concurrent writes to the same file descriptor.
 pub fn preadv(fd: fd_t, iov: []const iovec, offset: u64) PReadError!usize {
     const have_pread_but_not_preadv = switch (std.Target.current.os.tag) {
-        .windows, .macos, .ios, .watchos, .tvos => true,
+        .windows, .macos, .ios, .watchos, .tvos, .haiku => true,
         else => false,
     };
     if (have_pread_but_not_preadv) {
@@ -618,8 +641,14 @@ pub fn preadv(fd: fd_t, iov: []const iovec, offset: u64) PReadError!usize {
 
     const iov_count = math.cast(u31, iov.len) catch math.maxInt(u31);
 
+    const preadv_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.preadv64
+    else
+        system.preadv;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
     while (true) {
-        const rc = system.preadv(fd, iov.ptr, iov_count, offset);
+        const rc = preadv_sym(fd, iov.ptr, iov_count, ioffset);
         switch (errno(rc)) {
             0 => return @bitCast(usize, rc),
             EINTR => continue,
@@ -656,6 +685,9 @@ pub const WriteError = error{
     /// This error occurs when no global event loop is configured,
     /// and reading from the file descriptor would block.
     WouldBlock,
+
+    /// Connection reset by peer.
+    ConnectionResetByPeer,
 } || UnexpectedError;
 
 /// Write to a file descriptor.
@@ -733,6 +765,7 @@ pub fn write(fd: fd_t, bytes: []const u8) WriteError!usize {
             ENOSPC => return error.NoSpaceLeft,
             EPERM => return error.AccessDenied,
             EPIPE => return error.BrokenPipe,
+            ECONNRESET => return error.ConnectionResetByPeer,
             else => |err| return unexpectedErrno(err),
         }
     }
@@ -801,6 +834,7 @@ pub fn writev(fd: fd_t, iov: []const iovec_const) WriteError!usize {
             ENOSPC => return error.NoSpaceLeft,
             EPERM => return error.AccessDenied,
             EPIPE => return error.BrokenPipe,
+            ECONNRESET => return error.ConnectionResetByPeer,
             else => |err| return unexpectedErrno(err),
         }
     }
@@ -871,8 +905,14 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
     };
     const adjusted_len = math.min(max_count, bytes.len);
 
+    const pwrite_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.pwrite64
+    else
+        system.pwrite;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
     while (true) {
-        const rc = system.pwrite(fd, bytes.ptr, adjusted_len, offset);
+        const rc = pwrite_sym(fd, bytes.ptr, adjusted_len, ioffset);
         switch (errno(rc)) {
             0 => return @intCast(usize, rc),
             EINTR => continue,
@@ -918,7 +958,7 @@ pub fn pwrite(fd: fd_t, bytes: []const u8, offset: u64) PWriteError!usize {
 /// If `iov.len` is larger than will fit in a `u31`, a partial write will occur.
 pub fn pwritev(fd: fd_t, iov: []const iovec_const, offset: u64) PWriteError!usize {
     const have_pwrite_but_not_pwritev = switch (std.Target.current.os.tag) {
-        .windows, .macos, .ios, .watchos, .tvos => true,
+        .windows, .macos, .ios, .watchos, .tvos, .haiku => true,
         else => false,
     };
 
@@ -953,9 +993,15 @@ pub fn pwritev(fd: fd_t, iov: []const iovec_const, offset: u64) PWriteError!usiz
         }
     }
 
+    const pwritev_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.pwritev64
+    else
+        system.pwritev;
+
     const iov_count = math.cast(u31, iov.len) catch math.maxInt(u31);
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
     while (true) {
-        const rc = system.pwritev(fd, iov.ptr, iov_count, offset);
+        const rc = pwritev_sym(fd, iov.ptr, iov_count, ioffset);
         switch (errno(rc)) {
             0 => return @intCast(usize, rc),
             EINTR => continue,
@@ -1020,10 +1066,12 @@ pub const OpenError = error{
 
     BadPathName,
     InvalidUtf8,
+
+    WouldBlock,
 } || UnexpectedError;
 
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
-/// See also `openC`.
+/// See also `openZ`.
 pub fn open(file_path: []const u8, flags: u32, perm: mode_t) OpenError!fd_t {
     if (std.Target.current.os.tag == .windows) {
         const file_path_w = try windows.sliceToPrefixedFileW(file_path);
@@ -1042,8 +1090,14 @@ pub fn openZ(file_path: [*:0]const u8, flags: u32, perm: mode_t) OpenError!fd_t 
         const file_path_w = try windows.cStrToPrefixedFileW(file_path);
         return openW(file_path_w.span(), flags, perm);
     }
+
+    const open_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.open64
+    else
+        system.open;
+
     while (true) {
-        const rc = system.open(file_path, flags, perm);
+        const rc = open_sym(file_path, flags, perm);
         switch (errno(rc)) {
             0 => return @intCast(fd_t, rc),
             EINTR => continue,
@@ -1121,7 +1175,7 @@ pub fn openW(file_path_w: []const u16, flags: u32, perm: mode_t) OpenError!fd_t 
 
 /// Open and possibly create a file. Keeps trying if it gets interrupted.
 /// `file_path` is relative to the open directory handle `dir_fd`.
-/// See also `openatC`.
+/// See also `openatZ`.
 pub fn openat(dir_fd: fd_t, file_path: []const u8, flags: u32, mode: mode_t) OpenError!fd_t {
     if (builtin.os.tag == .wasi) {
         @compileError("use openatWasi instead");
@@ -1176,8 +1230,14 @@ pub fn openatZ(dir_fd: fd_t, file_path: [*:0]const u8, flags: u32, mode: mode_t)
         const file_path_w = try windows.cStrToPrefixedFileW(file_path);
         return openatW(dir_fd, file_path_w.span(), flags, mode);
     }
+
+    const openat_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.openat64
+    else
+        system.openat;
+
     while (true) {
-        const rc = system.openat(dir_fd, file_path, flags, mode);
+        const rc = openat_sym(dir_fd, file_path, flags, mode);
         switch (errno(rc)) {
             0 => return @intCast(fd_t, rc),
             EINTR => continue,
@@ -1201,6 +1261,7 @@ pub fn openatZ(dir_fd: fd_t, file_path: [*:0]const u8, flags: u32, mode: mode_t)
             EEXIST => return error.PathAlreadyExists,
             EBUSY => return error.DeviceBusy,
             EOPNOTSUPP => return error.FileLocksNotSupported,
+            EWOULDBLOCK => return error.WouldBlock,
             else => |err| return unexpectedErrno(err),
         }
     }
@@ -1345,89 +1406,10 @@ pub fn execvpeZ_expandArg0(
 /// If `file` is an absolute path, this is the same as `execveZ`.
 pub fn execvpeZ(
     file: [*:0]const u8,
-    argv: [*:null]const ?[*:0]const u8,
+    argv_ptr: [*:null]const ?[*:0]const u8,
     envp: [*:null]const ?[*:0]const u8,
 ) ExecveError {
-    return execvpeZ_expandArg0(.no_expand, file, argv, envp);
-}
-
-/// This is the same as `execvpe` except if the `arg0_expand` parameter is set to `.expand`,
-/// then argv[0] will be replaced with the expanded version of it, after resolving in accordance
-/// with the PATH environment variable.
-pub fn execvpe_expandArg0(
-    allocator: *mem.Allocator,
-    arg0_expand: Arg0Expand,
-    argv_slice: []const []const u8,
-    env_map: *const std.BufMap,
-) (ExecveError || error{OutOfMemory}) {
-    const argv_buf = try allocator.alloc(?[*:0]u8, argv_slice.len + 1);
-    mem.set(?[*:0]u8, argv_buf, null);
-    defer {
-        for (argv_buf) |arg| {
-            const arg_buf = mem.spanZ(arg) orelse break;
-            allocator.free(arg_buf);
-        }
-        allocator.free(argv_buf);
-    }
-    for (argv_slice) |arg, i| {
-        const arg_buf = try allocator.alloc(u8, arg.len + 1);
-        @memcpy(arg_buf.ptr, arg.ptr, arg.len);
-        arg_buf[arg.len] = 0;
-        argv_buf[i] = arg_buf[0..arg.len :0].ptr;
-    }
-    argv_buf[argv_slice.len] = null;
-    const argv_ptr = argv_buf[0..argv_slice.len :null].ptr;
-
-    const envp_buf = try createNullDelimitedEnvMap(allocator, env_map);
-    defer freeNullDelimitedEnvMap(allocator, envp_buf);
-
-    switch (arg0_expand) {
-        .expand => return execvpeZ_expandArg0(.expand, argv_buf.ptr[0].?, argv_ptr, envp_buf.ptr),
-        .no_expand => return execvpeZ_expandArg0(.no_expand, argv_buf.ptr[0].?, argv_ptr, envp_buf.ptr),
-    }
-}
-
-/// This function must allocate memory to add a null terminating bytes on path and each arg.
-/// It must also convert to KEY=VALUE\0 format for environment variables, and include null
-/// pointers after the args and after the environment variables.
-/// `argv_slice[0]` is the executable path.
-/// This function also uses the PATH environment variable to get the full path to the executable.
-pub fn execvpe(
-    allocator: *mem.Allocator,
-    argv_slice: []const []const u8,
-    env_map: *const std.BufMap,
-) (ExecveError || error{OutOfMemory}) {
-    return execvpe_expandArg0(allocator, .no_expand, argv_slice, env_map);
-}
-
-pub fn createNullDelimitedEnvMap(allocator: *mem.Allocator, env_map: *const std.BufMap) ![:null]?[*:0]u8 {
-    const envp_count = env_map.count();
-    const envp_buf = try allocator.alloc(?[*:0]u8, envp_count + 1);
-    mem.set(?[*:0]u8, envp_buf, null);
-    errdefer freeNullDelimitedEnvMap(allocator, envp_buf);
-    {
-        var it = env_map.iterator();
-        var i: usize = 0;
-        while (it.next()) |pair| : (i += 1) {
-            const env_buf = try allocator.alloc(u8, pair.key.len + pair.value.len + 2);
-            @memcpy(env_buf.ptr, pair.key.ptr, pair.key.len);
-            env_buf[pair.key.len] = '=';
-            @memcpy(env_buf.ptr + pair.key.len + 1, pair.value.ptr, pair.value.len);
-            const len = env_buf.len - 1;
-            env_buf[len] = 0;
-            envp_buf[i] = env_buf[0..len :0].ptr;
-        }
-        assert(i == envp_count);
-    }
-    return envp_buf[0..envp_count :null];
-}
-
-pub fn freeNullDelimitedEnvMap(allocator: *mem.Allocator, envp_buf: []?[*:0]u8) void {
-    for (envp_buf) |env| {
-        const env_buf = if (env) |ptr| ptr[0 .. mem.len(ptr) + 1] else break;
-        allocator.free(env_buf);
-    }
-    allocator.free(envp_buf);
+    return execvpeZ_expandArg0(.no_expand, file, argv_ptr, envp);
 }
 
 /// Get an environment variable.
@@ -1554,12 +1536,12 @@ pub fn getcwd(out_buffer: []u8) GetCwdError![]u8 {
         break :blk errno(system.getcwd(out_buffer.ptr, out_buffer.len));
     };
     switch (err) {
-        0 => return mem.spanZ(@ptrCast([*:0]u8, out_buffer.ptr)),
+        0 => return mem.spanZ(std.meta.assumeSentinel(out_buffer.ptr, 0)),
         EFAULT => unreachable,
         EINVAL => unreachable,
         ENOENT => return error.CurrentWorkingDirectoryUnlinked,
         ERANGE => return error.NameTooLong,
-        else => return unexpectedErrno(@intCast(usize, err)),
+        else => return unexpectedErrno(err),
     }
 }
 
@@ -1696,6 +1678,92 @@ pub fn symlinkatZ(target_path: [*:0]const u8, newdirfd: fd_t, sym_link_path: [*:
     }
 }
 
+pub const LinkError = UnexpectedError || error{
+    AccessDenied,
+    DiskQuota,
+    PathAlreadyExists,
+    FileSystem,
+    SymLinkLoop,
+    LinkQuotaExceeded,
+    NameTooLong,
+    FileNotFound,
+    SystemResources,
+    NoSpaceLeft,
+    ReadOnlyFileSystem,
+    NotSameFileSystem,
+};
+
+pub fn linkZ(oldpath: [*:0]const u8, newpath: [*:0]const u8, flags: i32) LinkError!void {
+    switch (errno(system.link(oldpath, newpath, flags))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EDQUOT => return error.DiskQuota,
+        EEXIST => return error.PathAlreadyExists,
+        EFAULT => unreachable,
+        EIO => return error.FileSystem,
+        ELOOP => return error.SymLinkLoop,
+        EMLINK => return error.LinkQuotaExceeded,
+        ENAMETOOLONG => return error.NameTooLong,
+        ENOENT => return error.FileNotFound,
+        ENOMEM => return error.SystemResources,
+        ENOSPC => return error.NoSpaceLeft,
+        EPERM => return error.AccessDenied,
+        EROFS => return error.ReadOnlyFileSystem,
+        EXDEV => return error.NotSameFileSystem,
+        EINVAL => unreachable,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn link(oldpath: []const u8, newpath: []const u8, flags: i32) LinkError!void {
+    const old = try toPosixPath(oldpath);
+    const new = try toPosixPath(newpath);
+    return try linkZ(&old, &new, flags);
+}
+
+pub const LinkatError = LinkError || error{NotDir};
+
+pub fn linkatZ(
+    olddir: fd_t,
+    oldpath: [*:0]const u8,
+    newdir: fd_t,
+    newpath: [*:0]const u8,
+    flags: i32,
+) LinkatError!void {
+    switch (errno(system.linkat(olddir, oldpath, newdir, newpath, flags))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EDQUOT => return error.DiskQuota,
+        EEXIST => return error.PathAlreadyExists,
+        EFAULT => unreachable,
+        EIO => return error.FileSystem,
+        ELOOP => return error.SymLinkLoop,
+        EMLINK => return error.LinkQuotaExceeded,
+        ENAMETOOLONG => return error.NameTooLong,
+        ENOENT => return error.FileNotFound,
+        ENOMEM => return error.SystemResources,
+        ENOSPC => return error.NoSpaceLeft,
+        ENOTDIR => return error.NotDir,
+        EPERM => return error.AccessDenied,
+        EROFS => return error.ReadOnlyFileSystem,
+        EXDEV => return error.NotSameFileSystem,
+        EINVAL => unreachable,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub fn linkat(
+    olddir: fd_t,
+    oldpath: []const u8,
+    newdir: fd_t,
+    newpath: []const u8,
+    flags: i32,
+) LinkatError!void {
+    const old = try toPosixPath(oldpath);
+    const new = try toPosixPath(newpath);
+    return try linkatZ(olddir, &old, newdir, &new, flags);
+}
+
 pub const UnlinkError = error{
     FileNotFound,
 
@@ -1720,7 +1788,7 @@ pub const UnlinkError = error{
 } || UnexpectedError;
 
 /// Delete a name and possibly the file it refers to.
-/// See also `unlinkC`.
+/// See also `unlinkZ`.
 pub fn unlink(file_path: []const u8) UnlinkError!void {
     if (builtin.os.tag == .wasi) {
         @compileError("unlink is not supported in WASI; use unlinkat instead");
@@ -2297,6 +2365,10 @@ pub const ChangeCurDirError = error{
     FileNotFound,
     SystemResources,
     NotDir,
+    BadPathName,
+
+    /// On Windows, file paths must be valid Unicode.
+    InvalidUtf8,
 } || UnexpectedError;
 
 /// Changes the current working directory of the calling process.
@@ -2305,8 +2377,10 @@ pub fn chdir(dir_path: []const u8) ChangeCurDirError!void {
     if (builtin.os.tag == .wasi) {
         @compileError("chdir is not supported in WASI");
     } else if (builtin.os.tag == .windows) {
-        const dir_path_w = try windows.sliceToPrefixedFileW(dir_path);
-        @compileError("TODO implement chdir for Windows");
+        var utf16_dir_path: [windows.PATH_MAX_WIDE]u16 = undefined;
+        const len = try std.unicode.utf8ToUtf16Le(utf16_dir_path[0..], dir_path);
+        if (len > utf16_dir_path.len) return error.NameTooLong;
+        return chdirW(utf16_dir_path[0..len]);
     } else {
         const dir_path_c = try toPosixPath(dir_path);
         return chdirZ(&dir_path_c);
@@ -2318,8 +2392,10 @@ pub const chdirC = @compileError("deprecated: renamed to chdirZ");
 /// Same as `chdir` except the parameter is null-terminated.
 pub fn chdirZ(dir_path: [*:0]const u8) ChangeCurDirError!void {
     if (builtin.os.tag == .windows) {
-        const dir_path_w = try windows.cStrToPrefixedFileW(dir_path);
-        @compileError("TODO implement chdir for Windows");
+        var utf16_dir_path: [windows.PATH_MAX_WIDE]u16 = undefined;
+        const len = try std.unicode.utf8ToUtf16Le(utf16_dir_path[0..], dir_path);
+        if (len > utf16_dir_path.len) return error.NameTooLong;
+        return chdirW(utf16_dir_path[0..len]);
     }
     switch (errno(system.chdir(dir_path))) {
         0 => return,
@@ -2333,6 +2409,14 @@ pub fn chdirZ(dir_path: [*:0]const u8) ChangeCurDirError!void {
         ENOTDIR => return error.NotDir,
         else => |err| return unexpectedErrno(err),
     }
+}
+
+/// Windows-only. Same as `chdir` except the paramter is WTF16 encoded.
+pub fn chdirW(dir_path: []const u16) ChangeCurDirError!void {
+    windows.SetCurrentDirectory(dir_path) catch |err| switch (err) {
+        error.NoDevice => return error.FileSystem,
+        else => |e| return e,
+    };
 }
 
 pub const FchdirError = error{
@@ -2687,6 +2771,68 @@ pub fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!socket_t
     }
 }
 
+pub const ShutdownError = error{
+    ConnectionAborted,
+
+    /// Connection was reset by peer, application should close socket as it is no longer usable.
+    ConnectionResetByPeer,
+    BlockingOperationInProgress,
+
+    /// The network subsystem has failed.
+    NetworkSubsystemFailed,
+
+    /// The socket is not connected (connection-oriented sockets only).
+    SocketNotConnected,
+    SystemResources,
+} || UnexpectedError;
+
+pub const ShutdownHow = enum { recv, send, both };
+
+/// Shutdown socket send/receive operations
+pub fn shutdown(sock: socket_t, how: ShutdownHow) ShutdownError!void {
+    if (builtin.os.tag == .windows) {
+        const result = windows.ws2_32.shutdown(sock, switch (how) {
+            .recv => windows.ws2_32.SD_RECEIVE,
+            .send => windows.ws2_32.SD_SEND,
+            .both => windows.ws2_32.SD_BOTH,
+        });
+        if (0 != result) switch (windows.ws2_32.WSAGetLastError()) {
+            .WSAECONNABORTED => return error.ConnectionAborted,
+            .WSAECONNRESET => return error.ConnectionResetByPeer,
+            .WSAEINPROGRESS => return error.BlockingOperationInProgress,
+            .WSAEINVAL => unreachable,
+            .WSAENETDOWN => return error.NetworkSubsystemFailed,
+            .WSAENOTCONN => return error.SocketNotConnected,
+            .WSAENOTSOCK => unreachable,
+            .WSANOTINITIALISED => unreachable,
+            else => |err| return windows.unexpectedWSAError(err),
+        };
+    } else {
+        const rc = system.shutdown(sock, switch (how) {
+            .recv => SHUT_RD,
+            .send => SHUT_WR,
+            .both => SHUT_RDWR,
+        });
+        switch (errno(rc)) {
+            0 => return,
+            EBADF => unreachable,
+            EINVAL => unreachable,
+            ENOTCONN => return error.SocketNotConnected,
+            ENOTSOCK => unreachable,
+            ENOBUFS => return error.SystemResources,
+            else => |err| return unexpectedErrno(err),
+        }
+    }
+}
+
+pub fn closeSocket(sock: socket_t) void {
+    if (builtin.os.tag == .windows) {
+        windows.closesocket(sock) catch unreachable;
+    } else {
+        close(sock);
+    }
+}
+
 pub const BindError = error{
     /// The address is protected, and the user is not the superuser.
     /// For UNIX domain sockets: Search permission is denied on  a  component
@@ -2731,8 +2877,8 @@ pub const BindError = error{
 
 /// addr is `*const T` where T is one of the sockaddr
 pub fn bind(sock: socket_t, addr: *const sockaddr, len: socklen_t) BindError!void {
-    const rc = system.bind(sock, addr, len);
     if (builtin.os.tag == .windows) {
+        const rc = windows.bind(sock, addr, len);
         if (rc == windows.ws2_32.SOCKET_ERROR) {
             switch (windows.ws2_32.WSAGetLastError()) {
                 .WSANOTINITIALISED => unreachable, // not initialized WSA
@@ -2750,6 +2896,7 @@ pub fn bind(sock: socket_t, addr: *const sockaddr, len: socklen_t) BindError!voi
         }
         return;
     } else {
+        const rc = system.bind(sock, addr, len);
         switch (errno(rc)) {
             0 => return,
             EACCES => return error.AccessDenied,
@@ -2771,7 +2918,7 @@ pub fn bind(sock: socket_t, addr: *const sockaddr, len: socklen_t) BindError!voi
     unreachable;
 }
 
-const ListenError = error{
+pub const ListenError = error{
     /// Another socket is already listening on the same port.
     /// For Internet domain sockets, the  socket referred to by sockfd had not previously
     /// been bound to an address and, upon attempting to bind it to an ephemeral port, it
@@ -2800,8 +2947,8 @@ const ListenError = error{
 } || UnexpectedError;
 
 pub fn listen(sock: socket_t, backlog: u31) ListenError!void {
-    const rc = system.listen(sock, backlog);
     if (builtin.os.tag == .windows) {
+        const rc = windows.listen(sock, backlog);
         if (rc == windows.ws2_32.SOCKET_ERROR) {
             switch (windows.ws2_32.WSAGetLastError()) {
                 .WSANOTINITIALISED => unreachable, // not initialized WSA
@@ -2818,6 +2965,7 @@ pub fn listen(sock: socket_t, backlog: u31) ListenError!void {
         }
         return;
     } else {
+        const rc = system.listen(sock, backlog);
         switch (errno(rc)) {
             0 => return,
             EADDRINUSE => return error.AddressInUse,
@@ -2856,10 +3004,6 @@ pub const AcceptError = error{
     /// This error occurs when no global event loop is configured,
     /// and accepting from the socket would block.
     WouldBlock,
-
-    /// Permission to create a socket of the specified type and/or
-    /// protocol is denied.
-    PermissionDenied,
 
     /// An incoming connection was indicated, but was subsequently terminated by the
     /// remote peer prior to accepting the call.
@@ -2905,6 +3049,8 @@ pub fn accept(
     const accepted_sock = while (true) {
         const rc = if (have_accept4)
             system.accept4(sock, addr, addr_size, flags)
+        else if (builtin.os.tag == .windows)
+            windows.accept(sock, addr, addr_size)
         else
             system.accept(sock, addr, addr_size);
 
@@ -3077,8 +3223,8 @@ pub const GetSockNameError = error{
 } || UnexpectedError;
 
 pub fn getsockname(sock: socket_t, addr: *sockaddr, addrlen: *socklen_t) GetSockNameError!void {
-    const rc = system.getsockname(sock, addr, addrlen);
     if (builtin.os.tag == .windows) {
+        const rc = windows.getsockname(sock, addr, addrlen);
         if (rc == windows.ws2_32.SOCKET_ERROR) {
             switch (windows.ws2_32.WSAGetLastError()) {
                 .WSANOTINITIALISED => unreachable,
@@ -3091,6 +3237,36 @@ pub fn getsockname(sock: socket_t, addr: *sockaddr, addrlen: *socklen_t) GetSock
         }
         return;
     } else {
+        const rc = system.getsockname(sock, addr, addrlen);
+        switch (errno(rc)) {
+            0 => return,
+            else => |err| return unexpectedErrno(err),
+
+            EBADF => unreachable, // always a race condition
+            EFAULT => unreachable,
+            EINVAL => unreachable, // invalid parameters
+            ENOTSOCK => return error.FileDescriptorNotASocket,
+            ENOBUFS => return error.SystemResources,
+        }
+    }
+}
+
+pub fn getpeername(sock: socket_t, addr: *sockaddr, addrlen: *socklen_t) GetSockNameError!void {
+    if (builtin.os.tag == .windows) {
+        const rc = windows.getpeername(sock, addr, addrlen);
+        if (rc == windows.ws2_32.SOCKET_ERROR) {
+            switch (windows.ws2_32.WSAGetLastError()) {
+                .WSANOTINITIALISED => unreachable,
+                .WSAENETDOWN => return error.NetworkSubsystemFailed,
+                .WSAEFAULT => unreachable, // addr or addrlen have invalid pointers or addrlen points to an incorrect value
+                .WSAENOTSOCK => return error.FileDescriptorNotASocket,
+                .WSAEINVAL => return error.SocketNotBound,
+                else => |err| return windows.unexpectedWSAError(err),
+            }
+        }
+        return;
+    } else {
+        const rc = system.getpeername(sock, addr, addrlen);
         switch (errno(rc)) {
             0 => return,
             else => |err| return unexpectedErrno(err),
@@ -3143,6 +3319,12 @@ pub const ConnectError = error{
 
     /// The given path for the unix socket does not exist.
     FileNotFound,
+
+    /// Connection was reset by peer before connect could complete.
+    ConnectionResetByPeer,
+
+    /// Socket is non-blocking and already has a pending connection in progress.
+    ConnectionPending,
 } || UnexpectedError;
 
 /// Initiate a connection on a socket.
@@ -3156,9 +3338,11 @@ pub fn connect(sock: socket_t, sock_addr: *const sockaddr, len: socklen_t) Conne
             .WSAEADDRINUSE => return error.AddressInUse,
             .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
             .WSAECONNREFUSED => return error.ConnectionRefused,
+            .WSAECONNRESET => return error.ConnectionResetByPeer,
             .WSAETIMEDOUT => return error.ConnectionTimedOut,
-            .WSAEHOSTUNREACH // TODO: should we return NetworkUnreachable in this case as well?
-            , .WSAENETUNREACH => return error.NetworkUnreachable,
+            .WSAEHOSTUNREACH, // TODO: should we return NetworkUnreachable in this case as well?
+            .WSAENETUNREACH,
+            => return error.NetworkUnreachable,
             .WSAEFAULT => unreachable,
             .WSAEINVAL => unreachable,
             .WSAEISCONN => unreachable,
@@ -3181,9 +3365,10 @@ pub fn connect(sock: socket_t, sock_addr: *const sockaddr, len: socklen_t) Conne
             EADDRNOTAVAIL => return error.AddressNotAvailable,
             EAFNOSUPPORT => return error.AddressFamilyNotSupported,
             EAGAIN, EINPROGRESS => return error.WouldBlock,
-            EALREADY => unreachable, // The socket is nonblocking and a previous connection attempt has not yet been completed.
+            EALREADY => return error.ConnectionPending,
             EBADF => unreachable, // sockfd is not a valid open file descriptor.
             ECONNREFUSED => return error.ConnectionRefused,
+            ECONNRESET => return error.ConnectionResetByPeer,
             EFAULT => unreachable, // The socket structure address is outside the user's address space.
             EINTR => continue,
             EISCONN => unreachable, // The socket is already connected.
@@ -3211,7 +3396,7 @@ pub fn getsockoptError(sockfd: fd_t) ConnectError!void {
             EADDRNOTAVAIL => return error.AddressNotAvailable,
             EAFNOSUPPORT => return error.AddressFamilyNotSupported,
             EAGAIN => return error.SystemResources,
-            EALREADY => unreachable, // The socket is nonblocking and a previous connection attempt has not yet been completed.
+            EALREADY => return error.ConnectionPending,
             EBADF => unreachable, // sockfd is not a valid open file descriptor.
             ECONNREFUSED => return error.ConnectionRefused,
             EFAULT => unreachable, // The socket structure address is outside the user's address space.
@@ -3220,6 +3405,7 @@ pub fn getsockoptError(sockfd: fd_t) ConnectError!void {
             ENOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
             EPROTOTYPE => unreachable, // The socket type does not support the requested communications protocol.
             ETIMEDOUT => return error.ConnectionTimedOut,
+            ECONNRESET => return error.ConnectionResetByPeer,
             else => |err| return unexpectedErrno(err),
         },
         EBADF => unreachable, // The argument sockfd is not a valid file descriptor.
@@ -3254,6 +3440,11 @@ pub fn waitpid(pid: pid_t, flags: u32) WaitPidResult {
     }
 }
 
+pub const Stat = if (builtin.link_libc)
+    system.libc_stat
+else
+    system.kernel_stat;
+
 pub const FStatError = error{
     SystemResources,
 
@@ -3280,8 +3471,13 @@ pub fn fstat(fd: fd_t) FStatError!Stat {
         @compileError("fstat is not yet implemented on Windows");
     }
 
-    var stat: Stat = undefined;
-    switch (errno(system.fstat(fd, &stat))) {
+    const fstat_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.fstat64
+    else
+        system.fstat;
+
+    var stat = mem.zeroes(Stat);
+    switch (errno(fstat_sym(fd, &stat))) {
         0 => return stat,
         EINVAL => unreachable,
         EBADF => unreachable, // Always a race condition.
@@ -3291,7 +3487,7 @@ pub fn fstat(fd: fd_t) FStatError!Stat {
     }
 }
 
-pub const FStatAtError = FStatError || error{ NameTooLong, FileNotFound };
+pub const FStatAtError = FStatError || error{ NameTooLong, FileNotFound, SymLinkLoop };
 
 /// Similar to `fstat`, but returns stat of a resource pointed to by `pathname`
 /// which is relative to `dirfd` handle.
@@ -3331,15 +3527,22 @@ pub fn fstatatWasi(dirfd: fd_t, pathname: []const u8, flags: u32) FStatAtError!S
 /// Same as `fstatat` but `pathname` is null-terminated.
 /// See also `fstatat`.
 pub fn fstatatZ(dirfd: fd_t, pathname: [*:0]const u8, flags: u32) FStatAtError!Stat {
-    var stat: Stat = undefined;
-    switch (errno(system.fstatat(dirfd, pathname, &stat, flags))) {
+    const fstatat_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.fstatat64
+    else
+        system.fstatat;
+
+    var stat = mem.zeroes(Stat);
+    switch (errno(fstatat_sym(dirfd, pathname, &stat, flags))) {
         0 => return stat,
         EINVAL => unreachable,
         EBADF => unreachable, // Always a race condition.
         ENOMEM => return error.SystemResources,
         EACCES => return error.AccessDenied,
+        EPERM => return error.AccessDenied,
         EFAULT => unreachable,
         ENAMETOOLONG => return error.NameTooLong,
+        ELOOP => return error.SymLinkLoop,
         ENOENT => return error.FileNotFound,
         ENOTDIR => return error.FileNotFound,
         else => |err| return unexpectedErrno(err),
@@ -3542,12 +3745,17 @@ pub fn mmap(
     fd: fd_t,
     offset: u64,
 ) MMapError![]align(mem.page_size) u8 {
+    const mmap_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.mmap64
+    else
+        system.mmap;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
+    const rc = mmap_sym(ptr, length, prot, flags, fd, ioffset);
     const err = if (builtin.link_libc) blk: {
-        const rc = std.c.mmap(ptr, length, prot, flags, fd, offset);
         if (rc != std.c.MAP_FAILED) return @ptrCast([*]align(mem.page_size) u8, @alignCast(mem.page_size, rc))[0..length];
-        break :blk @intCast(usize, system._errno().*);
+        break :blk system._errno().*;
     } else blk: {
-        const rc = system.mmap(ptr, length, prot, flags, fd, offset);
         const err = errno(rc);
         if (err == 0) return @intToPtr([*]align(mem.page_size) u8, rc)[0..length];
         break :blk err;
@@ -3716,6 +3924,7 @@ pub fn faccessatW(dirfd: fd_t, sub_path_w: [*:0]const u16, mode: u32, flags: u32
         .SUCCESS => return,
         .OBJECT_NAME_NOT_FOUND => return error.FileNotFound,
         .OBJECT_PATH_NOT_FOUND => return error.FileNotFound,
+        .OBJECT_NAME_INVALID => unreachable,
         .INVALID_PARAMETER => unreachable,
         .ACCESS_DENIED => return error.PermissionDenied,
         .OBJECT_PATH_SYNTAX_BAD => unreachable,
@@ -3742,31 +3951,54 @@ pub fn pipe() PipeError![2]fd_t {
 }
 
 pub fn pipe2(flags: u32) PipeError![2]fd_t {
-    if (comptime std.Target.current.isDarwin()) {
-        var fds: [2]fd_t = try pipe();
-        if (flags == 0) return fds;
-        errdefer {
-            close(fds[0]);
-            close(fds[1]);
-        }
-        for (fds) |fd| switch (errno(system.fcntl(fd, F_SETFL, flags))) {
-            0 => {},
+    if (@hasDecl(system, "pipe2")) {
+        var fds: [2]fd_t = undefined;
+        switch (errno(system.pipe2(&fds, flags))) {
+            0 => return fds,
             EINVAL => unreachable, // Invalid flags
-            EBADF => unreachable, // Always a race condition
+            EFAULT => unreachable, // Invalid fds pointer
+            ENFILE => return error.SystemFdQuotaExceeded,
+            EMFILE => return error.ProcessFdQuotaExceeded,
             else => |err| return unexpectedErrno(err),
-        };
-        return fds;
+        }
     }
 
-    var fds: [2]fd_t = undefined;
-    switch (errno(system.pipe2(&fds, flags))) {
-        0 => return fds,
-        EINVAL => unreachable, // Invalid flags
-        EFAULT => unreachable, // Invalid fds pointer
-        ENFILE => return error.SystemFdQuotaExceeded,
-        EMFILE => return error.ProcessFdQuotaExceeded,
-        else => |err| return unexpectedErrno(err),
+    var fds: [2]fd_t = try pipe();
+    errdefer {
+        close(fds[0]);
+        close(fds[1]);
     }
+
+    if (flags == 0)
+        return fds;
+
+    // O_CLOEXEC is special, it's a file descriptor flag and must be set using
+    // F_SETFD.
+    if (flags & O_CLOEXEC != 0) {
+        for (fds) |fd| {
+            switch (errno(system.fcntl(fd, F_SETFD, @as(u32, FD_CLOEXEC)))) {
+                0 => {},
+                EINVAL => unreachable, // Invalid flags
+                EBADF => unreachable, // Always a race condition
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+    }
+
+    const new_flags = flags & ~@as(u32, O_CLOEXEC);
+    // Set every other flag affecting the file status using F_SETFL.
+    if (new_flags != 0) {
+        for (fds) |fd| {
+            switch (errno(system.fcntl(fd, F_SETFL, new_flags))) {
+                0 => {},
+                EINVAL => unreachable, // Invalid flags
+                EBADF => unreachable, // Always a race condition
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+    }
+
+    return fds;
 }
 
 pub const SysCtlError = error{
@@ -3784,7 +4016,10 @@ pub fn sysctl(
     newlen: usize,
 ) SysCtlError!void {
     if (builtin.os.tag == .wasi) {
-        @panic("unsupported");
+        @panic("unsupported"); // TODO should be compile error, not panic
+    }
+    if (builtin.os.tag == .haiku) {
+        @panic("unsupported"); // TODO should be compile error, not panic
     }
 
     const name_len = math.cast(c_uint, name.len) catch return error.NameTooLong;
@@ -3808,7 +4043,10 @@ pub fn sysctlbynameZ(
     newlen: usize,
 ) SysCtlError!void {
     if (builtin.os.tag == .wasi) {
-        @panic("unsupported");
+        @panic("unsupported"); // TODO should be compile error, not panic
+    }
+    if (builtin.os.tag == .haiku) {
+        @panic("unsupported"); // TODO should be compile error, not panic
     }
 
     switch (errno(system.sysctlbyname(name, oldp, oldlenp, newp, newlen))) {
@@ -3867,8 +4105,14 @@ pub fn lseek_SET(fd: fd_t, offset: u64) SeekError!void {
             else => |err| return unexpectedErrno(err),
         }
     }
-    const ipos = @bitCast(i64, offset); // the OS treats this as unsigned
-    switch (errno(system.lseek(fd, ipos, SEEK_SET))) {
+
+    const lseek_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.lseek64
+    else
+        system.lseek;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
+    switch (errno(lseek_sym(fd, ioffset, SEEK_SET))) {
         0 => return,
         EBADF => unreachable, // always a race condition
         EINVAL => return error.Unseekable,
@@ -3909,7 +4153,13 @@ pub fn lseek_CUR(fd: fd_t, offset: i64) SeekError!void {
             else => |err| return unexpectedErrno(err),
         }
     }
-    switch (errno(system.lseek(fd, offset, SEEK_CUR))) {
+    const lseek_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.lseek64
+    else
+        system.lseek;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
+    switch (errno(lseek_sym(fd, ioffset, SEEK_CUR))) {
         0 => return,
         EBADF => unreachable, // always a race condition
         EINVAL => return error.Unseekable,
@@ -3950,7 +4200,13 @@ pub fn lseek_END(fd: fd_t, offset: i64) SeekError!void {
             else => |err| return unexpectedErrno(err),
         }
     }
-    switch (errno(system.lseek(fd, offset, SEEK_END))) {
+    const lseek_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.lseek64
+    else
+        system.lseek;
+
+    const ioffset = @bitCast(i64, offset); // the OS treats this as unsigned
+    switch (errno(lseek_sym(fd, ioffset, SEEK_END))) {
         0 => return,
         EBADF => unreachable, // always a race condition
         EINVAL => return error.Unseekable,
@@ -3991,7 +4247,12 @@ pub fn lseek_CUR_get(fd: fd_t) SeekError!u64 {
             else => |err| return unexpectedErrno(err),
         }
     }
-    const rc = system.lseek(fd, 0, SEEK_CUR);
+    const lseek_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.lseek64
+    else
+        system.lseek;
+
+    const rc = lseek_sym(fd, 0, SEEK_CUR);
     switch (errno(rc)) {
         0 => return @bitCast(u64, rc),
         EBADF => unreachable, // always a race condition
@@ -4036,12 +4297,14 @@ fn setSockFlags(sock: socket_t, flags: u32) !void {
             var fd_flags = fcntl(sock, F_GETFD, 0) catch |err| switch (err) {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
+                error.PermissionDenied => unreachable,
                 else => |e| return e,
             };
             fd_flags |= FD_CLOEXEC;
             _ = fcntl(sock, F_SETFD, fd_flags) catch |err| switch (err) {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
+                error.PermissionDenied => unreachable,
                 else => |e| return e,
             };
         }
@@ -4062,12 +4325,14 @@ fn setSockFlags(sock: socket_t, flags: u32) !void {
             var fl_flags = fcntl(sock, F_GETFL, 0) catch |err| switch (err) {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
+                error.PermissionDenied => unreachable,
                 else => |e| return e,
             };
             fl_flags |= O_NONBLOCK;
             _ = fcntl(sock, F_SETFL, fl_flags) catch |err| switch (err) {
                 error.FileBusy => unreachable,
                 error.Locked => unreachable,
+                error.PermissionDenied => unreachable,
                 else => |e| return e,
             };
         }
@@ -4153,6 +4418,7 @@ pub fn realpathZ(pathname: [*:0]const u8, out_buffer: *[MAX_PATH_BYTES]u8) RealP
         const flags = if (builtin.os.tag == .linux) O_PATH | O_NONBLOCK | O_CLOEXEC else O_NONBLOCK | O_CLOEXEC;
         const fd = openZ(pathname, flags, 0) catch |err| switch (err) {
             error.FileLocksNotSupported => unreachable,
+            error.WouldBlock => unreachable,
             else => |e| return e,
         };
         defer close(fd);
@@ -4170,7 +4436,7 @@ pub fn realpathZ(pathname: [*:0]const u8, out_buffer: *[MAX_PATH_BYTES]u8) RealP
         ENAMETOOLONG => return error.NameTooLong,
         ELOOP => return error.SymLinkLoop,
         EIO => return error.InputOutput,
-        else => |err| return unexpectedErrno(@intCast(usize, err)),
+        else => |err| return unexpectedErrno(err),
     };
     return mem.spanZ(result_path);
 }
@@ -4242,9 +4508,9 @@ pub fn getFdPath(fd: fd_t, out_buffer: *[MAX_PATH_BYTES]u8) RealPathError![]u8 {
         },
         .linux => {
             var procfs_buf: ["/proc/self/fd/-2147483648".len:0]u8 = undefined;
-            const proc_path = std.fmt.bufPrint(procfs_buf[0..], "/proc/self/fd/{}\x00", .{fd}) catch unreachable;
+            const proc_path = std.fmt.bufPrint(procfs_buf[0..], "/proc/self/fd/{d}\x00", .{fd}) catch unreachable;
 
-            const target = readlinkZ(@ptrCast([*:0]const u8, proc_path.ptr), out_buffer) catch |err| {
+            const target = readlinkZ(std.meta.assumeSentinel(proc_path.ptr, 0), out_buffer) catch |err| {
                 switch (err) {
                     error.UnsupportedReparsePointType => unreachable, // Windows only,
                     else => |e| return e,
@@ -4306,7 +4572,7 @@ pub fn dl_iterate_phdr(
 
     const elf_base = std.process.getBaseAddress();
     const ehdr = @intToPtr(*elf.Ehdr, elf_base);
-    // Make sure the base address points to an ELF image
+    // Make sure the base address points to an ELF image.
     assert(mem.eql(u8, ehdr.e_ident[0..4], "\x7fELF"));
     const n_phdr = ehdr.e_phnum;
     const phdrs = (@intToPtr([*]elf.Phdr, elf_base + ehdr.e_phoff))[0..n_phdr];
@@ -4314,10 +4580,21 @@ pub fn dl_iterate_phdr(
     var it = dl.linkmap_iterator(phdrs) catch unreachable;
 
     // The executable has no dynamic link segment, create a single entry for
-    // the whole ELF image
+    // the whole ELF image.
     if (it.end()) {
+        // Find the base address for the ELF image, if this is a PIE the value
+        // is non-zero.
+        const base_address = for (phdrs) |*phdr| {
+            if (phdr.p_type == elf.PT_PHDR) {
+                break @ptrToInt(phdrs.ptr) - phdr.p_vaddr;
+                // We could try computing the difference between _DYNAMIC and
+                // the p_vaddr of the PT_DYNAMIC section, but using the phdr is
+                // good enough (Is it?).
+            }
+        } else unreachable;
+
         var info = dl_phdr_info{
-            .dlpi_addr = 0,
+            .dlpi_addr = base_address,
             .dlpi_name = "/proc/self/exe",
             .dlpi_phdr = phdrs.ptr,
             .dlpi_phnum = ehdr.e_phnum,
@@ -4326,7 +4603,7 @@ pub fn dl_iterate_phdr(
         return callback(&info, @sizeOf(dl_phdr_info), context);
     }
 
-    // Last return value from the callback function
+    // Last return value from the callback function.
     while (it.next()) |entry| {
         var dlpi_phdr: [*]elf.Phdr = undefined;
         var dlpi_phnum: u16 = undefined;
@@ -4435,11 +4712,11 @@ pub fn sched_getaffinity(pid: pid_t) SchedGetAffinityError!cpu_set_t {
 
 /// Used to convert a slice to a null terminated slice on the stack.
 /// TODO https://github.com/ziglang/zig/issues/287
-pub fn toPosixPath(file_path: []const u8) ![PATH_MAX - 1:0]u8 {
+pub fn toPosixPath(file_path: []const u8) ![MAX_PATH_BYTES - 1:0]u8 {
     if (std.debug.runtime_safety) assert(std.mem.indexOfScalar(u8, file_path, 0) == null);
-    var path_with_null: [PATH_MAX - 1:0]u8 = undefined;
+    var path_with_null: [MAX_PATH_BYTES - 1:0]u8 = undefined;
     // >= rather than > to make room for the null byte
-    if (file_path.len >= PATH_MAX) return error.NameTooLong;
+    if (file_path.len >= MAX_PATH_BYTES) return error.NameTooLong;
     mem.copy(u8, &path_with_null, file_path);
     path_with_null[file_path.len] = 0;
     return path_with_null;
@@ -4460,9 +4737,13 @@ pub const UnexpectedError = error{
 
 /// Call this when you made a syscall or something that sets errno
 /// and you get an unexpected error.
-pub fn unexpectedErrno(err: usize) UnexpectedError {
+pub fn unexpectedErrno(err: anytype) UnexpectedError {
+    if (@typeInfo(@TypeOf(err)) != .Int) {
+        @compileError("err is expected to be an integer");
+    }
+
     if (unexpected_error_tracing) {
-        std.debug.warn("unexpected errno: {}\n", .{err});
+        std.debug.warn("unexpected errno: {d}\n", .{err});
         std.debug.dumpCurrentStackTrace(null);
     }
     return error.Unexpected;
@@ -4488,7 +4769,7 @@ pub fn sigaltstack(ss: ?*stack_t, old_ss: ?*stack_t) SigaltstackError!void {
 }
 
 /// Examine and change a signal action.
-pub fn sigaction(sig: u6, act: *const Sigaction, oact: ?*Sigaction) void {
+pub fn sigaction(sig: u6, act: ?*const Sigaction, oact: ?*Sigaction) void {
     switch (errno(system.sigaction(sig, act, oact))) {
         0 => return,
         EFAULT => unreachable,
@@ -4557,7 +4838,7 @@ pub const GetHostNameError = error{PermissionDenied} || UnexpectedError;
 pub fn gethostname(name_buffer: *[HOST_NAME_MAX]u8) GetHostNameError![]u8 {
     if (builtin.link_libc) {
         switch (errno(system.gethostname(name_buffer, name_buffer.len))) {
-            0 => return mem.spanZ(@ptrCast([*:0]u8, name_buffer)),
+            0 => return mem.spanZ(std.meta.assumeSentinel(name_buffer, 0)),
             EFAULT => unreachable,
             ENAMETOOLONG => unreachable, // HOST_NAME_MAX prevents this
             EPERM => return error.PermissionDenied,
@@ -4566,7 +4847,7 @@ pub fn gethostname(name_buffer: *[HOST_NAME_MAX]u8) GetHostNameError![]u8 {
     }
     if (builtin.os.tag == .linux) {
         const uts = uname();
-        const hostname = mem.spanZ(@ptrCast([*:0]const u8, &uts.nodename));
+        const hostname = mem.spanZ(std.meta.assumeSentinel(&uts.nodename, 0));
         mem.copy(u8, name_buffer, hostname);
         return name_buffer[0..hostname.len];
     }
@@ -4670,7 +4951,105 @@ pub const SendError = error{
     BrokenPipe,
 
     FileDescriptorNotASocket,
+
+    /// Network is unreachable.
+    NetworkUnreachable,
+
+    /// The local network interface used to reach the destination is down.
+    NetworkSubsystemFailed,
 } || UnexpectedError;
+
+pub const SendMsgError = SendError || error{
+    /// The passed address didn't have the correct address family in its sa_family field.
+    AddressFamilyNotSupported,
+
+    /// Returned when socket is AF_UNIX and the given path has a symlink loop.
+    SymLinkLoop,
+
+    /// Returned when socket is AF_UNIX and the given path length exceeds `MAX_PATH_BYTES` bytes.
+    NameTooLong,
+
+    /// Returned when socket is AF_UNIX and the given path does not point to an existing file.
+    FileNotFound,
+    NotDir,
+
+    /// The socket is not connected (connection-oriented sockets only).
+    SocketNotConnected,
+    AddressNotAvailable,
+};
+
+pub fn sendmsg(
+    /// The file descriptor of the sending socket.
+    sockfd: socket_t,
+    /// Message header and iovecs
+    msg: msghdr_const,
+    flags: u32,
+) SendMsgError!usize {
+    while (true) {
+        const rc = system.sendmsg(sockfd, &msg, flags);
+        if (builtin.os.tag == .windows) {
+            if (rc == windows.ws2_32.SOCKET_ERROR) {
+                switch (windows.ws2_32.WSAGetLastError()) {
+                    .WSAEACCES => return error.AccessDenied,
+                    .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
+                    .WSAECONNRESET => return error.ConnectionResetByPeer,
+                    .WSAEMSGSIZE => return error.MessageTooBig,
+                    .WSAENOBUFS => return error.SystemResources,
+                    .WSAENOTSOCK => return error.FileDescriptorNotASocket,
+                    .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                    .WSAEDESTADDRREQ => unreachable, // A destination address is required.
+                    .WSAEFAULT => unreachable, // The lpBuffers, lpTo, lpOverlapped, lpNumberOfBytesSent, or lpCompletionRoutine parameters are not part of the user address space, or the lpTo parameter is too small.
+                    .WSAEHOSTUNREACH => return error.NetworkUnreachable,
+                    // TODO: WSAEINPROGRESS, WSAEINTR
+                    .WSAEINVAL => unreachable,
+                    .WSAENETDOWN => return error.NetworkSubsystemFailed,
+                    .WSAENETRESET => return error.ConnectionResetByPeer,
+                    .WSAENETUNREACH => return error.NetworkUnreachable,
+                    .WSAENOTCONN => return error.SocketNotConnected,
+                    .WSAESHUTDOWN => unreachable, // The socket has been shut down; it is not possible to WSASendTo on a socket after shutdown has been invoked with how set to SD_SEND or SD_BOTH.
+                    .WSAEWOULDBLOCK => return error.WouldBlock,
+                    .WSANOTINITIALISED => unreachable, // A successful WSAStartup call must occur before using this function.
+                    else => |err| return windows.unexpectedWSAError(err),
+                }
+            } else {
+                return @intCast(usize, rc);
+            }
+        } else {
+            switch (errno(rc)) {
+                0 => return @intCast(usize, rc),
+
+                EACCES => return error.AccessDenied,
+                EAGAIN => return error.WouldBlock,
+                EALREADY => return error.FastOpenAlreadyInProgress,
+                EBADF => unreachable, // always a race condition
+                ECONNRESET => return error.ConnectionResetByPeer,
+                EDESTADDRREQ => unreachable, // The socket is not connection-mode, and no peer address is set.
+                EFAULT => unreachable, // An invalid user space address was specified for an argument.
+                EINTR => continue,
+                EINVAL => unreachable, // Invalid argument passed.
+                EISCONN => unreachable, // connection-mode socket was connected already but a recipient was specified
+                EMSGSIZE => return error.MessageTooBig,
+                ENOBUFS => return error.SystemResources,
+                ENOMEM => return error.SystemResources,
+                ENOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
+                EOPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
+                EPIPE => return error.BrokenPipe,
+                EAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                ELOOP => return error.SymLinkLoop,
+                ENAMETOOLONG => return error.NameTooLong,
+                ENOENT => return error.FileNotFound,
+                ENOTDIR => return error.NotDir,
+                EHOSTUNREACH => return error.NetworkUnreachable,
+                ENETUNREACH => return error.NetworkUnreachable,
+                ENOTCONN => return error.SocketNotConnected,
+                ENETDOWN => return error.NetworkSubsystemFailed,
+                else => |err| return unexpectedErrno(err),
+            }
+        }
+    }
+}
+
+pub const SendToError = SendMsgError;
 
 /// Transmit a message to another socket.
 ///
@@ -4705,18 +5084,31 @@ pub fn sendto(
     flags: u32,
     dest_addr: ?*const sockaddr,
     addrlen: socklen_t,
-) SendError!usize {
+) SendToError!usize {
     while (true) {
         const rc = system.sendto(sockfd, buf.ptr, buf.len, flags, dest_addr, addrlen);
         if (builtin.os.tag == .windows) {
             if (rc == windows.ws2_32.SOCKET_ERROR) {
                 switch (windows.ws2_32.WSAGetLastError()) {
                     .WSAEACCES => return error.AccessDenied,
+                    .WSAEADDRNOTAVAIL => return error.AddressNotAvailable,
                     .WSAECONNRESET => return error.ConnectionResetByPeer,
                     .WSAEMSGSIZE => return error.MessageTooBig,
                     .WSAENOBUFS => return error.SystemResources,
                     .WSAENOTSOCK => return error.FileDescriptorNotASocket,
-                    // TODO: handle more errors
+                    .WSAEAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                    .WSAEDESTADDRREQ => unreachable, // A destination address is required.
+                    .WSAEFAULT => unreachable, // The lpBuffers, lpTo, lpOverlapped, lpNumberOfBytesSent, or lpCompletionRoutine parameters are not part of the user address space, or the lpTo parameter is too small.
+                    .WSAEHOSTUNREACH => return error.NetworkUnreachable,
+                    // TODO: WSAEINPROGRESS, WSAEINTR
+                    .WSAEINVAL => unreachable,
+                    .WSAENETDOWN => return error.NetworkSubsystemFailed,
+                    .WSAENETRESET => return error.ConnectionResetByPeer,
+                    .WSAENETUNREACH => return error.NetworkUnreachable,
+                    .WSAENOTCONN => return error.SocketNotConnected,
+                    .WSAESHUTDOWN => unreachable, // The socket has been shut down; it is not possible to WSASendTo on a socket after shutdown has been invoked with how set to SD_SEND or SD_BOTH.
+                    .WSAEWOULDBLOCK => return error.WouldBlock,
+                    .WSANOTINITIALISED => unreachable, // A successful WSAStartup call must occur before using this function.
                     else => |err| return windows.unexpectedWSAError(err),
                 }
             } else {
@@ -4739,10 +5131,18 @@ pub fn sendto(
                 EMSGSIZE => return error.MessageTooBig,
                 ENOBUFS => return error.SystemResources,
                 ENOMEM => return error.SystemResources,
-                ENOTCONN => unreachable, // The socket is not connected, and no target has been given.
                 ENOTSOCK => unreachable, // The file descriptor sockfd does not refer to a socket.
                 EOPNOTSUPP => unreachable, // Some bit in the flags argument is inappropriate for the socket type.
                 EPIPE => return error.BrokenPipe,
+                EAFNOSUPPORT => return error.AddressFamilyNotSupported,
+                ELOOP => return error.SymLinkLoop,
+                ENAMETOOLONG => return error.NameTooLong,
+                ENOENT => return error.FileNotFound,
+                ENOTDIR => return error.NotDir,
+                EHOSTUNREACH => return error.NetworkUnreachable,
+                ENETUNREACH => return error.NetworkUnreachable,
+                ENOTCONN => return error.SocketNotConnected,
+                ENETDOWN => return error.NetworkSubsystemFailed,
                 else => |err| return unexpectedErrno(err),
             }
         }
@@ -4774,7 +5174,17 @@ pub fn send(
     buf: []const u8,
     flags: u32,
 ) SendError!usize {
-    return sendto(sockfd, buf, flags, null, 0);
+    return sendto(sockfd, buf, flags, null, 0) catch |err| switch (err) {
+        error.AddressFamilyNotSupported => unreachable,
+        error.SymLinkLoop => unreachable,
+        error.NameTooLong => unreachable,
+        error.FileNotFound => unreachable,
+        error.NotDir => unreachable,
+        error.NetworkUnreachable => unreachable,
+        error.AddressNotAvailable => unreachable,
+        error.SocketNotConnected => unreachable,
+        else => |e| return e,
+    };
 }
 
 pub const SendFileError = PReadError || WriteError || SendError;
@@ -4818,7 +5228,7 @@ fn count_iovec_bytes(iovs: []const iovec_const) usize {
 ///
 /// Linux has a limit on how many bytes may be transferred in one `sendfile` call, which is `0x7ffff000`
 /// on both 64-bit and 32-bit systems. This is due to using a signed C int as the return value, as
-/// well as stuffing the errno codes into the last `4096` values. This is cited on the `sendfile` man page.
+/// well as stuffing the errno codes into the last `4096` values. This is noted on the `sendfile` man page.
 /// The limit on Darwin is `0x7fffffff`, trying to write more than that returns EINVAL.
 /// The corresponding POSIX limit on this is `math.maxInt(isize)`.
 pub fn sendfile(
@@ -4834,12 +5244,7 @@ pub fn sendfile(
     var total_written: usize = 0;
 
     // Prevents EOVERFLOW.
-    const size_t = @Type(std.builtin.TypeInfo{
-        .Int = .{
-            .is_signed = false,
-            .bits = @typeInfo(usize).Int.bits - 1,
-        },
-    });
+    const size_t = std.meta.Int(.unsigned, @typeInfo(usize).Int.bits - 1);
     const max_count = switch (std.Target.current.os.tag) {
         .linux => 0x7ffff000,
         .macos, .ios, .watchos, .tvos => math.maxInt(i32),
@@ -4865,9 +5270,14 @@ pub fn sendfile(
             // Here we match BSD behavior, making a zero count value send as many bytes as possible.
             const adjusted_count = if (in_len == 0) max_count else math.min(in_len, @as(size_t, max_count));
 
+            const sendfile_sym = if (builtin.link_libc)
+                system.sendfile64
+            else
+                system.sendfile;
+
             while (true) {
                 var offset: off_t = @bitCast(off_t, in_offset);
-                const rc = system.sendfile(out_fd, in_fd, &offset, adjusted_count);
+                const rc = sendfile_sym(out_fd, in_fd, &offset, adjusted_count);
                 switch (errno(rc)) {
                     0 => {
                         const amt = @bitCast(usize, rc);
@@ -5112,7 +5522,7 @@ pub const CopyFileRangeError = error{
 
 var has_copy_file_range_syscall = init: {
     const kernel_has_syscall = std.Target.current.os.isAtLeast(.linux, .{ .major = 4, .minor = 5 }) orelse true;
-    break :init std.atomic.Int(bool).init(kernel_has_syscall);
+    break :init std.atomic.Bool.init(kernel_has_syscall);
 };
 
 /// Transfer data between file descriptors at specified offsets.
@@ -5144,7 +5554,7 @@ pub fn copy_file_range(fd_in: fd_t, off_in: u64, fd_out: fd_t, off_out: u64, len
     const use_c = std.c.versionCheck(.{ .major = 2, .minor = 27, .patch = 0 }).ok;
 
     if (std.Target.current.os.tag == .linux and
-        (use_c or has_copy_file_range_syscall.get()))
+        (use_c or has_copy_file_range_syscall.load(.Monotonic)))
     {
         const sys = if (use_c) std.c else linux;
 
@@ -5169,7 +5579,7 @@ pub fn copy_file_range(fd_in: fd_t, off_in: u64, fd_out: fd_t, off_out: u64, len
             EXDEV => {},
             // syscall added in Linux 4.5, use fallback
             ENOSYS => {
-                has_copy_file_range_syscall.set(false);
+                has_copy_file_range_syscall.store(true, .Monotonic);
             },
             else => |err| return unexpectedErrno(err),
         }
@@ -5194,7 +5604,8 @@ pub const PollError = error{
 
 pub fn poll(fds: []pollfd, timeout: i32) PollError!usize {
     while (true) {
-        const rc = system.poll(fds.ptr, fds.len, timeout);
+        const fds_count = math.cast(nfds_t, fds.len) catch return error.SystemResources;
+        const rc = system.poll(fds.ptr, fds_count, timeout);
         if (builtin.os.tag == .windows) {
             if (rc == windows.ws2_32.SOCKET_ERROR) {
                 switch (windows.ws2_32.WSAGetLastError()) {
@@ -5218,6 +5629,32 @@ pub fn poll(fds: []pollfd, timeout: i32) PollError!usize {
             }
         }
         unreachable;
+    }
+}
+
+pub const PPollError = error{
+    /// The operation was interrupted by a delivery of a signal before it could complete.
+    SignalInterrupt,
+
+    /// The kernel had no space to allocate file descriptor tables.
+    SystemResources,
+} || UnexpectedError;
+
+pub fn ppoll(fds: []pollfd, timeout: ?*const timespec, mask: ?*const sigset_t) PPollError!usize {
+    var ts: timespec = undefined;
+    var ts_ptr: ?*timespec = null;
+    if (timeout) |timeout_ns| {
+        ts_ptr = &ts;
+        ts = timeout_ns.*;
+    }
+    const rc = system.ppoll(fds.ptr, fds.len, ts_ptr, mask);
+    switch (errno(rc)) {
+        0 => return @intCast(usize, rc),
+        EFAULT => unreachable,
+        EINTR => return error.SignalInterrupt,
+        EINVAL => unreachable,
+        ENOMEM => return error.SystemResources,
+        else => |err| return unexpectedErrno(err),
     }
 }
 
@@ -5291,6 +5728,7 @@ pub fn recvfrom(
                 EAGAIN => return error.WouldBlock,
                 ENOMEM => return error.SystemResources,
                 ECONNREFUSED => return error.ConnectionRefused,
+                ECONNRESET => return error.ConnectionResetByPeer,
                 else => |err| return unexpectedErrno(err),
             }
         }
@@ -5378,22 +5816,45 @@ pub const SetSockOptError = error{
 
     /// Insufficient resources are available in the system to complete the call.
     SystemResources,
+
+    // Setting the socket option requires more elevated permissions.
+    PermissionDenied,
+
+    NetworkSubsystemFailed,
+    FileDescriptorNotASocket,
+    SocketNotBound,
 } || UnexpectedError;
 
 /// Set a socket's options.
-pub fn setsockopt(fd: fd_t, level: u32, optname: u32, opt: []const u8) SetSockOptError!void {
-    switch (errno(system.setsockopt(fd, level, optname, opt.ptr, @intCast(socklen_t, opt.len)))) {
-        0 => {},
-        EBADF => unreachable, // always a race condition
-        ENOTSOCK => unreachable, // always a race condition
-        EINVAL => unreachable,
-        EFAULT => unreachable,
-        EDOM => return error.TimeoutTooBig,
-        EISCONN => return error.AlreadyConnected,
-        ENOPROTOOPT => return error.InvalidProtocolOption,
-        ENOMEM => return error.SystemResources,
-        ENOBUFS => return error.SystemResources,
-        else => |err| return unexpectedErrno(err),
+pub fn setsockopt(fd: socket_t, level: u32, optname: u32, opt: []const u8) SetSockOptError!void {
+    if (builtin.os.tag == .windows) {
+        const rc = windows.ws2_32.setsockopt(fd, @intCast(i32, level), @intCast(i32, optname), opt.ptr, @intCast(i32, opt.len));
+        if (rc == windows.ws2_32.SOCKET_ERROR) {
+            switch (windows.ws2_32.WSAGetLastError()) {
+                .WSANOTINITIALISED => unreachable,
+                .WSAENETDOWN => return error.NetworkSubsystemFailed,
+                .WSAEFAULT => unreachable,
+                .WSAENOTSOCK => return error.FileDescriptorNotASocket,
+                .WSAEINVAL => return error.SocketNotBound,
+                else => |err| return windows.unexpectedWSAError(err),
+            }
+        }
+        return;
+    } else {
+        switch (errno(system.setsockopt(fd, level, optname, opt.ptr, @intCast(socklen_t, opt.len)))) {
+            0 => {},
+            EBADF => unreachable, // always a race condition
+            ENOTSOCK => unreachable, // always a race condition
+            EINVAL => unreachable,
+            EFAULT => unreachable,
+            EDOM => return error.TimeoutTooBig,
+            EISCONN => return error.AlreadyConnected,
+            ENOPROTOOPT => return error.InvalidProtocolOption,
+            ENOMEM => return error.SystemResources,
+            ENOBUFS => return error.SystemResources,
+            EPERM => return error.PermissionDenied,
+            else => |err| return unexpectedErrno(err),
+        }
     }
 }
 
@@ -5485,7 +5946,7 @@ pub fn tcsetattr(handle: fd_t, optional_action: TCSA, termios_p: termios) Termio
     }
 }
 
-const IoCtl_SIOCGIFINDEX_Error = error{
+pub const IoCtl_SIOCGIFINDEX_Error = error{
     FileSystem,
     InterfaceNotFound,
 } || UnexpectedError;
@@ -5517,7 +5978,7 @@ pub fn signalfd(fd: fd_t, mask: *const sigset_t, flags: u32) !fd_t {
         EMFILE => return error.ProcessResources,
         ENODEV => return error.InodeMountFail,
         ENOSYS => return error.SystemOutdated,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
     }
 }
 
@@ -5542,7 +6003,7 @@ pub fn syncfs(fd: fd_t) SyncError!void {
         EIO => return error.InputOutput,
         ENOSPC => return error.NoSpaceLeft,
         EDQUOT => return error.DiskQuota,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
     }
 }
 
@@ -5566,7 +6027,7 @@ pub fn fsync(fd: fd_t) SyncError!void {
         EIO => return error.InputOutput,
         ENOSPC => return error.NoSpaceLeft,
         EDQUOT => return error.DiskQuota,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
     }
 }
 
@@ -5585,7 +6046,7 @@ pub fn fdatasync(fd: fd_t) SyncError!void {
         EIO => return error.InputOutput,
         ENOSPC => return error.NoSpaceLeft,
         EDQUOT => return error.DiskQuota,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
     }
 }
 
@@ -5604,16 +6065,19 @@ pub const PrctlError = error{
     PermissionDenied,
 } || UnexpectedError;
 
-pub fn prctl(option: i32, args: anytype) PrctlError!u31 {
+pub fn prctl(option: PR, args: anytype) PrctlError!u31 {
     if (@typeInfo(@TypeOf(args)) != .Struct)
         @compileError("Expected tuple or struct argument, found " ++ @typeName(@TypeOf(args)));
     if (args.len > 4)
         @compileError("prctl takes a maximum of 4 optional arguments");
 
     var buf: [4]usize = undefined;
-    inline for (args) |arg, i| buf[i] = arg;
+    {
+        comptime var i = 0;
+        inline while (i < args.len) : (i += 1) buf[i] = args[i];
+    }
 
-    const rc = system.prctl(option, buf[0], buf[1], buf[2], buf[3]);
+    const rc = system.prctl(@enumToInt(option), buf[0], buf[1], buf[2], buf[3]);
     switch (errno(rc)) {
         0 => return @intCast(u31, rc),
         EACCES => return error.AccessDenied,
@@ -5624,34 +6088,88 @@ pub fn prctl(option: i32, args: anytype) PrctlError!u31 {
         EOPNOTSUPP => return error.OperationNotSupported,
         EPERM, EBUSY => return error.PermissionDenied,
         ERANGE => unreachable,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
     }
 }
 
 pub const GetrlimitError = UnexpectedError;
 
 pub fn getrlimit(resource: rlimit_resource) GetrlimitError!rlimit {
-    // TODO implement for systems other than linux and enable test
+    const getrlimit_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.getrlimit64
+    else
+        system.getrlimit;
+
     var limits: rlimit = undefined;
-    const rc = system.getrlimit(resource, &limits);
-    switch (errno(rc)) {
+    switch (errno(getrlimit_sym(resource, &limits))) {
         0 => return limits,
         EFAULT => unreachable, // bogus pointer
         EINVAL => unreachable,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
     }
 }
 
 pub const SetrlimitError = error{PermissionDenied} || UnexpectedError;
 
 pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void {
-    // TODO implement for systems other than linux and enable test
-    const rc = system.setrlimit(resource, &limits);
-    switch (errno(rc)) {
+    const setrlimit_sym = if (builtin.os.tag == .linux and builtin.link_libc)
+        system.setrlimit64
+    else
+        system.setrlimit;
+
+    switch (errno(setrlimit_sym(resource, &limits))) {
         0 => return,
         EFAULT => unreachable, // bogus pointer
         EINVAL => unreachable,
         EPERM => return error.PermissionDenied,
-        else => |err| return std.os.unexpectedErrno(err),
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub const MadviseError = error{
+    /// advice is MADV_REMOVE, but the specified address range is not a shared writable mapping.
+    AccessDenied,
+    /// advice is MADV_HWPOISON, but the caller does not have the CAP_SYS_ADMIN capability.
+    PermissionDenied,
+    /// A kernel resource was temporarily unavailable.
+    SystemResources,
+    /// One of the following:
+    /// * addr is not page-aligned or length is negative
+    /// * advice is not valid
+    /// * advice is MADV_DONTNEED or MADV_REMOVE and the specified address range
+    ///   includes locked, Huge TLB pages, or VM_PFNMAP pages.
+    /// * advice is MADV_MERGEABLE or MADV_UNMERGEABLE, but the kernel was not
+    ///   configured with CONFIG_KSM.
+    /// * advice is MADV_FREE or MADV_WIPEONFORK but the specified address range
+    ///   includes file, Huge TLB, MAP_SHARED, or VM_PFNMAP ranges.
+    InvalidSyscall,
+    /// (for MADV_WILLNEED) Paging in this area would exceed the process's
+    /// maximum resident set size.
+    WouldExceedMaximumResidentSetSize,
+    /// One of the following:
+    /// * (for MADV_WILLNEED) Not enough memory: paging in failed.
+    /// * Addresses in the specified range are not currently mapped, or
+    ///   are outside the address space of the process.
+    OutOfMemory,
+    /// The madvise syscall is not available on this version and configuration
+    /// of the Linux kernel.
+    MadviseUnavailable,
+    /// The operating system returned an undocumented error code.
+    Unexpected,
+};
+
+/// Give advice about use of memory.
+/// This syscall is optional and is sometimes configured to be disabled.
+pub fn madvise(ptr: [*]align(mem.page_size) u8, length: usize, advice: u32) MadviseError!void {
+    switch (errno(system.madvise(ptr, length, advice))) {
+        0 => return,
+        EACCES => return error.AccessDenied,
+        EAGAIN => return error.SystemResources,
+        EBADF => unreachable, // The map exists, but the area maps something that isn't a file.
+        EINVAL => return error.InvalidSyscall,
+        EIO => return error.WouldExceedMaximumResidentSetSize,
+        ENOMEM => return error.OutOfMemory,
+        ENOSYS => return error.MadviseUnavailable,
+        else => |err| return unexpectedErrno(err),
     }
 }

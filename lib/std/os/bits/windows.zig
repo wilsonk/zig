@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -20,6 +20,11 @@ pub const time_t = c_longlong;
 pub const timespec = extern struct {
     tv_sec: time_t,
     tv_nsec: c_long,
+};
+
+pub const timeval = extern struct {
+    tv_sec: c_long,
+    tv_usec: c_long,
 };
 
 pub const sig_atomic_t = c_int;
@@ -243,6 +248,7 @@ pub const IPPROTO_UDP = ws2_32.IPPROTO_UDP;
 pub const IPPROTO_ICMPV6 = ws2_32.IPPROTO_ICMPV6;
 pub const IPPROTO_RM = ws2_32.IPPROTO_RM;
 
+pub const nfds_t = c_ulong;
 pub const pollfd = ws2_32.pollfd;
 
 pub const POLLRDNORM = ws2_32.POLLRDNORM;
@@ -255,6 +261,41 @@ pub const POLLWRBAND = ws2_32.POLLWRBAND;
 pub const POLLERR = ws2_32.POLLERR;
 pub const POLLHUP = ws2_32.POLLHUP;
 pub const POLLNVAL = ws2_32.POLLNVAL;
+
+pub const SOL_SOCKET = ws2_32.SOL_SOCKET;
+
+pub const SO_DEBUG = ws2_32.SO_DEBUG;
+pub const SO_ACCEPTCONN = ws2_32.SO_ACCEPTCONN;
+pub const SO_REUSEADDR = ws2_32.SO_REUSEADDR;
+pub const SO_KEEPALIVE = ws2_32.SO_KEEPALIVE;
+pub const SO_DONTROUTE = ws2_32.SO_DONTROUTE;
+pub const SO_BROADCAST = ws2_32.SO_BROADCAST;
+pub const SO_USELOOPBACK = ws2_32.SO_USELOOPBACK;
+pub const SO_LINGER = ws2_32.SO_LINGER;
+pub const SO_OOBINLINE = ws2_32.SO_OOBINLINE;
+
+pub const SO_DONTLINGER = ws2_32.SO_DONTLINGER;
+pub const SO_EXCLUSIVEADDRUSE = ws2_32.SO_EXCLUSIVEADDRUSE;
+
+pub const SO_SNDBUF = ws2_32.SO_SNDBUF;
+pub const SO_RCVBUF = ws2_32.SO_RCVBUF;
+pub const SO_SNDLOWAT = ws2_32.SO_SNDLOWAT;
+pub const SO_RCVLOWAT = ws2_32.SO_RCVLOWAT;
+pub const SO_SNDTIMEO = ws2_32.SO_SNDTIMEO;
+pub const SO_RCVTIMEO = ws2_32.SO_RCVTIMEO;
+pub const SO_ERROR = ws2_32.SO_ERROR;
+pub const SO_TYPE = ws2_32.SO_TYPE;
+
+pub const SO_GROUP_ID = ws2_32.SO_GROUP_ID;
+pub const SO_GROUP_PRIORITY = ws2_32.SO_GROUP_PRIORITY;
+pub const SO_MAX_MSG_SIZE = ws2_32.SO_MAX_MSG_SIZE;
+pub const SO_PROTOCOL_INFOA = ws2_32.SO_PROTOCOL_INFOA;
+pub const SO_PROTOCOL_INFOW = ws2_32.SO_PROTOCOL_INFOW;
+
+pub const PVD_CONFIG = ws2_32.PVD_CONFIG;
+pub const SO_CONDITIONAL_ACCEPT = ws2_32.SO_CONDITIONAL_ACCEPT;
+
+pub const TCP_NODELAY = ws2_32.TCP_NODELAY;
 
 pub const O_RDONLY = 0o0;
 pub const O_WRONLY = 0o1;
@@ -280,3 +321,5 @@ pub const O_NOATIME = 0o1000000;
 pub const O_PATH = 0o10000000;
 pub const O_TMPFILE = 0o20200000;
 pub const O_NDELAY = O_NONBLOCK;
+
+pub const IFNAMESIZE = 30;

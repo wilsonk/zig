@@ -91,8 +91,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                     "-D_CRTBLD",
                     "-D_WIN32_WINNT=0x0f00",
                     "-D__MSVCRT_VERSION__=0x700",
-                    "-g",
-                    "-O2",
                 });
                 c_source_files[i] = .{
                     .src_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
@@ -119,9 +117,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
 
                 "-isystem",
                 try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libc", "include", "any-windows-any" }),
-
-                "-g",
-                "-O2",
             });
             var c_source_files = std.ArrayList(Compilation.CSourceFile).init(arena);
 
@@ -167,8 +162,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 "-D_CRTBLD",
                 "-D_WIN32_WINNT=0x0f00",
                 "-D__MSVCRT_VERSION__=0x700",
-                "-g",
-                "-O2",
 
                 "-isystem",
                 try comp.zig_lib_directory.join(arena, &[_][]const u8{ "libc", "include", "any-windows-any" }),
@@ -233,8 +226,6 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 "-D_CRTBLD",
                 "-D_WIN32_WINNT=0x0f00",
                 "-D__MSVCRT_VERSION__=0x700",
-                "-g",
-                "-O2",
 
                 "-isystem",
                 try comp.zig_lib_directory.join(arena, &[_][]const u8{
@@ -390,7 +381,7 @@ pub fn buildImportLib(comp: *Compilation, lib_name: []const u8) !void {
 
     const term = child.wait() catch |err| {
         // TODO surface a proper error here
-        log.err("unable to spawn {}: {}", .{ args[0], @errorName(err) });
+        log.err("unable to spawn {s}: {s}", .{ args[0], @errorName(err) });
         return error.ClangPreprocessorFailed;
     };
 
@@ -404,7 +395,7 @@ pub fn buildImportLib(comp: *Compilation, lib_name: []const u8) !void {
         },
         else => {
             // TODO surface a proper error here
-            log.err("clang terminated unexpectedly with stderr: {}", .{stderr});
+            log.err("clang terminated unexpectedly with stderr: {s}", .{stderr});
             return error.ClangPreprocessorFailed;
         },
     }
@@ -414,7 +405,7 @@ pub fn buildImportLib(comp: *Compilation, lib_name: []const u8) !void {
     });
     errdefer comp.gpa.free(lib_final_path);
 
-    const llvm = @import("llvm.zig");
+    const llvm = @import("codegen/llvm/bindings.zig");
     const arch_type = @import("target.zig").archToLLVM(target.cpu.arch);
     const def_final_path_z = try arena.dupeZ(u8, def_final_path);
     const lib_final_path_z = try arena.dupeZ(u8, lib_final_path);
@@ -514,7 +505,6 @@ const mingw32_lib_deps = [_][]const u8{
     "charmax.c",
     "crt0_w.c",
     "dllargv.c",
-    "gs_support.c",
     "_newmode.c",
     "tlssup.c",
     "xncommod.c",
@@ -534,6 +524,8 @@ const mingw32_lib_deps = [_][]const u8{
     "tlsmthread.c",
     "tlsmcrt.c",
     "cxa_atexit.c",
+    "cxa_thread_atexit.c",
+    "tls_atexit.c",
 };
 const msvcrt_common_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "_create_locale.c",
@@ -541,6 +533,8 @@ const msvcrt_common_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "onexit_table.c",
     "misc" ++ path.sep_str ++ "register_tls_atexit.c",
     "stdio" ++ path.sep_str ++ "acrt_iob_func.c",
+    "stdio" ++ path.sep_str ++ "snprintf_alias.c",
+    "stdio" ++ path.sep_str ++ "vsnprintf_alias.c",
     "misc" ++ path.sep_str ++ "_configthreadlocale.c",
     "misc" ++ path.sep_str ++ "_get_current_locale.c",
     "misc" ++ path.sep_str ++ "invalid_parameter_handler.c",
@@ -594,11 +588,13 @@ const msvcrt_common_src = [_][]const u8{
 const msvcrt_i386_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "lc_locale_func.c",
     "misc" ++ path.sep_str ++ "___mb_cur_max_func.c",
+    "misc" ++ path.sep_str ++ "wassert.c",
 };
 
 const msvcrt_other_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "__p___argv.c",
     "misc" ++ path.sep_str ++ "__p__acmdln.c",
+    "misc" ++ path.sep_str ++ "__p__commode.c",
     "misc" ++ path.sep_str ++ "__p__fmode.c",
     "misc" ++ path.sep_str ++ "__p__wcmdln.c",
 };
@@ -711,6 +707,7 @@ const mingwex_generic_src = [_][]const u8{
     "math" ++ path.sep_str ++ "fpclassifyf.c",
     "math" ++ path.sep_str ++ "fpclassifyl.c",
     "math" ++ path.sep_str ++ "frexpf.c",
+    "math" ++ path.sep_str ++ "frexpl.c",
     "math" ++ path.sep_str ++ "hypot.c",
     "math" ++ path.sep_str ++ "hypotf.c",
     "math" ++ path.sep_str ++ "hypotl.c",
@@ -746,9 +743,6 @@ const mingwex_generic_src = [_][]const u8{
     "math" ++ path.sep_str ++ "powi.c",
     "math" ++ path.sep_str ++ "powif.c",
     "math" ++ path.sep_str ++ "powil.c",
-    "math" ++ path.sep_str ++ "rint.c",
-    "math" ++ path.sep_str ++ "rintf.c",
-    "math" ++ path.sep_str ++ "rintl.c",
     "math" ++ path.sep_str ++ "round.c",
     "math" ++ path.sep_str ++ "roundf.c",
     "math" ++ path.sep_str ++ "roundl.c",
@@ -803,7 +797,6 @@ const mingwex_generic_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "mbsinit.c",
     "misc" ++ path.sep_str ++ "mempcpy.c",
     "misc" ++ path.sep_str ++ "mingw-aligned-malloc.c",
-    "misc" ++ path.sep_str ++ "mingw-fseek.c",
     "misc" ++ path.sep_str ++ "mingw_getsp.S",
     "misc" ++ path.sep_str ++ "mingw_matherr.c",
     "misc" ++ path.sep_str ++ "mingw_mbwc_convert.c",
@@ -827,7 +820,6 @@ const mingwex_generic_src = [_][]const u8{
     "misc" ++ path.sep_str ++ "uchar_c32rtomb.c",
     "misc" ++ path.sep_str ++ "uchar_mbrtoc16.c",
     "misc" ++ path.sep_str ++ "uchar_mbrtoc32.c",
-    "misc" ++ path.sep_str ++ "wassert.c",
     "misc" ++ path.sep_str ++ "wcrtomb.c",
     "misc" ++ path.sep_str ++ "wcsnlen.c",
     "misc" ++ path.sep_str ++ "wcstof.c",
@@ -1003,6 +995,8 @@ const mingwex_x86_src = [_][]const u8{
     "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "remquof.S",
     "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "remquol.S",
     "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "remquo.S",
+    "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "rint.c",
+    "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "rintf.c",
     "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "scalbnf.S",
     "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "scalbnl.S",
     "math" ++ path.sep_str ++ "x86" ++ path.sep_str ++ "scalbn.S",
@@ -1018,16 +1012,25 @@ const mingwex_x86_src = [_][]const u8{
 
 const mingwex_arm32_src = [_][]const u8{
     "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "_chgsignl.S",
-    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "exp2.c",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "s_rint.c",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "s_rintf.c",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "exp2.S",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "exp2f.S",
     "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "nearbyint.S",
     "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "nearbyintf.S",
     "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "nearbyintl.S",
-    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "trunc.S",
-    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "truncf.S",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "sincos.S",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "sincosf.S",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "s_trunc.c",
+    "math" ++ path.sep_str ++ "arm" ++ path.sep_str ++ "s_truncf.c",
 };
 
 const mingwex_arm64_src = [_][]const u8{
     "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "_chgsignl.S",
+    "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "rint.c",
+    "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "rintf.c",
+    "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "sincos.S",
+    "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "sincosf.S",
     "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "exp2f.S",
     "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "exp2.S",
     "math" ++ path.sep_str ++ "arm64" ++ path.sep_str ++ "nearbyintf.S",
@@ -1057,6 +1060,7 @@ const uuid_src = [_][]const u8{
     "mshtmhst-uuid.c",
     "mshtml-uuid.c",
     "msxml-uuid.c",
+    "netcfg-uuid.c",
     "netcon-uuid.c",
     "ntddkbd-uuid.c",
     "ntddmou-uuid.c",

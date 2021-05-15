@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2015-2020 Zig Contributors
+// Copyright (c) 2015-2021 Zig Contributors
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
@@ -19,18 +19,18 @@ pub const Block = struct {
     repr: BlockVec,
 
     /// Convert a byte sequence into an internal representation.
-    pub inline fn fromBytes(bytes: *const [16]u8) Block {
+    pub fn fromBytes(bytes: *const [16]u8) callconv(.Inline) Block {
         const repr = mem.bytesToValue(BlockVec, bytes);
         return Block{ .repr = repr };
     }
 
     /// Convert the internal representation of a block into a byte sequence.
-    pub inline fn toBytes(block: Block) [16]u8 {
+    pub fn toBytes(block: Block) callconv(.Inline) [16]u8 {
         return mem.toBytes(block.repr);
     }
 
     /// XOR the block with a byte sequence.
-    pub inline fn xorBytes(block: Block, bytes: *const [16]u8) [16]u8 {
+    pub fn xorBytes(block: Block, bytes: *const [16]u8) callconv(.Inline) [16]u8 {
         const x = block.repr ^ fromBytes(bytes).repr;
         return mem.toBytes(x);
     }
@@ -38,7 +38,7 @@ pub const Block = struct {
     const zero = Vector(2, u64){ 0, 0 };
 
     /// Encrypt a block with a round key.
-    pub inline fn encrypt(block: Block, round_key: Block) Block {
+    pub fn encrypt(block: Block, round_key: Block) callconv(.Inline) Block {
         return Block{
             .repr = asm (
                 \\ mov   %[out].16b, %[in].16b
@@ -54,7 +54,7 @@ pub const Block = struct {
     }
 
     /// Encrypt a block with the last round key.
-    pub inline fn encryptLast(block: Block, round_key: Block) Block {
+    pub fn encryptLast(block: Block, round_key: Block) callconv(.Inline) Block {
         return Block{
             .repr = asm (
                 \\ mov   %[out].16b, %[in].16b
@@ -69,7 +69,7 @@ pub const Block = struct {
     }
 
     /// Decrypt a block with a round key.
-    pub inline fn decrypt(block: Block, inv_round_key: Block) Block {
+    pub fn decrypt(block: Block, inv_round_key: Block) callconv(.Inline) Block {
         return Block{
             .repr = asm (
                 \\ mov   %[out].16b, %[in].16b
@@ -85,7 +85,7 @@ pub const Block = struct {
     }
 
     /// Decrypt a block with the last round key.
-    pub inline fn decryptLast(block: Block, inv_round_key: Block) Block {
+    pub fn decryptLast(block: Block, inv_round_key: Block) callconv(.Inline) Block {
         return Block{
             .repr = asm (
                 \\ mov   %[out].16b, %[in].16b
@@ -100,17 +100,17 @@ pub const Block = struct {
     }
 
     /// Apply the bitwise XOR operation to the content of two blocks.
-    pub inline fn xorBlocks(block1: Block, block2: Block) Block {
+    pub fn xorBlocks(block1: Block, block2: Block) callconv(.Inline) Block {
         return Block{ .repr = block1.repr ^ block2.repr };
     }
 
     /// Apply the bitwise AND operation to the content of two blocks.
-    pub inline fn andBlocks(block1: Block, block2: Block) Block {
+    pub fn andBlocks(block1: Block, block2: Block) callconv(.Inline) Block {
         return Block{ .repr = block1.repr & block2.repr };
     }
 
     /// Apply the bitwise OR operation to the content of two blocks.
-    pub inline fn orBlocks(block1: Block, block2: Block) Block {
+    pub fn orBlocks(block1: Block, block2: Block) callconv(.Inline) Block {
         return Block{ .repr = block1.repr | block2.repr };
     }
 
@@ -120,7 +120,7 @@ pub const Block = struct {
         pub const optimal_parallel_blocks = 8;
 
         /// Encrypt multiple blocks in parallel, each their own round key.
-        pub inline fn encryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) [count]Block {
+        pub fn encryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) callconv(.Inline) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -130,7 +130,7 @@ pub const Block = struct {
         }
 
         /// Decrypt multiple blocks in parallel, each their own round key.
-        pub inline fn decryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) [count]Block {
+        pub fn decryptParallel(comptime count: usize, blocks: [count]Block, round_keys: [count]Block) callconv(.Inline) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -139,8 +139,8 @@ pub const Block = struct {
             return out;
         }
 
-        /// Encrypt multple blocks in parallel with the same round key.
-        pub inline fn encryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
+        /// Encrypt multiple blocks in parallel with the same round key.
+        pub fn encryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -149,8 +149,8 @@ pub const Block = struct {
             return out;
         }
 
-        /// Decrypt multple blocks in parallel with the same round key.
-        pub inline fn decryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
+        /// Decrypt multiple blocks in parallel with the same round key.
+        pub fn decryptWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -159,8 +159,8 @@ pub const Block = struct {
             return out;
         }
 
-        /// Encrypt multple blocks in parallel with the same last round key.
-        pub inline fn encryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
+        /// Encrypt multiple blocks in parallel with the same last round key.
+        pub fn encryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -169,8 +169,8 @@ pub const Block = struct {
             return out;
         }
 
-        /// Decrypt multple blocks in parallel with the same last round key.
-        pub inline fn decryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) [count]Block {
+        /// Decrypt multiple blocks in parallel with the same last round key.
+        pub fn decryptLastWide(comptime count: usize, blocks: [count]Block, round_key: Block) callconv(.Inline) [count]Block {
             comptime var i = 0;
             var out: [count]Block = undefined;
             inline while (i < count) : (i += 1) {
@@ -364,10 +364,7 @@ pub fn AesEncryptCtx(comptime Aes: type) type {
             inline while (i < rounds) : (i += 1) {
                 ts = Block.parallel.encryptWide(count, ts, round_keys[i]);
             }
-            i = 1;
-            inline while (i < count) : (i += 1) {
-                ts = Block.parallel.encryptLastWide(count, ts, round_keys[i]);
-            }
+            ts = Block.parallel.encryptLastWide(count, ts, round_keys[i]);
             j = 0;
             inline while (j < count) : (j += 1) {
                 dst[16 * j .. 16 * j + 16].* = ts[j].toBytes();
@@ -443,10 +440,7 @@ pub fn AesDecryptCtx(comptime Aes: type) type {
             inline while (i < rounds) : (i += 1) {
                 ts = Block.parallel.decryptWide(count, ts, inv_round_keys[i]);
             }
-            i = 1;
-            inline while (i < count) : (i += 1) {
-                ts = Block.parallel.decryptLastWide(count, ts, inv_round_keys[i]);
-            }
+            ts = Block.parallel.decryptLastWide(count, ts, inv_round_keys[i]);
             j = 0;
             inline while (j < count) : (j += 1) {
                 dst[16 * j .. 16 * j + 16].* = ts[j].toBytes();
