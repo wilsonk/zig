@@ -182,7 +182,7 @@ pub const AtomicEvent = struct {
                 timer = time.Timer.start() catch return error.TimedOut;
 
             while (@atomicLoad(u32, waiters, .Acquire) != WAKE) {
-                std.os.sched_yield() catch std.Thread.spinLoopHint();
+                std.os.sched_yield() catch std.atomic.spinLoopHint();
                 if (timeout) |timeout_ns| {
                     if (timer.read() >= timeout_ns)
                         return error.TimedOut;
@@ -262,7 +262,7 @@ pub const AtomicEvent = struct {
                     while (true) {
                         if (waiting == WAKE) {
                             rc = windows.ntdll.NtWaitForKeyedEvent(handle, key, windows.FALSE, null);
-                            assert(rc == .WAIT_0);
+                            assert(rc == windows.NTSTATUS.WAIT_0);
                             break;
                         } else {
                             waiting = @cmpxchgWeak(u32, waiters, waiting, waiting - WAIT, .Acquire, .Monotonic) orelse break;
@@ -271,7 +271,7 @@ pub const AtomicEvent = struct {
                     }
                     return error.TimedOut;
                 },
-                .WAIT_0 => {},
+                windows.NTSTATUS.WAIT_0 => {},
                 else => unreachable,
             }
         }
@@ -293,7 +293,7 @@ pub const AtomicEvent = struct {
                         return @intToPtr(?windows.HANDLE, handle);
                     },
                     LOADING => {
-                        std.os.sched_yield() catch std.Thread.spinLoopHint();
+                        std.os.sched_yield() catch std.atomic.spinLoopHint();
                         handle = @atomicLoad(usize, &event_handle, .Monotonic);
                     },
                     else => {

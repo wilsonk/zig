@@ -7,17 +7,18 @@ const std = @import("std.zig");
 const debug = std.debug;
 const assert = debug.assert;
 const math = std.math;
-const builtin = std.builtin;
 const mem = @This();
 const meta = std.meta;
 const trait = meta.trait;
 const testing = std.testing;
+const Endian = std.builtin.Endian;
+const native_endian = std.Target.current.cpu.arch.endian();
 
 /// Compile time known minimum page size.
 /// https://github.com/ziglang/zig/issues/4082
-pub const page_size = switch (builtin.arch) {
+pub const page_size = switch (std.Target.current.cpu.arch) {
     .wasm32, .wasm64 => 64 * 1024,
-    .aarch64 => switch (builtin.os.tag) {
+    .aarch64 => switch (std.Target.current.os.tag) {
         .macos, .ios, .watchos, .tvos => 16 * 1024,
         else => 4 * 1024,
     },
@@ -355,7 +356,7 @@ test "mem.zeroes" {
 /// If the field is present in the provided initial values, it will have that value instead.
 /// Structs are initialized recursively.
 pub fn zeroInit(comptime T: type, init: anytype) T {
-    comptime const Init = @TypeOf(init);
+    const Init = @TypeOf(init);
 
     switch (@typeInfo(T)) {
         .Struct => |struct_info| {
@@ -1106,7 +1107,9 @@ pub fn lastIndexOf(comptime T: type, haystack: []const T, needle: []const T) ?us
 
     var i: usize = haystack_bytes.len - needle_bytes.len;
     while (true) {
-        if (mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) return i;
+        if (i % @sizeOf(T) == 0 and mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) {
+            return @divExact(i, @sizeOf(T));
+        }
         const skip = skip_table[haystack_bytes[i]];
         if (skip > i) break;
         i -= skip;
@@ -1131,7 +1134,9 @@ pub fn indexOfPos(comptime T: type, haystack: []const T, start_index: usize, nee
 
     var i: usize = start_index * @sizeOf(T);
     while (i <= haystack_bytes.len - needle_bytes.len) {
-        if (mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) return i;
+        if (i % @sizeOf(T) == 0 and mem.eql(u8, haystack_bytes[i .. i + needle_bytes.len], needle_bytes)) {
+            return @divExact(i, @sizeOf(T));
+        }
         i += skip_table[haystack_bytes[i + needle_bytes.len - 1]];
     }
 
@@ -1161,6 +1166,34 @@ test "mem.indexOf" {
     try testing.expect(lastIndexOf(u8, "foo foo", "foo").? == 4);
     try testing.expect(lastIndexOfAny(u8, "boo, cat", "abo").? == 6);
     try testing.expect(lastIndexOfScalar(u8, "boo", 'o').? == 2);
+}
+
+test "mem.indexOf multibyte" {
+    {
+        // make haystack and needle long enough to trigger boyer-moore-horspool algorithm
+        const haystack = [1]u16{0} ** 100 ++ [_]u16 { 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee, 0x00ff };
+        const needle = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee };
+        try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needle), 100);
+
+        // check for misaligned false positives (little and big endian)
+        const needleLE = [_]u16{ 0xbbbb, 0xcccc, 0xdddd, 0xeeee, 0xffff };
+        try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needleLE), null);
+        const needleBE = [_]u16{ 0xaacc, 0xbbdd, 0xccee, 0xddff, 0xee00 };
+        try testing.expectEqual(indexOfPos(u16, &haystack, 0, &needleBE), null);
+    }
+
+    {
+        // make haystack and needle long enough to trigger boyer-moore-horspool algorithm
+        const haystack = [_]u16 { 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee, 0x00ff } ++ [1]u16{0} ** 100;
+        const needle = [_]u16{ 0xbbaa, 0xccbb, 0xddcc, 0xeedd, 0xffee };
+        try testing.expectEqual(lastIndexOf(u16, &haystack, &needle), 0);
+
+        // check for misaligned false positives (little and big endian)
+        const needleLE = [_]u16{ 0xbbbb, 0xcccc, 0xdddd, 0xeeee, 0xffff };
+        try testing.expectEqual(lastIndexOf(u16, &haystack, &needleLE), null);
+        const needleBE = [_]u16{ 0xaacc, 0xbbdd, 0xccee, 0xddff, 0xee00 };
+        try testing.expectEqual(lastIndexOf(u16, &haystack, &needleBE), null);
+    }
 }
 
 /// Returns the number of needles inside the haystack
@@ -1230,7 +1263,7 @@ test "mem.containsAtLeast" {
 /// Reads an integer from memory with size equal to bytes.len.
 /// T specifies the return type, which must be large enough to store
 /// the result.
-pub fn readVarInt(comptime ReturnType: type, bytes: []const u8, endian: builtin.Endian) ReturnType {
+pub fn readVarInt(comptime ReturnType: type, bytes: []const u8, endian: Endian) ReturnType {
     var result: ReturnType = 0;
     switch (endian) {
         .Big => {
@@ -1265,12 +1298,12 @@ pub fn readIntForeign(comptime T: type, bytes: *const [@divExact(@typeInfo(T).In
     return @byteSwap(T, readIntNative(T, bytes));
 }
 
-pub const readIntLittle = switch (builtin.endian) {
+pub const readIntLittle = switch (native_endian) {
     .Little => readIntNative,
     .Big => readIntForeign,
 };
 
-pub const readIntBig = switch (builtin.endian) {
+pub const readIntBig = switch (native_endian) {
     .Little => readIntForeign,
     .Big => readIntNative,
 };
@@ -1294,12 +1327,12 @@ pub fn readIntSliceForeign(comptime T: type, bytes: []const u8) T {
     return @byteSwap(T, readIntSliceNative(T, bytes));
 }
 
-pub const readIntSliceLittle = switch (builtin.endian) {
+pub const readIntSliceLittle = switch (native_endian) {
     .Little => readIntSliceNative,
     .Big => readIntSliceForeign,
 };
 
-pub const readIntSliceBig = switch (builtin.endian) {
+pub const readIntSliceBig = switch (native_endian) {
     .Little => readIntSliceForeign,
     .Big => readIntSliceNative,
 };
@@ -1307,8 +1340,8 @@ pub const readIntSliceBig = switch (builtin.endian) {
 /// Reads an integer from memory with bit count specified by T.
 /// The bit count of T must be evenly divisible by 8.
 /// This function cannot fail and cannot cause undefined behavior.
-pub fn readInt(comptime T: type, bytes: *const [@divExact(@typeInfo(T).Int.bits, 8)]u8, endian: builtin.Endian) T {
-    if (endian == builtin.endian) {
+pub fn readInt(comptime T: type, bytes: *const [@divExact(@typeInfo(T).Int.bits, 8)]u8, endian: Endian) T {
+    if (endian == native_endian) {
         return readIntNative(T, bytes);
     } else {
         return readIntForeign(T, bytes);
@@ -1318,7 +1351,7 @@ pub fn readInt(comptime T: type, bytes: *const [@divExact(@typeInfo(T).Int.bits,
 /// Asserts that bytes.len >= @typeInfo(T).Int.bits / 8. Reads the integer starting from index 0
 /// and ignores extra bytes.
 /// The bit count of T must be evenly divisible by 8.
-pub fn readIntSlice(comptime T: type, bytes: []const u8, endian: builtin.Endian) T {
+pub fn readIntSlice(comptime T: type, bytes: []const u8, endian: Endian) T {
     const n = @divExact(@typeInfo(T).Int.bits, 8);
     assert(bytes.len >= n);
     return readInt(T, bytes[0..n], endian);
@@ -1376,12 +1409,12 @@ pub fn writeIntForeign(comptime T: type, buf: *[@divExact(@typeInfo(T).Int.bits,
     writeIntNative(T, buf, @byteSwap(T, value));
 }
 
-pub const writeIntLittle = switch (builtin.endian) {
+pub const writeIntLittle = switch (native_endian) {
     .Little => writeIntNative,
     .Big => writeIntForeign,
 };
 
-pub const writeIntBig = switch (builtin.endian) {
+pub const writeIntBig = switch (native_endian) {
     .Little => writeIntForeign,
     .Big => writeIntNative,
 };
@@ -1389,8 +1422,8 @@ pub const writeIntBig = switch (builtin.endian) {
 /// Writes an integer to memory, storing it in twos-complement.
 /// This function always succeeds, has defined behavior for all inputs, but
 /// the integer bit width must be divisible by 8.
-pub fn writeInt(comptime T: type, buffer: *[@divExact(@typeInfo(T).Int.bits, 8)]u8, value: T, endian: builtin.Endian) void {
-    if (endian == builtin.endian) {
+pub fn writeInt(comptime T: type, buffer: *[@divExact(@typeInfo(T).Int.bits, 8)]u8, value: T, endian: Endian) void {
+    if (endian == native_endian) {
         return writeIntNative(T, buffer, value);
     } else {
         return writeIntForeign(T, buffer, value);
@@ -1411,7 +1444,7 @@ pub fn writeIntSliceLittle(comptime T: type, buffer: []u8, value: T) void {
 
     // TODO I want to call writeIntLittle here but comptime eval facilities aren't good enough
     const uint = std.meta.Int(.unsigned, @typeInfo(T).Int.bits);
-    var bits = @truncate(uint, value);
+    var bits = @bitCast(uint, value);
     for (buffer) |*b| {
         b.* = @truncate(u8, bits);
         bits >>= 8;
@@ -1431,7 +1464,7 @@ pub fn writeIntSliceBig(comptime T: type, buffer: []u8, value: T) void {
 
     // TODO I want to call writeIntBig here but comptime eval facilities aren't good enough
     const uint = std.meta.Int(.unsigned, @typeInfo(T).Int.bits);
-    var bits = @truncate(uint, value);
+    var bits = @bitCast(uint, value);
     var index: usize = buffer.len;
     while (index != 0) {
         index -= 1;
@@ -1440,12 +1473,12 @@ pub fn writeIntSliceBig(comptime T: type, buffer: []u8, value: T) void {
     }
 }
 
-pub const writeIntSliceNative = switch (builtin.endian) {
+pub const writeIntSliceNative = switch (native_endian) {
     .Little => writeIntSliceLittle,
     .Big => writeIntSliceBig,
 };
 
-pub const writeIntSliceForeign = switch (builtin.endian) {
+pub const writeIntSliceForeign = switch (native_endian) {
     .Little => writeIntSliceBig,
     .Big => writeIntSliceLittle,
 };
@@ -1456,7 +1489,7 @@ pub const writeIntSliceForeign = switch (builtin.endian) {
 /// Any extra bytes in buffer not part of the integer are set to zero, with
 /// respect to endianness. To avoid the branch to check for extra buffer bytes,
 /// use writeInt instead.
-pub fn writeIntSlice(comptime T: type, buffer: []u8, value: T, endian: builtin.Endian) void {
+pub fn writeIntSlice(comptime T: type, buffer: []u8, value: T, endian: Endian) void {
     comptime assert(@typeInfo(T).Int.bits % 8 == 0);
     return switch (endian) {
         .Little => writeIntSliceLittle(T, buffer, value),
@@ -1866,10 +1899,10 @@ fn testReadIntImpl() !void {
             0x56,
             0x78,
         };
-        try testing.expect(readInt(u32, &bytes, builtin.Endian.Big) == 0x12345678);
+        try testing.expect(readInt(u32, &bytes, Endian.Big) == 0x12345678);
         try testing.expect(readIntBig(u32, &bytes) == 0x12345678);
         try testing.expect(readIntBig(i32, &bytes) == 0x12345678);
-        try testing.expect(readInt(u32, &bytes, builtin.Endian.Little) == 0x78563412);
+        try testing.expect(readInt(u32, &bytes, Endian.Little) == 0x78563412);
         try testing.expect(readIntLittle(u32, &bytes) == 0x78563412);
         try testing.expect(readIntLittle(i32, &bytes) == 0x78563412);
     }
@@ -1880,7 +1913,7 @@ fn testReadIntImpl() !void {
             0x12,
             0x34,
         };
-        const answer = readInt(u32, &buf, builtin.Endian.Big);
+        const answer = readInt(u32, &buf, Endian.Big);
         try testing.expect(answer == 0x00001234);
     }
     {
@@ -1890,7 +1923,7 @@ fn testReadIntImpl() !void {
             0x00,
             0x00,
         };
-        const answer = readInt(u32, &buf, builtin.Endian.Little);
+        const answer = readInt(u32, &buf, Endian.Little);
         try testing.expect(answer == 0x00003412);
     }
     {
@@ -1912,19 +1945,19 @@ test "writeIntSlice" {
 fn testWriteIntImpl() !void {
     var bytes: [8]u8 = undefined;
 
-    writeIntSlice(u0, bytes[0..], 0, builtin.Endian.Big);
+    writeIntSlice(u0, bytes[0..], 0, Endian.Big);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
     }));
 
-    writeIntSlice(u0, bytes[0..], 0, builtin.Endian.Little);
+    writeIntSlice(u0, bytes[0..], 0, Endian.Little);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,
     }));
 
-    writeIntSlice(u64, bytes[0..], 0x12345678CAFEBABE, builtin.Endian.Big);
+    writeIntSlice(u64, bytes[0..], 0x12345678CAFEBABE, Endian.Big);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x12,
         0x34,
@@ -1936,7 +1969,7 @@ fn testWriteIntImpl() !void {
         0xBE,
     }));
 
-    writeIntSlice(u64, bytes[0..], 0xBEBAFECA78563412, builtin.Endian.Little);
+    writeIntSlice(u64, bytes[0..], 0xBEBAFECA78563412, Endian.Little);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x12,
         0x34,
@@ -1948,7 +1981,7 @@ fn testWriteIntImpl() !void {
         0xBE,
     }));
 
-    writeIntSlice(u32, bytes[0..], 0x12345678, builtin.Endian.Big);
+    writeIntSlice(u32, bytes[0..], 0x12345678, Endian.Big);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x00,
         0x00,
@@ -1960,7 +1993,7 @@ fn testWriteIntImpl() !void {
         0x78,
     }));
 
-    writeIntSlice(u32, bytes[0..], 0x78563412, builtin.Endian.Little);
+    writeIntSlice(u32, bytes[0..], 0x78563412, Endian.Little);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x12,
         0x34,
@@ -1972,7 +2005,7 @@ fn testWriteIntImpl() !void {
         0x00,
     }));
 
-    writeIntSlice(u16, bytes[0..], 0x1234, builtin.Endian.Big);
+    writeIntSlice(u16, bytes[0..], 0x1234, Endian.Big);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x00,
         0x00,
@@ -1984,7 +2017,7 @@ fn testWriteIntImpl() !void {
         0x34,
     }));
 
-    writeIntSlice(u16, bytes[0..], 0x1234, builtin.Endian.Little);
+    writeIntSlice(u16, bytes[0..], 0x1234, Endian.Little);
     try testing.expect(eql(u8, &bytes, &[_]u8{
         0x34,
         0x12,
@@ -1994,6 +2027,30 @@ fn testWriteIntImpl() !void {
         0x00,
         0x00,
         0x00,
+    }));
+
+    writeIntSlice(i16, bytes[0..], @as(i16, -21555), Endian.Little);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0xCD,
+        0xAB,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+    }));
+
+    writeIntSlice(i16, bytes[0..], @as(i16, -21555), Endian.Big);
+    try testing.expect(eql(u8, &bytes, &[_]u8{
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0x00,
+        0xAB,
+        0xCD,
     }));
 }
 
@@ -2073,7 +2130,7 @@ pub fn replace(comptime T: type, input: []const T, needle: []const T, replacemen
     var slide: usize = 0;
     var replacements: usize = 0;
     while (slide < input.len) {
-        if (mem.indexOf(T, input[slide..], needle) == @as(usize, 0)) {
+        if (mem.startsWith(T, input[slide..], needle)) {
             mem.copy(T, output[i .. i + replacement.len], replacement);
             i += replacement.len;
             slide += needle.len;
@@ -2119,6 +2176,53 @@ test "replace" {
     try testing.expectEqualStrings(expected, output[0..expected.len]);
 }
 
+/// Replace all occurences of `needle` with `replacement`.
+pub fn replaceScalar(comptime T: type, slice: []T, needle: T, replacement: T) void {
+    for (slice) |e, i| {
+        if (e == needle) {
+            slice[i] = replacement;
+        }
+    }
+}
+
+/// Collapse consecutive duplicate elements into one entry.
+pub fn collapseRepeatsLen(comptime T: type, slice: []T, elem: T) usize {
+    if (slice.len == 0) return 0;
+    var write_idx: usize = 1;
+    var read_idx: usize = 1;
+    while (read_idx < slice.len) : (read_idx += 1) {
+        if (slice[read_idx - 1] != elem or slice[read_idx] != elem) {
+            slice[write_idx] = slice[read_idx];
+            write_idx += 1;
+        }
+    }
+    return write_idx;
+}
+
+/// Collapse consecutive duplicate elements into one entry.
+pub fn collapseRepeats(comptime T: type, slice: []T, elem: T) []T {
+    return slice[0 .. collapseRepeatsLen(T, slice, elem)];
+}
+
+fn testCollapseRepeats(str: []const u8, elem: u8, expected: []const u8) !void {
+    const mutable = try std.testing.allocator.dupe(u8, str);
+    defer std.testing.allocator.free(mutable);
+    try testing.expect(std.mem.eql(u8, collapseRepeats(u8, mutable, elem), expected));
+}
+test "collapseRepeats" {
+    try testCollapseRepeats("", '/', "");
+    try testCollapseRepeats("a", '/', "a");
+    try testCollapseRepeats("/", '/', "/");
+    try testCollapseRepeats("//", '/', "/");
+    try testCollapseRepeats("/a", '/', "/a");
+    try testCollapseRepeats("//a", '/', "/a");
+    try testCollapseRepeats("a/", '/', "a/");
+    try testCollapseRepeats("a//", '/', "a/");
+    try testCollapseRepeats("a/a", '/', "a/a");
+    try testCollapseRepeats("a//a", '/', "a/a");
+    try testCollapseRepeats("//a///a////", '/', "/a/a/");
+}
+
 /// Calculate the size needed in an output buffer to perform a replacement.
 /// The needle must not be empty.
 pub fn replacementSize(comptime T: type, input: []const T, needle: []const T, replacement: []const T) usize {
@@ -2128,7 +2232,7 @@ pub fn replacementSize(comptime T: type, input: []const T, needle: []const T, re
     var i: usize = 0;
     var size: usize = input.len;
     while (i < input.len) {
-        if (mem.indexOf(T, input[i..], needle) == @as(usize, 0)) {
+        if (mem.startsWith(T, input[i..], needle)) {
             size = size - needle.len + replacement.len;
             i += needle.len;
         } else {
@@ -2173,7 +2277,7 @@ test "replaceOwned" {
 
 /// Converts a little-endian integer to host endianness.
 pub fn littleToNative(comptime T: type, x: T) T {
-    return switch (builtin.endian) {
+    return switch (native_endian) {
         .Little => x,
         .Big => @byteSwap(T, x),
     };
@@ -2181,14 +2285,14 @@ pub fn littleToNative(comptime T: type, x: T) T {
 
 /// Converts a big-endian integer to host endianness.
 pub fn bigToNative(comptime T: type, x: T) T {
-    return switch (builtin.endian) {
+    return switch (native_endian) {
         .Little => @byteSwap(T, x),
         .Big => x,
     };
 }
 
 /// Converts an integer from specified endianness to host endianness.
-pub fn toNative(comptime T: type, x: T, endianness_of_x: builtin.Endian) T {
+pub fn toNative(comptime T: type, x: T, endianness_of_x: Endian) T {
     return switch (endianness_of_x) {
         .Little => littleToNative(T, x),
         .Big => bigToNative(T, x),
@@ -2196,7 +2300,7 @@ pub fn toNative(comptime T: type, x: T, endianness_of_x: builtin.Endian) T {
 }
 
 /// Converts an integer which has host endianness to the desired endianness.
-pub fn nativeTo(comptime T: type, x: T, desired_endianness: builtin.Endian) T {
+pub fn nativeTo(comptime T: type, x: T, desired_endianness: Endian) T {
     return switch (desired_endianness) {
         .Little => nativeToLittle(T, x),
         .Big => nativeToBig(T, x),
@@ -2205,7 +2309,7 @@ pub fn nativeTo(comptime T: type, x: T, desired_endianness: builtin.Endian) T {
 
 /// Converts an integer which has host endianness to little endian.
 pub fn nativeToLittle(comptime T: type, x: T) T {
-    return switch (builtin.endian) {
+    return switch (native_endian) {
         .Little => x,
         .Big => @byteSwap(T, x),
     };
@@ -2213,13 +2317,13 @@ pub fn nativeToLittle(comptime T: type, x: T) T {
 
 /// Converts an integer which has host endianness to big endian.
 pub fn nativeToBig(comptime T: type, x: T) T {
-    return switch (builtin.endian) {
+    return switch (native_endian) {
         .Little => @byteSwap(T, x),
         .Big => x,
     };
 }
 
-fn CopyPtrAttrs(comptime source: type, comptime size: builtin.TypeInfo.Pointer.Size, comptime child: type) type {
+fn CopyPtrAttrs(comptime source: type, comptime size: std.builtin.TypeInfo.Pointer.Size, comptime child: type) type {
     const info = @typeInfo(source).Pointer;
     return @Type(.{
         .Pointer = .{
@@ -2251,7 +2355,7 @@ pub fn asBytes(ptr: anytype) AsBytesReturnType(@TypeOf(ptr)) {
 
 test "asBytes" {
     const deadbeef = @as(u32, 0xDEADBEEF);
-    const deadbeef_bytes = switch (builtin.endian) {
+    const deadbeef_bytes = switch (native_endian) {
         .Big => "\xDE\xAD\xBE\xEF",
         .Little => "\xEF\xBE\xAD\xDE",
     };
@@ -2304,13 +2408,13 @@ pub fn toBytes(value: anytype) [@sizeOf(@TypeOf(value))]u8 {
 
 test "toBytes" {
     var my_bytes = toBytes(@as(u32, 0x12345678));
-    switch (builtin.endian) {
+    switch (native_endian) {
         .Big => try testing.expect(eql(u8, &my_bytes, "\x12\x34\x56\x78")),
         .Little => try testing.expect(eql(u8, &my_bytes, "\x78\x56\x34\x12")),
     }
 
     my_bytes[0] = '\x99';
-    switch (builtin.endian) {
+    switch (native_endian) {
         .Big => try testing.expect(eql(u8, &my_bytes, "\x99\x34\x56\x78")),
         .Little => try testing.expect(eql(u8, &my_bytes, "\x99\x56\x34\x12")),
     }
@@ -2337,14 +2441,14 @@ pub fn bytesAsValue(comptime T: type, bytes: anytype) BytesAsValueReturnType(T, 
 
 test "bytesAsValue" {
     const deadbeef = @as(u32, 0xDEADBEEF);
-    const deadbeef_bytes = switch (builtin.endian) {
+    const deadbeef_bytes = switch (native_endian) {
         .Big => "\xDE\xAD\xBE\xEF",
         .Little => "\xEF\xBE\xAD\xDE",
     };
 
     try testing.expect(deadbeef == bytesAsValue(u32, deadbeef_bytes).*);
 
-    var codeface_bytes: [4]u8 = switch (builtin.endian) {
+    var codeface_bytes: [4]u8 = switch (native_endian) {
         .Big => "\xC0\xDE\xFA\xCE",
         .Little => "\xCE\xFA\xDE\xC0",
     }.*;
@@ -2392,7 +2496,7 @@ pub fn bytesToValue(comptime T: type, bytes: anytype) T {
     return bytesAsValue(T, bytes).*;
 }
 test "bytesToValue" {
-    const deadbeef_bytes = switch (builtin.endian) {
+    const deadbeef_bytes = switch (native_endian) {
         .Big => "\xDE\xAD\xBE\xEF",
         .Little => "\xEF\xBE\xAD\xDE",
     };
@@ -2521,7 +2625,7 @@ test "sliceAsBytes" {
     const bytes = [_]u16{ 0xDEAD, 0xBEEF };
     const slice = sliceAsBytes(bytes[0..]);
     try testing.expect(slice.len == 4);
-    try testing.expect(eql(u8, slice, switch (builtin.endian) {
+    try testing.expect(eql(u8, slice, switch (native_endian) {
         .Big => "\xDE\xAD\xBE\xEF",
         .Little => "\xAD\xDE\xEF\xBE",
     }));
@@ -2543,7 +2647,7 @@ test "sliceAsBytes packed struct at runtime and comptime" {
             var foo: Foo = undefined;
             var slice = sliceAsBytes(@as(*[1]Foo, &foo)[0..1]);
             slice[0] = 0x13;
-            switch (builtin.endian) {
+            switch (native_endian) {
                 .Big => {
                     try testing.expect(foo.a == 0x1);
                     try testing.expect(foo.b == 0x3);

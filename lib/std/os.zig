@@ -21,7 +21,7 @@
 
 const root = @import("root");
 const std = @import("std.zig");
-const builtin = @import("builtin");
+const builtin = std.builtin;
 const assert = std.debug.assert;
 const math = std.math;
 const mem = std.mem;
@@ -1244,6 +1244,7 @@ pub fn openatZ(dir_fd: fd_t, file_path: [*:0]const u8, flags: u32, mode: mode_t)
 
             EFAULT => unreachable,
             EINVAL => unreachable,
+            EBADF => unreachable,
             EACCES => return error.AccessDenied,
             EFBIG => return error.FileTooBig,
             EOVERFLOW => return error.FileTooBig,
@@ -2727,10 +2728,21 @@ pub const SocketError = error{
 
 pub fn socket(domain: u32, socket_type: u32, protocol: u32) SocketError!socket_t {
     if (builtin.os.tag == .windows) {
-        // NOTE: windows translates the SOCK_NONBLOCK/SOCK_CLOEXEC flags into windows-analagous operations
+        // NOTE: windows translates the SOCK_NONBLOCK/SOCK_CLOEXEC flags into
+        // windows-analagous operations
         const filtered_sock_type = socket_type & ~@as(u32, SOCK_NONBLOCK | SOCK_CLOEXEC);
-        const flags: u32 = if ((socket_type & SOCK_CLOEXEC) != 0) windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT else 0;
-        const rc = try windows.WSASocketW(@bitCast(i32, domain), @bitCast(i32, filtered_sock_type), @bitCast(i32, protocol), null, 0, flags);
+        const flags: u32 = if ((socket_type & SOCK_CLOEXEC) != 0)
+            windows.ws2_32.WSA_FLAG_NO_HANDLE_INHERIT
+        else
+            0;
+        const rc = try windows.WSASocketW(
+            @bitCast(i32, domain),
+            @bitCast(i32, filtered_sock_type),
+            @bitCast(i32, protocol),
+            null,
+            0,
+            flags,
+        );
         errdefer windows.closesocket(rc) catch unreachable;
         if ((socket_type & SOCK_NONBLOCK) != 0) {
             var mode: c_ulong = 1; // nonblocking
@@ -3780,7 +3792,7 @@ pub fn mmap(
 /// Zig's munmap function does not, for two reasons:
 /// * It violates the Zig principle that resource deallocation must succeed.
 /// * The Windows function, VirtualFree, has this restriction.
-pub fn munmap(memory: []align(mem.page_size) u8) void {
+pub fn munmap(memory: []align(mem.page_size) const u8) void {
     switch (errno(system.munmap(memory.ptr, memory.len))) {
         0 => return,
         EINVAL => unreachable, // Invalid parameters.
@@ -5522,7 +5534,7 @@ pub const CopyFileRangeError = error{
 
 var has_copy_file_range_syscall = init: {
     const kernel_has_syscall = std.Target.current.os.isAtLeast(.linux, .{ .major = 4, .minor = 5 }) orelse true;
-    break :init std.atomic.Bool.init(kernel_has_syscall);
+    break :init std.atomic.Atomic(bool).init(kernel_has_syscall);
 };
 
 /// Transfer data between file descriptors at specified offsets.
@@ -6109,7 +6121,7 @@ pub fn getrlimit(resource: rlimit_resource) GetrlimitError!rlimit {
     }
 }
 
-pub const SetrlimitError = error{PermissionDenied} || UnexpectedError;
+pub const SetrlimitError = error{PermissionDenied, LimitTooBig} || UnexpectedError;
 
 pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void {
     const setrlimit_sym = if (builtin.os.tag == .linux and builtin.link_libc)
@@ -6120,7 +6132,7 @@ pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void 
     switch (errno(setrlimit_sym(resource, &limits))) {
         0 => return,
         EFAULT => unreachable, // bogus pointer
-        EINVAL => unreachable,
+        EINVAL => return error.LimitTooBig, // this could also mean "invalid resource", but that would be unreachable
         EPERM => return error.PermissionDenied,
         else => |err| return unexpectedErrno(err),
     }
