@@ -101,6 +101,8 @@ pub const Value = extern union {
         variable,
         /// Represents a pointer to another immutable value.
         ref_val,
+        /// Represents a comptime variables storage.
+        comptime_alloc,
         /// Represents a pointer to a decl, not the value of the decl.
         decl_ref,
         elem_ptr,
@@ -223,6 +225,7 @@ pub const Value = extern union {
                 .int_i64 => Payload.I64,
                 .function => Payload.Function,
                 .variable => Payload.Variable,
+                .comptime_alloc => Payload.ComptimeAlloc,
                 .elem_ptr => Payload.ElemPtr,
                 .field_ptr => Payload.FieldPtr,
                 .float_16 => Payload.Float_16,
@@ -403,6 +406,7 @@ pub const Value = extern union {
                 };
                 return Value{ .ptr_otherwise = &new_payload.base };
             },
+            .comptime_alloc => return self.copyPayloadShallow(allocator, Payload.ComptimeAlloc),
             .decl_ref => return self.copyPayloadShallow(allocator, Payload.Decl),
             .elem_ptr => {
                 const payload = self.castTag(.elem_ptr).?;
@@ -577,6 +581,11 @@ pub const Value = extern union {
                 try out_stream.writeAll("&const ");
                 val = ref_val;
             },
+            .comptime_alloc => {
+                const ref_val = val.castTag(.comptime_alloc).?.data.val;
+                try out_stream.writeAll("&");
+                val = ref_val;
+            },
             .decl_ref => return out_stream.writeAll("(decl ref)"),
             .elem_ptr => {
                 const elem_ptr = val.castTag(.elem_ptr).?.data;
@@ -713,6 +722,7 @@ pub const Value = extern union {
             .extern_fn,
             .variable,
             .ref_val,
+            .comptime_alloc,
             .decl_ref,
             .elem_ptr,
             .field_ptr,
@@ -1186,6 +1196,10 @@ pub const Value = extern union {
                 const payload = self.castTag(.ref_val).?;
                 std.hash.autoHash(&hasher, payload.data.hash());
             },
+            .comptime_alloc => {
+                const payload = self.castTag(.comptime_alloc).?;
+                std.hash.autoHash(&hasher, payload.data.val.hash());
+            },
             .int_big_positive, .int_big_negative => {
                 var space: BigIntSpace = undefined;
                 const big = self.toBigInt(&space);
@@ -1256,10 +1270,28 @@ pub const Value = extern union {
         return hasher.final();
     }
 
+    pub const ArrayHashContext = struct {
+        pub fn hash(self: @This(), v: Value) u32 {
+            return v.hash_u32();
+        }
+        pub fn eql(self: @This(), a: Value, b: Value) bool {
+            return a.eql(b);
+        }
+    };
+    pub const HashContext = struct {
+        pub fn hash(self: @This(), v: Value) u64 {
+            return v.hash();
+        }
+        pub fn eql(self: @This(), a: Value, b: Value) bool {
+            return a.eql(b);
+        }
+    };
+
     /// Asserts the value is a pointer and dereferences it.
     /// Returns error.AnalysisFail if the pointer points to a Decl that failed semantic analysis.
     pub fn pointerDeref(self: Value, allocator: *Allocator) error{ AnalysisFail, OutOfMemory }!Value {
         return switch (self.tag()) {
+            .comptime_alloc => self.castTag(.comptime_alloc).?.data.val,
             .ref_val => self.castTag(.ref_val).?.data,
             .decl_ref => self.castTag(.decl_ref).?.data.value(),
             .elem_ptr => {
@@ -1445,6 +1477,7 @@ pub const Value = extern union {
             .int_big_positive,
             .int_big_negative,
             .ref_val,
+            .comptime_alloc,
             .decl_ref,
             .elem_ptr,
             .field_ptr,
@@ -1523,6 +1556,16 @@ pub const Value = extern union {
         pub const SubValue = struct {
             base: Payload,
             data: Value,
+        };
+
+        pub const ComptimeAlloc = struct {
+            pub const base_tag = Tag.comptime_alloc;
+
+            base: Payload = Payload{ .tag = base_tag },
+            data: struct {
+                val: Value,
+                runtime_index: u32,
+            },
         };
 
         pub const ElemPtr = struct {

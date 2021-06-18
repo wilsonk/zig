@@ -23,13 +23,7 @@ pub const sockaddr = extern struct {
     family: sa_family_t,
     data: [14]u8,
 };
-pub const sockaddr_storage = extern struct {
-    len: u8,
-    family: sa_family_t,
-    __pad1: [5]u8,
-    __align: i64,
-    __pad2: [112]u8,
-};
+pub const sockaddr_storage = std.x.os.Socket.Address.Native.Storage;
 pub const sockaddr_in = extern struct {
     len: u8 = @sizeOf(sockaddr_in),
     family: sa_family_t = AF_INET,
@@ -194,12 +188,12 @@ pub const Kevent = extern struct {
 // to make sure the struct is laid out the same. These values were
 // produced from C code using the offsetof macro.
 comptime {
-    assert(@byteOffsetOf(Kevent, "ident") == 0);
-    assert(@byteOffsetOf(Kevent, "filter") == 8);
-    assert(@byteOffsetOf(Kevent, "flags") == 10);
-    assert(@byteOffsetOf(Kevent, "fflags") == 12);
-    assert(@byteOffsetOf(Kevent, "data") == 16);
-    assert(@byteOffsetOf(Kevent, "udata") == 24);
+    assert(@offsetOf(Kevent, "ident") == 0);
+    assert(@offsetOf(Kevent, "filter") == 8);
+    assert(@offsetOf(Kevent, "flags") == 10);
+    assert(@offsetOf(Kevent, "fflags") == 12);
+    assert(@offsetOf(Kevent, "data") == 16);
+    assert(@offsetOf(Kevent, "udata") == 24);
 }
 
 pub const kevent64_s = extern struct {
@@ -216,13 +210,13 @@ pub const kevent64_s = extern struct {
 // to make sure the struct is laid out the same. These values were
 // produced from C code using the offsetof macro.
 comptime {
-    assert(@byteOffsetOf(kevent64_s, "ident") == 0);
-    assert(@byteOffsetOf(kevent64_s, "filter") == 8);
-    assert(@byteOffsetOf(kevent64_s, "flags") == 10);
-    assert(@byteOffsetOf(kevent64_s, "fflags") == 12);
-    assert(@byteOffsetOf(kevent64_s, "data") == 16);
-    assert(@byteOffsetOf(kevent64_s, "udata") == 24);
-    assert(@byteOffsetOf(kevent64_s, "ext") == 32);
+    assert(@offsetOf(kevent64_s, "ident") == 0);
+    assert(@offsetOf(kevent64_s, "filter") == 8);
+    assert(@offsetOf(kevent64_s, "flags") == 10);
+    assert(@offsetOf(kevent64_s, "fflags") == 12);
+    assert(@offsetOf(kevent64_s, "data") == 16);
+    assert(@offsetOf(kevent64_s, "udata") == 24);
+    assert(@offsetOf(kevent64_s, "ext") == 32);
 }
 
 pub const mach_port_t = c_uint;
@@ -850,8 +844,8 @@ fn wstatus(x: u32) u32 {
     return x & 0o177;
 }
 const wstopped = 0o177;
-pub fn WEXITSTATUS(x: u32) u32 {
-    return x >> 8;
+pub fn WEXITSTATUS(x: u32) u8 {
+    return @intCast(u8, x >> 8);
 }
 pub fn WTERMSIG(x: u32) u32 {
     return wstatus(x);

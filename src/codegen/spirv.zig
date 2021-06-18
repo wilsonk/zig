@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Target = std.Target;
 const log = std.log.scoped(.codegen);
+const assert = std.debug.assert;
 
 const spec = @import("spirv/spec.zig");
 const Opcode = spec.Opcode;
@@ -17,7 +18,7 @@ const Inst = ir.Inst;
 pub const Word = u32;
 pub const ResultId = u32;
 
-pub const TypeMap = std.HashMap(Type, ResultId, Type.hash, Type.eql, std.hash_map.default_max_load_percentage);
+pub const TypeMap = std.HashMap(Type, u32, Type.HashContext, std.hash_map.default_max_load_percentage);
 pub const InstMap = std.AutoHashMap(*Inst, ResultId);
 
 const IncomingBlock = struct {
@@ -141,16 +142,16 @@ pub const SPIRVModule = struct {
         const path = decl.namespace.file_scope.sub_file_path;
         const result = try self.file_names.getOrPut(path);
         if (!result.found_existing) {
-            result.entry.value = self.allocResultId();
-            try writeInstructionWithString(&self.binary.debug_strings, .OpString, &[_]Word{result.entry.value}, path);
+            result.value_ptr.* = self.allocResultId();
+            try writeInstructionWithString(&self.binary.debug_strings, .OpString, &[_]Word{result.value_ptr.*}, path);
             try writeInstruction(&self.binary.debug_strings, .OpSource, &[_]Word{
                 @enumToInt(spec.SourceLanguage.Unknown), // TODO: Register Zig source language.
                 0, // TODO: Zig version as u32?
-                result.entry.value,
+                result.value_ptr.*,
             });
         }
 
-        return result.entry.value;
+        return result.value_ptr.*;
     }
 };
 
@@ -847,7 +848,7 @@ pub const DeclGen = struct {
             .incoming_blocks = &incoming_blocks,
         });
         defer {
-            self.blocks.removeAssertDiscard(inst);
+            assert(self.blocks.remove(inst));
             incoming_blocks.deinit(self.spv.gpa);
         }
 
@@ -884,10 +885,7 @@ pub const DeclGen = struct {
         if (inst.operand.ty.hasCodeGenBits()) {
             const operand_id = try self.resolve(inst.operand);
             // current_block_label_id should not be undefined here, lest there is a br or br_void in the function's body.
-            try target.incoming_blocks.append(self.spv.gpa, .{
-                .src_label_id = self.current_block_label_id,
-                .break_value_id = operand_id
-            });
+            try target.incoming_blocks.append(self.spv.gpa, .{ .src_label_id = self.current_block_label_id, .break_value_id = operand_id });
         }
 
         try writeInstruction(&self.code, .OpBranch, &[_]Word{target.label_id});
@@ -935,9 +933,9 @@ pub const DeclGen = struct {
         const result_id = self.spv.allocResultId();
 
         const operands = if (inst.base.ty.isVolatilePtr())
-            &[_]Word{ result_type_id, result_id, operand_id, @bitCast(u32, spec.MemoryAccess{.Volatile = true}) }
+            &[_]Word{ result_type_id, result_id, operand_id, @bitCast(u32, spec.MemoryAccess{ .Volatile = true }) }
         else
-            &[_]Word{ result_type_id, result_id, operand_id};
+            &[_]Word{ result_type_id, result_id, operand_id };
 
         try writeInstruction(&self.code, .OpLoad, operands);
 
@@ -949,14 +947,14 @@ pub const DeclGen = struct {
         const loop_label_id = self.spv.allocResultId();
 
         // Jump to the loop entry point
-        try writeInstruction(&self.code, .OpBranch, &[_]Word{ loop_label_id });
+        try writeInstruction(&self.code, .OpBranch, &[_]Word{loop_label_id});
 
         // TODO: Look into OpLoopMerge.
 
         try self.beginSPIRVBlock(loop_label_id);
         try self.genBody(inst.body);
 
-        try writeInstruction(&self.code, .OpBranch, &[_]Word{ loop_label_id });
+        try writeInstruction(&self.code, .OpBranch, &[_]Word{loop_label_id});
     }
 
     fn genRet(self: *DeclGen, inst: *Inst.UnOp) !void {
@@ -975,7 +973,7 @@ pub const DeclGen = struct {
         const src_val_id = try self.resolve(inst.rhs);
 
         const operands = if (inst.lhs.ty.isVolatilePtr())
-            &[_]Word{ dst_ptr_id, src_val_id, @bitCast(u32, spec.MemoryAccess{.Volatile = true}) }
+            &[_]Word{ dst_ptr_id, src_val_id, @bitCast(u32, spec.MemoryAccess{ .Volatile = true }) }
         else
             &[_]Word{ dst_ptr_id, src_val_id };
 

@@ -107,6 +107,21 @@ test "zig fmt: rewrite suspend without block expression" {
     );
 }
 
+// TODO Remove this after zig 0.9.0 is released.
+test "zig fmt: rewrite @byteOffsetOf to @offsetOf" {
+    try testTransform(
+        \\fn foo() void {
+        \\    @byteOffsetOf(Foo, "bar");
+        \\}
+        \\
+    ,
+        \\fn foo() void {
+        \\    @offsetOf(Foo, "bar");
+        \\}
+        \\
+    );
+}
+
 test "zig fmt: simple top level comptime block" {
     try testCanonical(
         \\// line comment
@@ -4409,6 +4424,13 @@ test "zig fmt: regression test for #5722" {
     );
 }
 
+test "zig fmt: regression test for #8974" {
+    try testCanonical(
+        \\pub const VARIABLE;
+        \\
+    );
+}
+
 test "zig fmt: allow trailing line comments to do manual array formatting" {
     try testCanonical(
         \\fn foo() void {
@@ -5132,7 +5154,7 @@ test "recovery: missing for payload" {
     try testError(
         \\comptime {
         \\    const a = for(a) {};
-        \\    const a: for(a) {};
+        \\    const a: for(a) blk: {};
         \\    for(a) {}
         \\}
     , &[_]Error{
@@ -5161,6 +5183,18 @@ test "recovery: missing while rbrace" {
         \\}
     , &[_]Error{
         .expected_statement,
+    });
+}
+
+test "recovery: nonfinal varargs" {
+    try testError(
+        \\extern fn f(a: u32, ..., b: u32) void;
+        \\extern fn g(a: u32, ..., b: anytype) void;
+        \\extern fn h(a: u32, ..., ...) void;
+    , &[_]Error{
+        .varargs_nonfinal,
+        .varargs_nonfinal,
+        .varargs_nonfinal,
     });
 }
 

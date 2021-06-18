@@ -6,6 +6,8 @@ const Target = std.Target;
 const Module = @import("Module.zig");
 const log = std.log.scoped(.Type);
 
+const file_struct = @This();
+
 /// This is the raw data, with no bookkeeping, no memory awareness, no de-duplication.
 /// It's important for this type to be small.
 /// Types are not de-duplicated, which helps with multi-threading since it obviates the requirement
@@ -596,6 +598,15 @@ pub const Type = extern union {
         return hasher.final();
     }
 
+    pub const HashContext = struct {
+        pub fn hash(self: @This(), t: Type) u64 {
+            return t.hash();
+        }
+        pub fn eql(self: @This(), a: Type, b: Type) bool {
+            return a.eql(b);
+        }
+    };
+
     pub fn copy(self: Type, allocator: *Allocator) error{OutOfMemory}!Type {
         if (self.tag_if_small_enough < Tag.no_payload_count) {
             return Type{ .tag_if_small_enough = self.tag_if_small_enough };
@@ -1147,8 +1158,8 @@ pub const Type = extern union {
             .@"struct" => {
                 // TODO introduce lazy value mechanism
                 const struct_obj = self.castTag(.@"struct").?.data;
-                for (struct_obj.fields.entries.items) |entry| {
-                    if (entry.value.ty.hasCodeGenBits())
+                for (struct_obj.fields.values()) |value| {
+                    if (value.ty.hasCodeGenBits())
                         return true;
                 } else {
                     return false;
@@ -1169,8 +1180,8 @@ pub const Type = extern union {
             },
             .@"union" => {
                 const union_obj = self.castTag(.@"union").?.data;
-                for (union_obj.fields.entries.items) |entry| {
-                    if (entry.value.ty.hasCodeGenBits())
+                for (union_obj.fields.values()) |value| {
+                    if (value.ty.hasCodeGenBits())
                         return true;
                 } else {
                     return false;
@@ -1181,8 +1192,8 @@ pub const Type = extern union {
                 if (union_obj.tag_ty.hasCodeGenBits()) {
                     return true;
                 }
-                for (union_obj.fields.entries.items) |entry| {
-                    if (entry.value.ty.hasCodeGenBits())
+                for (union_obj.fields.values()) |value| {
+                    if (value.ty.hasCodeGenBits())
                         return true;
                 } else {
                     return false;
@@ -1380,10 +1391,9 @@ pub const Type = extern union {
                 // like we have in stage1.
                 const struct_obj = self.castTag(.@"struct").?.data;
                 var biggest: u32 = 0;
-                for (struct_obj.fields.entries.items) |entry| {
-                    const field_ty = entry.value.ty;
-                    if (!field_ty.hasCodeGenBits()) continue;
-                    const field_align = field_ty.abiAlignment(target);
+                for (struct_obj.fields.values()) |field| {
+                    if (!field.ty.hasCodeGenBits()) continue;
+                    const field_align = field.ty.abiAlignment(target);
                     if (field_align > biggest) {
                         return field_align;
                     }
@@ -1399,10 +1409,9 @@ pub const Type = extern union {
             .union_tagged => {
                 const union_obj = self.castTag(.union_tagged).?.data;
                 var biggest: u32 = union_obj.tag_ty.abiAlignment(target);
-                for (union_obj.fields.entries.items) |entry| {
-                    const field_ty = entry.value.ty;
-                    if (!field_ty.hasCodeGenBits()) continue;
-                    const field_align = field_ty.abiAlignment(target);
+                for (union_obj.fields.values()) |field| {
+                    if (!field.ty.hasCodeGenBits()) continue;
+                    const field_align = field.ty.abiAlignment(target);
                     if (field_align > biggest) {
                         biggest = field_align;
                     }
@@ -1413,10 +1422,9 @@ pub const Type = extern union {
             .@"union" => {
                 const union_obj = self.castTag(.@"union").?.data;
                 var biggest: u32 = 0;
-                for (union_obj.fields.entries.items) |entry| {
-                    const field_ty = entry.value.ty;
-                    if (!field_ty.hasCodeGenBits()) continue;
-                    const field_align = field_ty.abiAlignment(target);
+                for (union_obj.fields.values()) |field| {
+                    if (!field.ty.hasCodeGenBits()) continue;
+                    const field_align = field.ty.abiAlignment(target);
                     if (field_align > biggest) {
                         biggest = field_align;
                     }
@@ -2415,9 +2423,8 @@ pub const Type = extern union {
             .@"struct" => {
                 const s = ty.castTag(.@"struct").?.data;
                 assert(s.haveFieldTypes());
-                for (s.fields.entries.items) |entry| {
-                    const field_ty = entry.value.ty;
-                    if (field_ty.onePossibleValue() == null) {
+                for (s.fields.values()) |field| {
+                    if (field.ty.onePossibleValue() == null) {
                         return null;
                     }
                 }
@@ -2426,7 +2433,7 @@ pub const Type = extern union {
             .enum_full => {
                 const enum_full = ty.castTag(.enum_full).?.data;
                 if (enum_full.fields.count() == 1) {
-                    return enum_full.values.entries.items[0].key;
+                    return enum_full.values.keys()[0];
                 } else {
                     return null;
                 }
@@ -2583,11 +2590,11 @@ pub const Type = extern union {
         switch (ty.tag()) {
             .enum_full, .enum_nonexhaustive => {
                 const enum_full = ty.cast(Payload.EnumFull).?.data;
-                return enum_full.fields.entries.items[field_index].key;
+                return enum_full.fields.keys()[field_index];
             },
             .enum_simple => {
                 const enum_simple = ty.castTag(.enum_simple).?.data;
-                return enum_simple.fields.entries.items[field_index].key;
+                return enum_simple.fields.keys()[field_index];
             },
             .atomic_ordering,
             .atomic_rmw_op,
@@ -2995,12 +3002,12 @@ pub const Type = extern union {
             };
         }
 
-        pub fn init(comptime t: Tag) Type {
+        pub fn init(comptime t: Tag) file_struct.Type {
             comptime std.debug.assert(@enumToInt(t) < Tag.no_payload_count);
             return .{ .tag_if_small_enough = @enumToInt(t) };
         }
 
-        pub fn create(comptime t: Tag, ally: *Allocator, data: Data(t)) error{OutOfMemory}!Type {
+        pub fn create(comptime t: Tag, ally: *Allocator, data: Data(t)) error{OutOfMemory}!file_struct.Type {
             const ptr = try ally.create(t.Type());
             ptr.* = .{
                 .base = .{ .tag = t },

@@ -11,7 +11,7 @@ const fs = std.fs;
 const InstallDirectoryOptions = std.build.InstallDirectoryOptions;
 const assert = std.debug.assert;
 
-const zig_version = std.builtin.Version{ .major = 0, .minor = 8, .patch = 0 };
+const zig_version = std.builtin.Version{ .major = 0, .minor = 9, .patch = 0 };
 
 pub fn build(b: *Builder) !void {
     b.setPreferredReleaseMode(.ReleaseFast);
@@ -66,7 +66,7 @@ pub fn build(b: *Builder) !void {
     if (!skip_install_lib_files) {
         b.installDirectory(InstallDirectoryOptions{
             .source_dir = "lib",
-            .install_dir = .Lib,
+            .install_dir = .lib,
             .install_subdir = "zig",
             .exclude_extensions = &[_][]const u8{
                 "README.md",
@@ -117,7 +117,7 @@ pub fn build(b: *Builder) !void {
             // of being built by cmake. But when built by zig it's gonna get a compiler_rt so that
             // is pointless.
             exe.addPackagePath("compiler_rt", "src/empty.zig");
-            exe.defineCMacro("ZIG_LINK_MODE=Static");
+            exe.defineCMacro("ZIG_LINK_MODE", "Static");
 
             const softfloat = b.addStaticLibrary("softfloat", null);
             softfloat.setBuildMode(.ReleaseFast);
@@ -168,7 +168,7 @@ pub fn build(b: *Builder) !void {
 
         switch (mem.count(u8, git_describe, "-")) {
             0 => {
-                // Tagged release version (e.g. 0.7.0).
+                // Tagged release version (e.g. 0.8.0).
                 if (!mem.eql(u8, git_describe, version_string)) {
                     std.debug.print("Zig version '{s}' does not match Git tag '{s}'\n", .{ version_string, git_describe });
                     std.process.exit(1);
@@ -176,7 +176,7 @@ pub fn build(b: *Builder) !void {
                 break :v version_string;
             },
             2 => {
-                // Untagged development build (e.g. 0.7.0-684-gbbe2cca1a).
+                // Untagged development build (e.g. 0.8.0-684-gbbe2cca1a).
                 var it = mem.split(git_describe, "-");
                 const tagged_ancestor = it.next() orelse unreachable;
                 const commit_height = it.next() orelse unreachable;
@@ -769,6 +769,7 @@ const zig_cpp_sources = [_][]const u8{
     // These are planned to stay even when we are self-hosted.
     "src/zig_llvm.cpp",
     "src/zig_clang.cpp",
+    "src/zig_llvm-ar.cpp",
     "src/zig_clang_driver.cpp",
     "src/zig_clang_cc1_main.cpp",
     "src/zig_clang_cc1as_main.cpp",

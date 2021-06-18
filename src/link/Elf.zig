@@ -451,7 +451,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         const file_size = self.base.options.program_code_size_hint;
         const p_align = 0x1000;
         const off = self.findFreeSpace(file_size, p_align);
-        log.debug("found PT_LOAD free space 0x{x} to 0x{x}\n", .{ off, off + file_size });
+        log.debug("found PT_LOAD free space 0x{x} to 0x{x}", .{ off, off + file_size });
         const entry_addr: u64 = self.entry_addr orelse if (self.base.options.target.cpu.arch == .spu_2) @as(u64, 0) else default_entry_addr;
         try self.program_headers.append(self.base.allocator, .{
             .p_type = elf.PT_LOAD,
@@ -473,7 +473,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         // page align.
         const p_align = if (self.base.options.target.os.tag == .linux) 0x1000 else @as(u16, ptr_size);
         const off = self.findFreeSpace(file_size, p_align);
-        log.debug("found PT_LOAD free space 0x{x} to 0x{x}\n", .{ off, off + file_size });
+        log.debug("found PT_LOAD free space 0x{x} to 0x{x}", .{ off, off + file_size });
         // TODO instead of hard coding the vaddr, make a function to find a vaddr to put things at.
         // we'll need to re-use that function anyway, in case the GOT grows and overlaps something
         // else in virtual memory.
@@ -495,7 +495,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         assert(self.shstrtab.items.len == 0);
         try self.shstrtab.append(self.base.allocator, 0); // need a 0 at position 0
         const off = self.findFreeSpace(self.shstrtab.items.len, 1);
-        log.debug("found shstrtab free space 0x{x} to 0x{x}\n", .{ off, off + self.shstrtab.items.len });
+        log.debug("found shstrtab free space 0x{x} to 0x{x}", .{ off, off + self.shstrtab.items.len });
         try self.sections.append(self.base.allocator, .{
             .sh_name = try self.makeString(".shstrtab"),
             .sh_type = elf.SHT_STRTAB,
@@ -553,7 +553,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         const each_size: u64 = if (small_ptr) @sizeOf(elf.Elf32_Sym) else @sizeOf(elf.Elf64_Sym);
         const file_size = self.base.options.symbol_count_hint * each_size;
         const off = self.findFreeSpace(file_size, min_align);
-        log.debug("found symtab free space 0x{x} to 0x{x}\n", .{ off, off + file_size });
+        log.debug("found symtab free space 0x{x} to 0x{x}", .{ off, off + file_size });
 
         try self.sections.append(self.base.allocator, .{
             .sh_name = try self.makeString(".symtab"),
@@ -595,7 +595,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         const file_size_hint = 200;
         const p_align = 1;
         const off = self.findFreeSpace(file_size_hint, p_align);
-        log.debug("found .debug_info free space 0x{x} to 0x{x}\n", .{
+        log.debug("found .debug_info free space 0x{x} to 0x{x}", .{
             off,
             off + file_size_hint,
         });
@@ -620,7 +620,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         const file_size_hint = 128;
         const p_align = 1;
         const off = self.findFreeSpace(file_size_hint, p_align);
-        log.debug("found .debug_abbrev free space 0x{x} to 0x{x}\n", .{
+        log.debug("found .debug_abbrev free space 0x{x} to 0x{x}", .{
             off,
             off + file_size_hint,
         });
@@ -645,7 +645,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         const file_size_hint = 160;
         const p_align = 16;
         const off = self.findFreeSpace(file_size_hint, p_align);
-        log.debug("found .debug_aranges free space 0x{x} to 0x{x}\n", .{
+        log.debug("found .debug_aranges free space 0x{x} to 0x{x}", .{
             off,
             off + file_size_hint,
         });
@@ -670,7 +670,7 @@ pub fn populateMissingMetadata(self: *Elf) !void {
         const file_size_hint = 250;
         const p_align = 1;
         const off = self.findFreeSpace(file_size_hint, p_align);
-        log.debug("found .debug_line free space 0x{x} to 0x{x}\n", .{
+        log.debug("found .debug_line free space 0x{x} to 0x{x}", .{
             off,
             off + file_size_hint,
         });
@@ -826,7 +826,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
             debug_abbrev_sect.sh_offset = self.findFreeSpace(needed_size, 1);
         }
         debug_abbrev_sect.sh_size = needed_size;
-        log.debug(".debug_abbrev start=0x{x} end=0x{x}\n", .{
+        log.debug(".debug_abbrev start=0x{x} end=0x{x}", .{
             debug_abbrev_sect.sh_offset,
             debug_abbrev_sect.sh_offset + needed_size,
         });
@@ -973,7 +973,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
             debug_aranges_sect.sh_offset = self.findFreeSpace(needed_size, 16);
         }
         debug_aranges_sect.sh_size = needed_size;
-        log.debug(".debug_aranges start=0x{x} end=0x{x}\n", .{
+        log.debug(".debug_aranges start=0x{x} end=0x{x}", .{
             debug_aranges_sect.sh_offset,
             debug_aranges_sect.sh_offset + needed_size,
         });
@@ -1140,7 +1140,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
                 shstrtab_sect.sh_offset = self.findFreeSpace(needed_size, 1);
             }
             shstrtab_sect.sh_size = needed_size;
-            log.debug("writing shstrtab start=0x{x} end=0x{x}\n", .{ shstrtab_sect.sh_offset, shstrtab_sect.sh_offset + needed_size });
+            log.debug("writing shstrtab start=0x{x} end=0x{x}", .{ shstrtab_sect.sh_offset, shstrtab_sect.sh_offset + needed_size });
 
             try self.base.file.?.pwriteAll(self.shstrtab.items, shstrtab_sect.sh_offset);
             if (!self.shdr_table_dirty) {
@@ -1161,7 +1161,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
                 debug_strtab_sect.sh_offset = self.findFreeSpace(needed_size, 1);
             }
             debug_strtab_sect.sh_size = needed_size;
-            log.debug("debug_strtab start=0x{x} end=0x{x}\n", .{ debug_strtab_sect.sh_offset, debug_strtab_sect.sh_offset + needed_size });
+            log.debug("debug_strtab start=0x{x} end=0x{x}", .{ debug_strtab_sect.sh_offset, debug_strtab_sect.sh_offset + needed_size });
 
             try self.base.file.?.pwriteAll(self.debug_strtab.items, debug_strtab_sect.sh_offset);
             if (!self.shdr_table_dirty) {
@@ -1195,7 +1195,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
 
                 for (buf) |*shdr, i| {
                     shdr.* = sectHeaderTo32(self.sections.items[i]);
-                    log.debug("writing section {}\n", .{shdr.*});
+                    log.debug("writing section {}", .{shdr.*});
                     if (foreign_endian) {
                         std.elf.bswapAllFields(elf.Elf32_Shdr, shdr);
                     }
@@ -1208,7 +1208,7 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
 
                 for (buf) |*shdr, i| {
                     shdr.* = self.sections.items[i];
-                    log.debug("writing section {}\n", .{shdr.*});
+                    log.debug("writing section {}", .{shdr.*});
                     if (foreign_endian) {
                         std.elf.bswapAllFields(elf.Elf64_Shdr, shdr);
                     }
@@ -1219,10 +1219,10 @@ pub fn flushModule(self: *Elf, comp: *Compilation) !void {
         self.shdr_table_dirty = false;
     }
     if (self.entry_addr == null and self.base.options.effectiveOutputMode() == .Exe) {
-        log.debug("flushing. no_entry_point_found = true\n", .{});
+        log.debug("flushing. no_entry_point_found = true", .{});
         self.error_flags.no_entry_point_found = true;
     } else {
-        log.debug("flushing. no_entry_point_found = false\n", .{});
+        log.debug("flushing. no_entry_point_found = false", .{});
         self.error_flags.no_entry_point_found = false;
         try self.writeElfHeader();
     }
@@ -1318,8 +1318,8 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
         try man.addOptionalFile(self.base.options.linker_script);
         try man.addOptionalFile(self.base.options.version_script);
         try man.addListOfFiles(self.base.options.objects);
-        for (comp.c_object_table.items()) |entry| {
-            _ = try man.addFile(entry.key.status.success.object_path, null);
+        for (comp.c_object_table.keys()) |key| {
+            _ = try man.addFile(key.status.success.object_path, null);
         }
         try man.addOptionalFile(module_obj_path);
         try man.addOptionalFile(compiler_rt_path);
@@ -1394,7 +1394,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
                 break :blk self.base.options.objects[0];
 
             if (comp.c_object_table.count() != 0)
-                break :blk comp.c_object_table.items()[0].key.status.success.object_path;
+                break :blk comp.c_object_table.keys()[0].status.success.object_path;
 
             if (module_obj_path) |p|
                 break :blk p;
@@ -1496,6 +1496,15 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
             try argv.append("-pie");
         }
 
+        if (self.base.options.link_mode == .Dynamic and target.os.tag == .netbsd) {
+            // Add options to produce shared objects with only 2 PT_LOAD segments.
+            // NetBSD expects 2 PT_LOAD segments in a shared object, otherwise
+            // ld.elf_so fails to load, emitting a general "not found" error.
+            // See https://github.com/ziglang/zig/issues/9109 .
+            try argv.append("--no-rosegment");
+            try argv.append("-znorelro");
+        }
+
         try argv.append("-o");
         try argv.append(full_out_path);
 
@@ -1518,8 +1527,7 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
             var test_path = std.ArrayList(u8).init(self.base.allocator);
             defer test_path.deinit();
             for (self.base.options.lib_dirs) |lib_dir_path| {
-                for (self.base.options.system_libs.items()) |entry| {
-                    const link_lib = entry.key;
+                for (self.base.options.system_libs.keys()) |link_lib| {
                     test_path.shrinkRetainingCapacity(0);
                     const sep = fs.path.sep_str;
                     try test_path.writer().print("{s}" ++ sep ++ "lib{s}.so", .{ lib_dir_path, link_lib });
@@ -1568,8 +1576,8 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
         // Positional arguments to the linker such as object files.
         try argv.appendSlice(self.base.options.objects);
 
-        for (comp.c_object_table.items()) |entry| {
-            try argv.append(entry.key.status.success.object_path);
+        for (comp.c_object_table.keys()) |key| {
+            try argv.append(key.status.success.object_path);
         }
 
         if (module_obj_path) |p| {
@@ -1598,10 +1606,9 @@ fn linkWithLLD(self: *Elf, comp: *Compilation) !void {
 
         // Shared libraries.
         if (is_exe_or_dyn_lib) {
-            const system_libs = self.base.options.system_libs.items();
+            const system_libs = self.base.options.system_libs.keys();
             try argv.ensureCapacity(argv.items.len + system_libs.len);
-            for (system_libs) |entry| {
-                const link_lib = entry.key;
+            for (system_libs) |link_lib| {
                 // By this time, we depend on these libs being dynamically linked libraries and not static libraries
                 // (the check for that needs to be earlier), but they could be full paths to .so files, in which
                 // case we want to avoid prepending "-l".
@@ -2075,10 +2082,10 @@ pub fn allocateDeclIndexes(self: *Elf, decl: *Module.Decl) !void {
     try self.offset_table.ensureCapacity(self.base.allocator, self.offset_table.items.len + 1);
 
     if (self.local_symbol_free_list.popOrNull()) |i| {
-        log.debug("reusing symbol index {d} for {s}\n", .{ i, decl.name });
+        log.debug("reusing symbol index {d} for {s}", .{ i, decl.name });
         decl.link.elf.local_sym_index = i;
     } else {
-        log.debug("allocating symbol index {d} for {s}\n", .{ self.local_symbols.items.len, decl.name });
+        log.debug("allocating symbol index {d} for {s}", .{ self.local_symbols.items.len, decl.name });
         decl.link.elf.local_sym_index = @intCast(u32, self.local_symbols.items.len);
         _ = self.local_symbols.addOneAssumeCapacity();
     }
@@ -2168,9 +2175,9 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
 
     var dbg_info_type_relocs: File.DbgInfoTypeRelocsTable = .{};
     defer {
-        var it = dbg_info_type_relocs.iterator();
-        while (it.next()) |entry| {
-            entry.value.relocs.deinit(self.base.allocator);
+        var it = dbg_info_type_relocs.valueIterator();
+        while (it.next()) |value| {
+            value.relocs.deinit(self.base.allocator);
         }
         dbg_info_type_relocs.deinit(self.base.allocator);
     }
@@ -2235,12 +2242,12 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
         if (fn_ret_has_bits) {
             const gop = try dbg_info_type_relocs.getOrPut(self.base.allocator, fn_ret_type);
             if (!gop.found_existing) {
-                gop.entry.value = .{
+                gop.value_ptr.* = .{
                     .off = undefined,
                     .relocs = .{},
                 };
             }
-            try gop.entry.value.relocs.append(self.base.allocator, @intCast(u32, dbg_info_buffer.items.len));
+            try gop.value_ptr.relocs.append(self.base.allocator, @intCast(u32, dbg_info_buffer.items.len));
             dbg_info_buffer.items.len += 4; // DW.AT_type,  DW.FORM_ref4
         }
         dbg_info_buffer.appendSliceAssumeCapacity(decl_name_with_null); // DW.AT_name, DW.FORM_string
@@ -2280,11 +2287,11 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
             !mem.isAlignedGeneric(u64, local_sym.st_value, required_alignment);
         if (need_realloc) {
             const vaddr = try self.growTextBlock(&decl.link.elf, code.len, required_alignment);
-            log.debug("growing {s} from 0x{x} to 0x{x}\n", .{ decl.name, local_sym.st_value, vaddr });
+            log.debug("growing {s} from 0x{x} to 0x{x}", .{ decl.name, local_sym.st_value, vaddr });
             if (vaddr != local_sym.st_value) {
                 local_sym.st_value = vaddr;
 
-                log.debug("  (writing new offset table entry)\n", .{});
+                log.debug("  (writing new offset table entry)", .{});
                 self.offset_table.items[decl.link.elf.offset_table_index] = vaddr;
                 try self.writeOffsetTableEntry(decl.link.elf.offset_table_index);
             }
@@ -2302,7 +2309,7 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
         const decl_name = mem.spanZ(decl.name);
         const name_str_index = try self.makeString(decl_name);
         const vaddr = try self.allocateTextBlock(&decl.link.elf, code.len, required_alignment);
-        log.debug("allocated text block for {s} at 0x{x}\n", .{ decl_name, vaddr });
+        log.debug("allocated text block for {s} at 0x{x}", .{ decl_name, vaddr });
         errdefer self.freeTextBlock(&decl.link.elf);
 
         local_sym.* = .{
@@ -2420,7 +2427,7 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
             if (needed_size > self.allocatedSize(debug_line_sect.sh_offset)) {
                 const new_offset = self.findFreeSpace(needed_size, 1);
                 const existing_size = last_src_fn.off;
-                log.debug("moving .debug_line section: {d} bytes from 0x{x} to 0x{x}\n", .{
+                log.debug("moving .debug_line section: {d} bytes from 0x{x} to 0x{x}", .{
                     existing_size,
                     debug_line_sect.sh_offset,
                     new_offset,
@@ -2448,24 +2455,28 @@ pub fn updateDecl(self: *Elf, module: *Module, decl: *Module.Decl) !void {
     // Now we emit the .debug_info types of the Decl. These will count towards the size of
     // the buffer, so we have to do it before computing the offset, and we can't perform the actual
     // relocations yet.
-    var it = dbg_info_type_relocs.iterator();
-    while (it.next()) |entry| {
-        entry.value.off = @intCast(u32, dbg_info_buffer.items.len);
-        try self.addDbgInfoType(entry.key, &dbg_info_buffer);
+    {
+        var it = dbg_info_type_relocs.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.off = @intCast(u32, dbg_info_buffer.items.len);
+            try self.addDbgInfoType(entry.key_ptr.*, &dbg_info_buffer);
+        }
     }
 
     try self.updateDeclDebugInfoAllocation(text_block, @intCast(u32, dbg_info_buffer.items.len));
 
-    // Now that we have the offset assigned we can finally perform type relocations.
-    it = dbg_info_type_relocs.iterator();
-    while (it.next()) |entry| {
-        for (entry.value.relocs.items) |off| {
-            mem.writeInt(
-                u32,
-                dbg_info_buffer.items[off..][0..4],
-                text_block.dbg_info_off + entry.value.off,
-                target_endian,
-            );
+    {
+        // Now that we have the offset assigned we can finally perform type relocations.
+        var it = dbg_info_type_relocs.valueIterator();
+        while (it.next()) |value| {
+            for (value.relocs.items) |off| {
+                mem.writeInt(
+                    u32,
+                    dbg_info_buffer.items[off..][0..4],
+                    text_block.dbg_info_off + value.off,
+                    target_endian,
+                );
+            }
         }
     }
 
@@ -2587,7 +2598,7 @@ fn writeDeclDebugInfo(self: *Elf, text_block: *TextBlock, dbg_info_buf: []const 
         if (needed_size > self.allocatedSize(debug_info_sect.sh_offset)) {
             const new_offset = self.findFreeSpace(needed_size, 1);
             const existing_size = last_decl.dbg_info_off;
-            log.debug("moving .debug_info section: {} bytes from 0x{x} to 0x{x}\n", .{
+            log.debug("moving .debug_info section: {} bytes from 0x{x} to 0x{x}", .{
                 existing_size,
                 debug_info_sect.sh_offset,
                 new_offset,
@@ -2636,7 +2647,7 @@ pub fn updateDeclExports(
     for (exports) |exp| {
         if (exp.options.section) |section_name| {
             if (!mem.eql(u8, section_name, ".text")) {
-                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
+                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.count() + 1);
                 module.failed_exports.putAssumeCapacityNoClobber(
                     exp,
                     try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: ExportOptions.section", .{}),
@@ -2654,7 +2665,7 @@ pub fn updateDeclExports(
             },
             .Weak => elf.STB_WEAK,
             .LinkOnce => {
-                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
+                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.count() + 1);
                 module.failed_exports.putAssumeCapacityNoClobber(
                     exp,
                     try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: GlobalLinkage.LinkOnce", .{}),

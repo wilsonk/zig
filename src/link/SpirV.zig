@@ -114,7 +114,7 @@ pub fn updateDeclExports(
 ) !void {}
 
 pub fn freeDecl(self: *SpirV, decl: *Module.Decl) void {
-    self.decl_table.removeAssertDiscard(decl);
+    assert(self.decl_table.swapRemove(decl));
 }
 
 pub fn flush(self: *SpirV, comp: *Compilation) !void {
@@ -141,8 +141,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
     // declarations which don't generate a result?
     // TODO: fn_link is used here, but thats probably not the right field. It will work anyway though.
     {
-        for (self.decl_table.items()) |entry| {
-            const decl = entry.key;
+        for (self.decl_table.keys()) |decl| {
             if (!decl.has_tv) continue;
 
             decl.fn_link.spirv.id = spv.allocResultId();
@@ -154,8 +153,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
         var decl_gen = codegen.DeclGen.init(&spv);
         defer decl_gen.deinit();
 
-        for (self.decl_table.items()) |entry| {
-            const decl = entry.key;
+        for (self.decl_table.keys()) |decl| {
             if (!decl.has_tv) continue;
 
             if (try decl_gen.gen(decl)) |msg| {
@@ -189,10 +187,7 @@ pub fn flushModule(self: *SpirV, comp: *Compilation) !void {
     var iovc_buffers: [buffers.len]std.os.iovec_const = undefined;
     for (iovc_buffers) |*iovc, i| {
         const bytes = std.mem.sliceAsBytes(buffers[i]);
-        iovc.* = .{
-            .iov_base = bytes.ptr,
-            .iov_len = bytes.len
-        };
+        iovc.* = .{ .iov_base = bytes.ptr, .iov_len = bytes.len };
     }
 
     var file_size: u64 = 0;

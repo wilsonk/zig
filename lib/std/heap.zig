@@ -16,6 +16,9 @@ const maxInt = std.math.maxInt;
 
 pub const LoggingAllocator = @import("heap/logging_allocator.zig").LoggingAllocator;
 pub const loggingAllocator = @import("heap/logging_allocator.zig").loggingAllocator;
+pub const ScopedLoggingAllocator = @import("heap/logging_allocator.zig").ScopedLoggingAllocator;
+pub const LogToWriterAllocator = @import("heap/log_to_writer_allocator.zig").LogToWriterAllocator;
+pub const logToWriterAllocator = @import("heap/log_to_writer_allocator.zig").logToWriterAllocator;
 pub const ArenaAllocator = @import("heap/arena_allocator.zig").ArenaAllocator;
 pub const GeneralPurposeAllocator = @import("heap/general_purpose_allocator.zig").GeneralPurposeAllocator;
 
@@ -247,7 +250,7 @@ const PageAllocator = struct {
             ) catch return error.OutOfMemory;
 
             // If the allocation is sufficiently aligned, use it.
-            if (@ptrToInt(addr) & (alignment - 1) == 0) {
+            if (mem.isAligned(@ptrToInt(addr), alignment)) {
                 return @ptrCast([*]u8, addr)[0..alignPageAllocLen(aligned_len, n, len_align)];
             }
 
@@ -300,13 +303,13 @@ const PageAllocator = struct {
         ) catch return error.OutOfMemory;
         assert(mem.isAligned(@ptrToInt(slice.ptr), mem.page_size));
 
-        const aligned_addr = mem.alignForward(@ptrToInt(slice.ptr), alignment);
-        const result_ptr = @alignCast(mem.page_size, @intToPtr([*]u8, aligned_addr));
+        const result_ptr = mem.alignPointer(slice.ptr, alignment) orelse
+            return error.OutOfMemory;
 
         // Unmap the extra bytes that were only requested in order to guarantee
         // that the range of memory we were provided had a proper alignment in
         // it somewhere. The extra bytes could be at the beginning, or end, or both.
-        const drop_len = aligned_addr - @ptrToInt(slice.ptr);
+        const drop_len = @ptrToInt(result_ptr) - @ptrToInt(slice.ptr);
         if (drop_len != 0) {
             os.munmap(slice[0..drop_len]);
         }
@@ -372,7 +375,7 @@ const PageAllocator = struct {
             return alignPageAllocLen(new_size_aligned, new_size, len_align);
 
         if (new_size_aligned < buf_aligned_len) {
-            const ptr = @intToPtr([*]align(mem.page_size) u8, @ptrToInt(buf_unaligned.ptr) + new_size_aligned);
+            const ptr = @alignCast(mem.page_size, buf_unaligned.ptr + new_size_aligned);
             // TODO: if the next_mmap_addr_hint is within the unmapped range, update it
             os.munmap(ptr[0 .. buf_aligned_len - new_size_aligned]);
             if (new_size_aligned == 0)
@@ -692,8 +695,9 @@ pub const FixedBufferAllocator = struct {
 
     fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29, ra: usize) ![]u8 {
         const self = @fieldParentPtr(FixedBufferAllocator, "allocator", allocator);
-        const aligned_addr = mem.alignForward(@ptrToInt(self.buffer.ptr) + self.end_index, ptr_align);
-        const adjusted_index = aligned_addr - @ptrToInt(self.buffer.ptr);
+        const adjust_off = mem.alignPointerOffset(self.buffer.ptr + self.end_index, ptr_align) orelse
+            return error.OutOfMemory;
+        const adjusted_index = self.end_index + adjust_off;
         const new_end_index = adjusted_index + n;
         if (new_end_index > self.buffer.len) {
             return error.OutOfMemory;
@@ -765,9 +769,9 @@ pub const ThreadSafeFixedBufferAllocator = blk: {
                 const self = @fieldParentPtr(ThreadSafeFixedBufferAllocator, "allocator", allocator);
                 var end_index = @atomicLoad(usize, &self.end_index, builtin.AtomicOrder.SeqCst);
                 while (true) {
-                    const addr = @ptrToInt(self.buffer.ptr) + end_index;
-                    const adjusted_addr = mem.alignForward(addr, ptr_align);
-                    const adjusted_index = end_index + (adjusted_addr - addr);
+                    const adjust_off = mem.alignPointerOffset(self.buffer.ptr + end_index, ptr_align) orelse
+                        return error.OutOfMemory;
+                    const adjusted_index = end_index + adjust_off;
                     const new_end_index = adjusted_index + n;
                     if (new_end_index > self.buffer.len) {
                         return error.OutOfMemory;
@@ -1161,4 +1165,5 @@ pub fn testAllocatorAlignedShrink(base_allocator: *mem.Allocator) !void {
 
 test "heap" {
     _ = @import("heap/logging_allocator.zig");
+    _ = @import("heap/log_to_writer_allocator.zig");
 }

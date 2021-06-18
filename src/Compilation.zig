@@ -74,15 +74,14 @@ clang_passthrough_mode: bool,
 clang_preprocessor_mode: ClangPreprocessorMode,
 /// Whether to print clang argvs to stdout.
 verbose_cc: bool,
-verbose_tokenize: bool,
-verbose_ast: bool,
-verbose_ir: bool,
+verbose_air: bool,
 verbose_llvm_ir: bool,
 verbose_cimport: bool,
 verbose_llvm_cpu_features: bool,
 disable_c_depfile: bool,
 time_report: bool,
 stack_report: bool,
+unwind_tables: bool,
 
 c_source_files: []const CSourceFile,
 clang_argv: []const []const u8,
@@ -203,8 +202,8 @@ const Job = union(enum) {
     /// needed when not linking libc and using LLVM for code generation because it generates
     /// calls to, for example, memcpy and memset.
     zig_libc: void,
-    /// WASI libc sysroot
-    wasi_libc_sysroot: void,
+    /// one of WASI libc static objects
+    wasi_libc_crt_file: wasi_libc.CRTFile,
 
     /// Use stage1 C++ code to compile zig code into an object file.
     stage1_module: void,
@@ -279,7 +278,7 @@ pub const MiscTask = enum {
     libcxx,
     libcxxabi,
     libtsan,
-    wasi_libc_sysroot,
+    wasi_libc_crt_file,
     compiler_rt,
     libssp,
     zig_libc,
@@ -646,6 +645,12 @@ pub const InitOptions = struct {
     framework_dirs: []const []const u8 = &[0][]const u8{},
     frameworks: []const []const u8 = &[0][]const u8{},
     system_libs: []const []const u8 = &[0][]const u8{},
+    /// These correspond to the WASI libc emulated subcomponents including:
+    /// * process clocks
+    /// * getpid
+    /// * mman
+    /// * signal
+    wasi_emulated_libs: []const wasi_libc.CRTFile = &[0]wasi_libc.CRTFile{},
     link_libc: bool = false,
     link_libcpp: bool = false,
     link_libunwind: bool = false,
@@ -661,6 +666,7 @@ pub const InitOptions = struct {
     want_tsan: ?bool = null,
     want_compiler_rt: ?bool = null,
     want_lto: ?bool = null,
+    want_unwind_tables: ?bool = null,
     use_llvm: ?bool = null,
     use_lld: ?bool = null,
     use_clang: ?bool = null,
@@ -692,9 +698,7 @@ pub const InitOptions = struct {
     clang_passthrough_mode: bool = false,
     verbose_cc: bool = false,
     verbose_link: bool = false,
-    verbose_tokenize: bool = false,
-    verbose_ast: bool = false,
-    verbose_ir: bool = false,
+    verbose_air: bool = false,
     verbose_llvm_ir: bool = false,
     verbose_cimport: bool = false,
     verbose_llvm_cpu_features: bool = false,
@@ -719,6 +723,8 @@ pub const InitOptions = struct {
     test_filter: ?[]const u8 = null,
     test_name_prefix: ?[]const u8 = null,
     subsystem: ?std.Target.SubSystem = null,
+    /// WASI-only. Type of WASI execution model ("command" or "reactor").
+    wasi_exec_model: ?wasi_libc.CRTFile = null,
 };
 
 fn addPackageTableToCacheHash(
@@ -729,18 +735,21 @@ fn addPackageTableToCacheHash(
 ) (error{OutOfMemory} || std.os.GetCwdError)!void {
     const allocator = &arena.allocator;
 
-    const packages = try allocator.alloc(Package.Table.Entry, pkg_table.count());
+    const packages = try allocator.alloc(Package.Table.KV, pkg_table.count());
     {
         // Copy over the hashmap entries to our slice
         var table_it = pkg_table.iterator();
         var idx: usize = 0;
         while (table_it.next()) |entry| : (idx += 1) {
-            packages[idx] = entry.*;
+            packages[idx] = .{
+                .key = entry.key_ptr.*,
+                .value = entry.value_ptr.*,
+            };
         }
     }
     // Sort the slice by package name
-    std.sort.sort(Package.Table.Entry, packages, {}, struct {
-        fn lessThan(_: void, lhs: Package.Table.Entry, rhs: Package.Table.Entry) bool {
+    std.sort.sort(Package.Table.KV, packages, {}, struct {
+        fn lessThan(_: void, lhs: Package.Table.KV, rhs: Package.Table.KV) bool {
             return std.mem.lessThan(u8, lhs.key, rhs.key);
         }
     }.lessThan);
@@ -816,8 +825,20 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             return error.MachineCodeModelNotSupported;
         }
 
+        const tsan = options.want_tsan orelse false;
+        // TSAN is implemented in C++ so it requires linking libc++.
+        const link_libcpp = options.link_libcpp or tsan;
+        const link_libc = link_libcpp or options.link_libc or
+            target_util.osRequiresLibC(options.target);
+
+        const link_libunwind = options.link_libunwind or
+            (link_libcpp and target_util.libcNeedsLibUnwind(options.target));
+        const unwind_tables = options.want_unwind_tables orelse
+            (link_libunwind or target_util.needUnwindTables(options.target));
+        const link_eh_frame_hdr = options.link_eh_frame_hdr or unwind_tables;
+
         // Make a decision on whether to use LLD or our own linker.
-        const use_lld = if (options.use_lld) |explicit| explicit else blk: {
+        const use_lld = options.use_lld orelse blk: {
             if (!build_options.have_llvm)
                 break :blk false;
 
@@ -836,7 +857,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
                 options.frameworks.len != 0 or
                 options.system_libs.len != 0 or
                 options.link_libc or options.link_libcpp or
-                options.link_eh_frame_hdr or
+                link_eh_frame_hdr or
                 options.link_emit_relocs or
                 options.output_mode == .Lib or
                 options.lld_argv.len != 0 or
@@ -894,15 +915,6 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
                 },
             }
         };
-
-        const tsan = options.want_tsan orelse false;
-        // TSAN is implemented in C++ so it requires linking libc++.
-        const link_libcpp = options.link_libcpp or tsan;
-        const link_libc = link_libcpp or options.link_libc or
-            target_util.osRequiresLibC(options.target);
-
-        const link_libunwind = options.link_libunwind or
-            (link_libcpp and target_util.libcNeedsLibUnwind(options.target));
 
         const must_dynamic_link = dl: {
             if (target_util.cannotDynamicLink(options.target))
@@ -1073,6 +1085,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
         cache.hash.add(pic);
         cache.hash.add(pie);
         cache.hash.add(lto);
+        cache.hash.add(unwind_tables);
         cache.hash.add(tsan);
         cache.hash.add(stack_check);
         cache.hash.add(red_zone);
@@ -1283,6 +1296,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .framework_dirs = options.framework_dirs,
             .system_libs = system_libs,
             .syslibroot = darwin_options.syslibroot,
+            .wasi_emulated_libs = options.wasi_emulated_libs,
             .lib_dirs = options.lib_dirs,
             .rpath_list = options.rpath_list,
             .strip = strip,
@@ -1304,7 +1318,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .linker_script = options.linker_script,
             .version_script = options.version_script,
             .gc_sections = options.linker_gc_sections,
-            .eh_frame_hdr = options.link_eh_frame_hdr,
+            .eh_frame_hdr = link_eh_frame_hdr,
             .emit_relocs = options.link_emit_relocs,
             .rdynamic = options.rdynamic,
             .extra_lld_args = options.lld_argv,
@@ -1330,6 +1344,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .disable_lld_caching = options.disable_lld_caching,
             .subsystem = options.subsystem,
             .is_test = options.is_test,
+            .wasi_exec_model = options.wasi_exec_model,
         });
         errdefer bin_file.destroy();
         comp.* = .{
@@ -1358,9 +1373,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .clang_passthrough_mode = options.clang_passthrough_mode,
             .clang_preprocessor_mode = options.clang_preprocessor_mode,
             .verbose_cc = options.verbose_cc,
-            .verbose_tokenize = options.verbose_tokenize,
-            .verbose_ast = options.verbose_ast,
-            .verbose_ir = options.verbose_ir,
+            .verbose_air = options.verbose_air,
             .verbose_llvm_ir = options.verbose_llvm_ir,
             .verbose_cimport = options.verbose_cimport,
             .verbose_llvm_cpu_features = options.verbose_llvm_cpu_features,
@@ -1369,6 +1382,7 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
             .color = options.color,
             .time_report = options.time_report,
             .stack_report = options.stack_report,
+            .unwind_tables = unwind_tables,
             .test_filter = options.test_filter,
             .test_name_prefix = options.test_name_prefix,
             .test_evented_io = options.test_evented_io,
@@ -1423,8 +1437,18 @@ pub fn create(gpa: *Allocator, options: InitOptions) !*Compilation {
                 },
             });
         }
-        if (comp.wantBuildWasiLibcSysrootFromSource()) {
-            try comp.work_queue.write(&[_]Job{.{ .wasi_libc_sysroot = {} }});
+        if (comp.wantBuildWasiLibcFromSource()) {
+            const wasi_emulated_libs = comp.bin_file.options.wasi_emulated_libs;
+            try comp.work_queue.ensureUnusedCapacity(wasi_emulated_libs.len + 2); // worst-case we need all components
+            for (wasi_emulated_libs) |crt_file| {
+                comp.work_queue.writeItemAssumeCapacity(.{
+                    .wasi_libc_crt_file = crt_file,
+                });
+            }
+            comp.work_queue.writeAssumeCapacity(&[_]Job{
+                .{ .wasi_libc_crt_file = comp.bin_file.options.wasi_exec_model orelse .crt1_o },
+                .{ .wasi_libc_crt_file = .libc_a },
+            });
         }
         if (comp.wantBuildMinGWFromSource()) {
             const static_lib_jobs = [_]Job{
@@ -1525,8 +1549,8 @@ pub fn destroy(self: *Compilation) void {
     {
         var it = self.crt_files.iterator();
         while (it.next()) |entry| {
-            gpa.free(entry.key);
-            entry.value.deinit(gpa);
+            gpa.free(entry.key_ptr.*);
+            entry.value_ptr.deinit(gpa);
         }
         self.crt_files.deinit(gpa);
     }
@@ -1554,14 +1578,14 @@ pub fn destroy(self: *Compilation) void {
         glibc_file.deinit(gpa);
     }
 
-    for (self.c_object_table.items()) |entry| {
-        entry.key.destroy(gpa);
+    for (self.c_object_table.keys()) |key| {
+        key.destroy(gpa);
     }
     self.c_object_table.deinit(gpa);
     self.c_object_cache_digest_set.deinit(gpa);
 
-    for (self.failed_c_objects.items()) |entry| {
-        entry.value.destroy(gpa);
+    for (self.failed_c_objects.values()) |value| {
+        value.destroy(gpa);
     }
     self.failed_c_objects.deinit(gpa);
 
@@ -1578,8 +1602,8 @@ pub fn destroy(self: *Compilation) void {
 }
 
 pub fn clearMiscFailures(comp: *Compilation) void {
-    for (comp.misc_failures.items()) |*entry| {
-        entry.value.deinit(comp.gpa);
+    for (comp.misc_failures.values()) |*value| {
+        value.deinit(comp.gpa);
     }
     comp.misc_failures.deinit(comp.gpa);
     comp.misc_failures = .{};
@@ -1599,9 +1623,10 @@ pub fn update(self: *Compilation) !void {
 
     // For compiling C objects, we rely on the cache hash system to avoid duplicating work.
     // Add a Job for each C object.
-    try self.c_object_work_queue.ensureUnusedCapacity(self.c_object_table.items().len);
-    for (self.c_object_table.items()) |entry| {
-        self.c_object_work_queue.writeItemAssumeCapacity(entry.key);
+    try self.c_object_work_queue.ensureUnusedCapacity(self.c_object_table.count());
+    for (self.c_object_table.keys()) |key| {
+        assert(@ptrToInt(key) != 0xaaaa_aaaa_aaaa_aaaa);
+        self.c_object_work_queue.writeItemAssumeCapacity(key);
     }
 
     const use_stage1 = build_options.omit_stage2 or
@@ -1620,8 +1645,8 @@ pub fn update(self: *Compilation) !void {
             // it changed, and, if so, re-compute ZIR and then queue the job
             // to update it.
             try self.astgen_work_queue.ensureUnusedCapacity(module.import_table.count());
-            for (module.import_table.items()) |entry| {
-                self.astgen_work_queue.writeItemAssumeCapacity(entry.value);
+            for (module.import_table.values()) |value| {
+                self.astgen_work_queue.writeItemAssumeCapacity(value);
             }
 
             try self.work_queue.writeItem(.{ .analyze_pkg = std_pkg });
@@ -1635,12 +1660,12 @@ pub fn update(self: *Compilation) !void {
             // Process the deletion set. We use a while loop here because the
             // deletion set may grow as we call `clearDecl` within this loop,
             // and more unreferenced Decls are revealed.
-            while (module.deletion_set.entries.items.len != 0) {
-                const decl = module.deletion_set.entries.items[0].key;
+            while (module.deletion_set.count() != 0) {
+                const decl = module.deletion_set.keys()[0];
                 assert(decl.deletion_flag);
                 assert(decl.dependants.count() == 0);
                 const is_anon = if (decl.zir_decl_index == 0) blk: {
-                    break :blk decl.namespace.anon_decls.swapRemove(decl) != null;
+                    break :blk decl.namespace.anon_decls.swapRemove(decl);
                 } else false;
 
                 try module.clearDecl(decl, null);
@@ -1677,8 +1702,7 @@ pub fn update(self: *Compilation) !void {
     // to reference the ZIR.
     if (self.totalErrorCount() == 0 and !self.keep_source_files_loaded) {
         if (self.bin_file.options.module) |module| {
-            for (module.import_table.items()) |entry| {
-                const file = entry.value;
+            for (module.import_table.values()) |file| {
                 file.unloadTree(self.gpa);
                 file.unloadSource(self.gpa);
             }
@@ -1702,18 +1726,21 @@ pub fn totalErrorCount(self: *Compilation) usize {
     var total: usize = self.failed_c_objects.count() + self.misc_failures.count();
 
     if (self.bin_file.options.module) |module| {
-        total += module.failed_exports.items().len;
+        total += module.failed_exports.count();
 
-        for (module.failed_files.items()) |entry| {
-            if (entry.value) |_| {
-                total += 1;
-            } else {
-                const file = entry.key;
-                assert(file.zir_loaded);
-                const payload_index = file.zir.extra[@enumToInt(Zir.ExtraIndex.compile_errors)];
-                assert(payload_index != 0);
-                const header = file.zir.extraData(Zir.Inst.CompileErrors, payload_index);
-                total += header.data.items_len;
+        {
+            var it = module.failed_files.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.*) |_| {
+                    total += 1;
+                } else {
+                    const file = entry.key_ptr.*;
+                    assert(file.zir_loaded);
+                    const payload_index = file.zir.extra[@enumToInt(Zir.ExtraIndex.compile_errors)];
+                    assert(payload_index != 0);
+                    const header = file.zir.extraData(Zir.Inst.CompileErrors, payload_index);
+                    total += header.data.items_len;
+                }
             }
         }
 
@@ -1721,14 +1748,14 @@ pub fn totalErrorCount(self: *Compilation) usize {
         // When a parse error is introduced, we keep all the semantic analysis for
         // the previous parse success, including compile errors, but we cannot
         // emit them until the file succeeds parsing.
-        for (module.failed_decls.items()) |entry| {
-            if (entry.key.namespace.file_scope.okToReportErrors()) {
+        for (module.failed_decls.keys()) |key| {
+            if (key.namespace.file_scope.okToReportErrors()) {
                 total += 1;
             }
         }
         if (module.emit_h) |emit_h| {
-            for (emit_h.failed_decls.items()) |entry| {
-                if (entry.key.namespace.file_scope.okToReportErrors()) {
+            for (emit_h.failed_decls.keys()) |key| {
+                if (key.namespace.file_scope.okToReportErrors()) {
                     total += 1;
                 }
             }
@@ -1743,7 +1770,7 @@ pub fn totalErrorCount(self: *Compilation) usize {
     // Compile log errors only count if there are no other errors.
     if (total == 0) {
         if (self.bin_file.options.module) |module| {
-            total += @boolToInt(module.compile_log_decls.items().len != 0);
+            total += @boolToInt(module.compile_log_decls.count() != 0);
         }
     }
 
@@ -1757,57 +1784,67 @@ pub fn getAllErrorsAlloc(self: *Compilation) !AllErrors {
     var errors = std.ArrayList(AllErrors.Message).init(self.gpa);
     defer errors.deinit();
 
-    for (self.failed_c_objects.items()) |entry| {
-        const c_object = entry.key;
-        const err_msg = entry.value;
-        // TODO these fields will need to be adjusted when we have proper
-        // C error reporting bubbling up.
-        try errors.append(.{
-            .src = .{
-                .src_path = try arena.allocator.dupe(u8, c_object.src.src_path),
-                .msg = try std.fmt.allocPrint(&arena.allocator, "unable to build C object: {s}", .{
-                    err_msg.msg,
-                }),
-                .byte_offset = 0,
-                .line = err_msg.line,
-                .column = err_msg.column,
-                .source_line = null, // TODO
-            },
-        });
+    {
+        var it = self.failed_c_objects.iterator();
+        while (it.next()) |entry| {
+            const c_object = entry.key_ptr.*;
+            const err_msg = entry.value_ptr.*;
+            // TODO these fields will need to be adjusted when we have proper
+            // C error reporting bubbling up.
+            try errors.append(.{
+                .src = .{
+                    .src_path = try arena.allocator.dupe(u8, c_object.src.src_path),
+                    .msg = try std.fmt.allocPrint(&arena.allocator, "unable to build C object: {s}", .{
+                        err_msg.msg,
+                    }),
+                    .byte_offset = 0,
+                    .line = err_msg.line,
+                    .column = err_msg.column,
+                    .source_line = null, // TODO
+                },
+            });
+        }
     }
-    for (self.misc_failures.items()) |entry| {
-        try AllErrors.addPlainWithChildren(&arena, &errors, entry.value.msg, entry.value.children);
+    for (self.misc_failures.values()) |*value| {
+        try AllErrors.addPlainWithChildren(&arena, &errors, value.msg, value.children);
     }
     if (self.bin_file.options.module) |module| {
-        for (module.failed_files.items()) |entry| {
-            if (entry.value) |msg| {
-                try AllErrors.add(module, &arena, &errors, msg.*);
-            } else {
-                // Must be ZIR errors. In order for ZIR errors to exist, the parsing
-                // must have completed successfully.
-                const tree = try entry.key.getTree(module.gpa);
-                assert(tree.errors.len == 0);
-                try AllErrors.addZir(&arena.allocator, &errors, entry.key);
-            }
-        }
-        for (module.failed_decls.items()) |entry| {
-            // Skip errors for Decls within files that had a parse failure.
-            // We'll try again once parsing succeeds.
-            if (entry.key.namespace.file_scope.okToReportErrors()) {
-                try AllErrors.add(module, &arena, &errors, entry.value.*);
-            }
-        }
-        if (module.emit_h) |emit_h| {
-            for (emit_h.failed_decls.items()) |entry| {
-                // Skip errors for Decls within files that had a parse failure.
-                // We'll try again once parsing succeeds.
-                if (entry.key.namespace.file_scope.okToReportErrors()) {
-                    try AllErrors.add(module, &arena, &errors, entry.value.*);
+        {
+            var it = module.failed_files.iterator();
+            while (it.next()) |entry| {
+                if (entry.value_ptr.*) |msg| {
+                    try AllErrors.add(module, &arena, &errors, msg.*);
+                } else {
+                    // Must be ZIR errors. In order for ZIR errors to exist, the parsing
+                    // must have completed successfully.
+                    const tree = try entry.key_ptr.*.getTree(module.gpa);
+                    assert(tree.errors.len == 0);
+                    try AllErrors.addZir(&arena.allocator, &errors, entry.key_ptr.*);
                 }
             }
         }
-        for (module.failed_exports.items()) |entry| {
-            try AllErrors.add(module, &arena, &errors, entry.value.*);
+        {
+            var it = module.failed_decls.iterator();
+            while (it.next()) |entry| {
+                // Skip errors for Decls within files that had a parse failure.
+                // We'll try again once parsing succeeds.
+                if (entry.key_ptr.*.namespace.file_scope.okToReportErrors()) {
+                    try AllErrors.add(module, &arena, &errors, entry.value_ptr.*.*);
+                }
+            }
+        }
+        if (module.emit_h) |emit_h| {
+            var it = emit_h.failed_decls.iterator();
+            while (it.next()) |entry| {
+                // Skip errors for Decls within files that had a parse failure.
+                // We'll try again once parsing succeeds.
+                if (entry.key_ptr.*.namespace.file_scope.okToReportErrors()) {
+                    try AllErrors.add(module, &arena, &errors, entry.value_ptr.*.*);
+                }
+            }
+        }
+        for (module.failed_exports.values()) |value| {
+            try AllErrors.add(module, &arena, &errors, value.*);
         }
     }
 
@@ -1820,20 +1857,21 @@ pub fn getAllErrorsAlloc(self: *Compilation) !AllErrors {
     }
 
     if (self.bin_file.options.module) |module| {
-        const compile_log_items = module.compile_log_decls.items();
-        if (errors.items.len == 0 and compile_log_items.len != 0) {
+        if (errors.items.len == 0 and module.compile_log_decls.count() != 0) {
+            const keys = module.compile_log_decls.keys();
+            const values = module.compile_log_decls.values();
             // First one will be the error; subsequent ones will be notes.
-            const src_loc = compile_log_items[0].key.nodeOffsetSrcLoc(compile_log_items[0].value);
+            const src_loc = keys[0].nodeOffsetSrcLoc(values[0]);
             const err_msg = Module.ErrorMsg{
                 .src_loc = src_loc,
                 .msg = "found compile log statement",
-                .notes = try self.gpa.alloc(Module.ErrorMsg, compile_log_items.len - 1),
+                .notes = try self.gpa.alloc(Module.ErrorMsg, module.compile_log_decls.count() - 1),
             };
             defer self.gpa.free(err_msg.notes);
 
-            for (compile_log_items[1..]) |entry, i| {
+            for (keys[1..]) |key, i| {
                 err_msg.notes[i] = .{
-                    .src_loc = entry.key.nodeOffsetSrcLoc(entry.value),
+                    .src_loc = key.nodeOffsetSrcLoc(values[i + 1]),
                     .msg = "also here",
                 };
             }
@@ -1898,6 +1936,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
         }
 
         while (self.c_object_work_queue.readItem()) |c_object| {
+            assert(@ptrToInt(c_object) != 0xaaaa_aaaa_aaaa_aaaa);
             self.work_queue_wait_group.start();
             try self.thread_pool.spawn(workerUpdateCObject, .{
                 self, c_object, &c_obj_prog_node, &self.work_queue_wait_group,
@@ -1950,7 +1989,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
                     log.debug("analyze liveness of {s}", .{decl.name});
                     try liveness.analyze(module.gpa, &decl_arena.allocator, func.body);
 
-                    if (std.builtin.mode == .Debug and self.verbose_ir) {
+                    if (std.builtin.mode == .Debug and self.verbose_air) {
                         func.dump(module.*);
                     }
                 }
@@ -1964,7 +2003,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
                         continue;
                     },
                     else => {
-                        try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.items().len + 1);
+                        try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.count() + 1);
                         module.failed_decls.putAssumeCapacityNoClobber(decl, try Module.ErrorMsg.create(
                             module.gpa,
                             decl.srcLoc(),
@@ -2036,7 +2075,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
                 @panic("sadly stage2 is omitted from this build to save memory on the CI server");
             const module = self.bin_file.options.module.?;
             self.bin_file.updateDeclLineNumber(module, decl) catch |err| {
-                try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.items().len + 1);
+                try module.failed_decls.ensureCapacity(module.gpa, module.failed_decls.count() + 1);
                 module.failed_decls.putAssumeCapacityNoClobber(decl, try Module.ErrorMsg.create(
                     module.gpa,
                     decl.srcLoc(),
@@ -2101,7 +2140,7 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
             };
         },
         .windows_import_lib => |index| {
-            const link_lib = self.bin_file.options.system_libs.items()[index].key;
+            const link_lib = self.bin_file.options.system_libs.keys()[index];
             mingw.buildImportLib(self, link_lib) catch |err| {
                 // TODO Surface more error details.
                 try self.setMiscFailure(
@@ -2151,12 +2190,12 @@ pub fn performAllTheWork(self: *Compilation) error{ TimerUnsupported, OutOfMemor
                 );
             };
         },
-        .wasi_libc_sysroot => {
-            wasi_libc.buildWasiLibcSysroot(self) catch |err| {
+        .wasi_libc_crt_file => |crt_file| {
+            wasi_libc.buildCRTFile(self, crt_file) catch |err| {
                 // TODO Surface more error details.
                 try self.setMiscFailure(
-                    .wasi_libc_sysroot,
-                    "unable to build WASI libc sysroot: {s}",
+                    .wasi_libc_crt_file,
+                    "unable to build WASI libc CRT file: {s}",
                     .{@errorName(err)},
                 );
             };
@@ -2951,6 +2990,12 @@ pub fn addCCArgs(
             if (target_util.supports_fpic(target) and comp.bin_file.options.pic) {
                 try argv.append("-fPIC");
             }
+
+            if (comp.unwind_tables) {
+                try argv.append("-funwind-tables");
+            } else {
+                try argv.append("-fno-unwind-tables");
+            }
         },
         .shared_library, .ll, .bc, .unknown, .static_library, .object, .zig => {},
         .assembly => {
@@ -2959,10 +3004,49 @@ pub fn addCCArgs(
             // all CPU features here.
             switch (target.cpu.arch) {
                 .riscv32, .riscv64 => {
+                    const RvArchFeat = struct { char: u8, feat: std.Target.riscv.Feature };
+                    const letters = [_]RvArchFeat{
+                        .{ .char = 'm', .feat = .m },
+                        .{ .char = 'a', .feat = .a },
+                        .{ .char = 'f', .feat = .f },
+                        .{ .char = 'd', .feat = .d },
+                        .{ .char = 'c', .feat = .c },
+                    };
+                    const prefix: []const u8 = if (target.cpu.arch == .riscv64) "rv64" else "rv32";
+                    const prefix_len = 4;
+                    assert(prefix.len == prefix_len);
+                    var march_buf: [prefix_len + letters.len + 1]u8 = undefined;
+                    var march_index: usize = prefix_len;
+                    mem.copy(u8, &march_buf, prefix);
+
+                    if (std.Target.riscv.featureSetHas(target.cpu.features, .e)) {
+                        march_buf[march_index] = 'e';
+                    } else {
+                        march_buf[march_index] = 'i';
+                    }
+                    march_index += 1;
+
+                    for (letters) |letter| {
+                        if (std.Target.riscv.featureSetHas(target.cpu.features, letter.feat)) {
+                            march_buf[march_index] = letter.char;
+                            march_index += 1;
+                        }
+                    }
+
+                    const march_arg = try std.fmt.allocPrint(arena, "-march={s}", .{
+                        march_buf[0..march_index],
+                    });
+                    try argv.append(march_arg);
+
                     if (std.Target.riscv.featureSetHas(target.cpu.features, .relax)) {
                         try argv.append("-mrelax");
                     } else {
                         try argv.append("-mno-relax");
+                    }
+                    if (std.Target.riscv.featureSetHas(target.cpu.features, .save_restore)) {
+                        try argv.append("-msave-restore");
+                    } else {
+                        try argv.append("-mno-save-restore");
                     }
                 },
                 else => {
@@ -3023,7 +3107,7 @@ fn failCObjWithOwnedErrorMsg(
         defer lock.release();
         {
             errdefer err_msg.destroy(comp.gpa);
-            try comp.failed_c_objects.ensureCapacity(comp.gpa, comp.failed_c_objects.items().len + 1);
+            try comp.failed_c_objects.ensureCapacity(comp.gpa, comp.failed_c_objects.count() + 1);
         }
         comp.failed_c_objects.putAssumeCapacityNoClobber(c_object, err_msg);
     }
@@ -3285,7 +3369,7 @@ pub fn get_libc_crt_file(comp: *Compilation, arena: *Allocator, basename: []cons
     if (comp.wantBuildGLibCFromSource() or
         comp.wantBuildMuslFromSource() or
         comp.wantBuildMinGWFromSource() or
-        comp.wantBuildWasiLibcSysrootFromSource())
+        comp.wantBuildWasiLibcFromSource())
     {
         return comp.crt_files.get(basename).?.full_object_path;
     }
@@ -3325,8 +3409,9 @@ fn wantBuildMuslFromSource(comp: Compilation) bool {
         !comp.getTarget().isWasm();
 }
 
-fn wantBuildWasiLibcSysrootFromSource(comp: Compilation) bool {
-    return comp.wantBuildLibCFromSource() and comp.getTarget().isWasm();
+fn wantBuildWasiLibcFromSource(comp: Compilation) bool {
+    return comp.wantBuildLibCFromSource() and comp.getTarget().isWasm() and
+        comp.getTarget().os.tag == .wasi;
 }
 
 fn wantBuildMinGWFromSource(comp: Compilation) bool {
@@ -3671,9 +3756,7 @@ fn buildOutputFromZig(
         .self_exe_path = comp.self_exe_path,
         .verbose_cc = comp.verbose_cc,
         .verbose_link = comp.bin_file.options.verbose_link,
-        .verbose_tokenize = comp.verbose_tokenize,
-        .verbose_ast = comp.verbose_ast,
-        .verbose_ir = comp.verbose_ir,
+        .verbose_air = comp.verbose_air,
         .verbose_llvm_ir = comp.verbose_llvm_ir,
         .verbose_cimport = comp.verbose_cimport,
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
@@ -3917,6 +4000,7 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
         .pic = comp.bin_file.options.pic,
         .pie = comp.bin_file.options.pie,
         .lto = comp.bin_file.options.lto,
+        .unwind_tables = comp.unwind_tables,
         .link_libc = comp.bin_file.options.link_libc,
         .link_libcpp = comp.bin_file.options.link_libcpp,
         .strip = comp.bin_file.options.strip,
@@ -3931,9 +4015,7 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
         .enable_time_report = comp.time_report,
         .enable_stack_report = comp.stack_report,
         .test_is_evented = comp.test_evented_io,
-        .verbose_tokenize = comp.verbose_tokenize,
-        .verbose_ast = comp.verbose_ast,
-        .verbose_ir = comp.verbose_ir,
+        .verbose_ir = comp.verbose_air,
         .verbose_llvm_ir = comp.verbose_llvm_ir,
         .verbose_cimport = comp.verbose_cimport,
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
@@ -3953,8 +4035,8 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
         // We need to save the inferred link libs to the cache, otherwise if we get a cache hit
         // next time we will be missing these libs.
         var libs_txt = std.ArrayList(u8).init(arena);
-        for (comp.bin_file.options.system_libs.items()[inferred_lib_start_index..]) |entry| {
-            try libs_txt.writer().print("{s}\n", .{entry.key});
+        for (comp.bin_file.options.system_libs.keys()[inferred_lib_start_index..]) |key| {
+            try libs_txt.writer().print("{s}\n", .{key});
         }
         try directory.handle.writeFile(libs_txt_basename, libs_txt.items);
     }
@@ -3980,7 +4062,7 @@ fn updateStage1Module(comp: *Compilation, main_progress_node: *std.Progress.Node
     });
     var digest_plus_flags: [digest.len + 2]u8 = undefined;
     digest_plus_flags[0..digest.len].* = digest;
-    assert(std.fmt.formatIntBuf(digest_plus_flags[digest.len..], stage1_flags_byte, 16, false, .{
+    assert(std.fmt.formatIntBuf(digest_plus_flags[digest.len..], stage1_flags_byte, 16, .lower, .{
         .width = 2,
         .fill = '0',
     }) == 2);
@@ -4017,7 +4099,7 @@ fn createStage1Pkg(
         var children = std.ArrayList(*stage1.Pkg).init(arena);
         var it = pkg.table.iterator();
         while (it.next()) |entry| {
-            try children.append(try createStage1Pkg(arena, entry.key, entry.value, child_pkg));
+            try children.append(try createStage1Pkg(arena, entry.key_ptr.*, entry.value_ptr.*, child_pkg));
         }
         break :blk children.items;
     };
@@ -4089,9 +4171,7 @@ pub fn build_crt_file(
         .c_source_files = c_source_files,
         .verbose_cc = comp.verbose_cc,
         .verbose_link = comp.bin_file.options.verbose_link,
-        .verbose_tokenize = comp.verbose_tokenize,
-        .verbose_ast = comp.verbose_ast,
-        .verbose_ir = comp.verbose_ir,
+        .verbose_air = comp.verbose_air,
         .verbose_llvm_ir = comp.verbose_llvm_ir,
         .verbose_cimport = comp.verbose_cimport,
         .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,

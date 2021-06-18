@@ -332,8 +332,8 @@ pub const AT_REMOVEDIR = 2;
 pub const AT_EACCESS = 4;
 pub const AT_SYMLINK_FOLLOW = 8;
 
-pub fn WEXITSTATUS(s: u32) u32 {
-    return (s & 0xff00) >> 8;
+pub fn WEXITSTATUS(s: u32) u8 {
+    return @intCast(u8, (s & 0xff00) >> 8);
 }
 pub fn WTERMSIG(s: u32) u32 {
     return s & 0x7f;
@@ -360,7 +360,7 @@ pub const dirent = extern struct {
     d_name: [256]u8,
 
     pub fn reclen(self: dirent) u16 {
-        return (@byteOffsetOf(dirent, "d_name") + self.d_namlen + 1 + 7) & ~@as(u16, 7);
+        return (@offsetOf(dirent, "d_name") + self.d_namlen + 1 + 7) & ~@as(u16, 7);
     }
 };
 
@@ -395,6 +395,8 @@ pub const sockaddr = extern struct {
     family: u8,
     data: [14]u8,
 };
+
+pub const sockaddr_storage = std.x.os.Socket.Address.Native.Storage;
 
 pub const Kevent = extern struct {
     ident: usize,
@@ -694,14 +696,6 @@ pub const in_port_t = u16;
 pub const sa_family_t = u8;
 pub const socklen_t = u32;
 
-pub const sockaddr_storage = extern struct {
-    ss_len: u8,
-    ss_family: sa_family_t,
-    __ss_pad1: [5]u8,
-    __ss_align: i64,
-    __ss_pad2: [112]u8,
-};
-
 pub const sockaddr_in = extern struct {
     len: u8 = @sizeOf(sockaddr_in),
     family: sa_family_t = AF_INET,
@@ -768,6 +762,11 @@ pub const dl_phdr_info = extern struct {
     dlpi_phdr: [*]std.elf.Phdr,
     dlpi_phnum: u16,
 };
+pub const cmsghdr = extern struct {
+    cmsg_len: socklen_t,
+    cmsg_level: c_int,
+    cmsg_type: c_int,
+};
 pub const msghdr = extern struct {
     msg_name: ?*c_void,
     msg_namelen: socklen_t,
@@ -776,11 +775,6 @@ pub const msghdr = extern struct {
     msg_control: ?*c_void,
     msg_controllen: socklen_t,
     msg_flags: c_int,
-};
-pub const cmsghdr = extern struct {
-    cmsg_len: socklen_t,
-    cmsg_level: c_int,
-    cmsg_type: c_int,
 };
 pub const cmsgcred = extern struct {
     cmcred_pid: pid_t,

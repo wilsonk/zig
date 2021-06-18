@@ -13,6 +13,7 @@ const Type = @import("type.zig").Type;
 const Cache = @import("Cache.zig");
 const build_options = @import("build_options");
 const LibCInstallation = @import("libc_installation.zig").LibCInstallation;
+const wasi_libc = @import("wasi_libc.zig");
 
 pub const producer_string = if (std.builtin.is_test) "zig test" else "zig " ++ build_options.version;
 
@@ -110,11 +111,15 @@ pub const Options = struct {
     framework_dirs: []const []const u8,
     frameworks: []const []const u8,
     system_libs: std.StringArrayHashMapUnmanaged(void),
+    wasi_emulated_libs: []const wasi_libc.CRTFile,
     lib_dirs: []const []const u8,
     rpath_list: []const []const u8,
 
     version: ?std.builtin.Version,
     libc_installation: ?*const LibCInstallation,
+
+    /// WASI-only. Type of WASI execution model ("command" or "reactor").
+    wasi_exec_model: ?wasi_libc.CRTFile = null,
 
     pub fn effectiveOutputMode(options: Options) std.builtin.OutputMode {
         return if (options.use_lld) .Obj else options.output_mode;
@@ -162,7 +167,7 @@ pub const File = struct {
     };
 
     /// For DWARF .debug_info.
-    pub const DbgInfoTypeRelocsTable = std.HashMapUnmanaged(Type, DbgInfoTypeReloc, Type.hash, Type.eql, std.hash_map.DefaultMaxLoadPercentage);
+    pub const DbgInfoTypeRelocsTable = std.HashMapUnmanaged(Type, DbgInfoTypeReloc, Type.HashContext, std.hash_map.default_max_load_percentage);
 
     /// For DWARF .debug_info.
     pub const DbgInfoTypeReloc = struct {
@@ -406,8 +411,8 @@ pub const File = struct {
             const full_out_path = try emit.directory.join(comp.gpa, &[_][]const u8{emit.sub_path});
             defer comp.gpa.free(full_out_path);
             assert(comp.c_object_table.count() == 1);
-            const the_entry = comp.c_object_table.items()[0];
-            const cached_pp_file_path = the_entry.key.status.success.object_path;
+            const the_key = comp.c_object_table.keys()[0];
+            const cached_pp_file_path = the_key.status.success.object_path;
             try fs.cwd().copyFile(cached_pp_file_path, fs.cwd(), full_out_path, .{});
             return;
         }
@@ -545,8 +550,8 @@ pub const File = struct {
             base.releaseLock();
 
             try man.addListOfFiles(base.options.objects);
-            for (comp.c_object_table.items()) |entry| {
-                _ = try man.addFile(entry.key.status.success.object_path, null);
+            for (comp.c_object_table.keys()) |key| {
+                _ = try man.addFile(key.status.success.object_path, null);
             }
             try man.addOptionalFile(module_obj_path);
             try man.addOptionalFile(compiler_rt_path);
@@ -580,12 +585,12 @@ pub const File = struct {
         var object_files = std.ArrayList([*:0]const u8).init(base.allocator);
         defer object_files.deinit();
 
-        try object_files.ensureCapacity(base.options.objects.len + comp.c_object_table.items().len + 2);
+        try object_files.ensureCapacity(base.options.objects.len + comp.c_object_table.count() + 2);
         for (base.options.objects) |obj_path| {
             object_files.appendAssumeCapacity(try arena.dupeZ(u8, obj_path));
         }
-        for (comp.c_object_table.items()) |entry| {
-            object_files.appendAssumeCapacity(try arena.dupeZ(u8, entry.key.status.success.object_path));
+        for (comp.c_object_table.keys()) |key| {
+            object_files.appendAssumeCapacity(try arena.dupeZ(u8, key.status.success.object_path));
         }
         if (module_obj_path) |p| {
             object_files.appendAssumeCapacity(try arena.dupeZ(u8, p));

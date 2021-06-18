@@ -16694,7 +16694,7 @@ static IrInstGen *ir_analyze_instruction_container_init_list(IrAnalyze *ira,
     {
         // We're now done inferring the type.
         container_type->data.structure.resolve_status = ResolveStatusUnstarted;
-    } else if (container_type->id == ZigTypeIdVector) {
+    } else if (container_type->id == ZigTypeIdVector || is_tuple(container_type)) {
         // OK
     } else {
         ir_add_error(ira, &instruction->base.base,
@@ -17082,7 +17082,7 @@ static TypeStructField *validate_host_int_byte_offset(IrAnalyze *ira,
     return field;
 }
 
-static IrInstGen *ir_analyze_instruction_byte_offset_of(IrAnalyze *ira, IrInstSrcByteOffsetOf *instruction) {
+static IrInstGen *ir_analyze_instruction_offset_of(IrAnalyze *ira, IrInstSrcOffsetOf *instruction) {
     IrInstGen *type_value = instruction->type_value->child;
     if (type_is_invalid(type_value->value->type))
         return ira->codegen->invalid_inst_gen;
@@ -19563,6 +19563,18 @@ static IrInstGen *ir_analyze_instruction_truncate(IrAnalyze *ira, IrInstSrcTrunc
         return ir_implicit_cast2(ira, &instruction->target->base, target, dest_type);
     }
 
+    if (src_type->id != ZigTypeIdComptimeInt) {
+        if (src_type->data.integral.is_signed != dest_type->data.integral.is_signed) {
+            const char *sign_str = dest_type->data.integral.is_signed ? "signed" : "unsigned";
+            ir_add_error(ira, &target->base, buf_sprintf("expected %s integer type, found '%s'", sign_str, buf_ptr(&src_type->name)));
+            return ira->codegen->invalid_inst_gen;
+        } else if (src_type->data.integral.bit_count > 0 && src_type->data.integral.bit_count < dest_type->data.integral.bit_count) {
+            ir_add_error(ira, &target->base, buf_sprintf("type '%s' has fewer bits than destination type '%s'",
+                        buf_ptr(&src_type->name), buf_ptr(&dest_type->name)));
+            return ira->codegen->invalid_inst_gen;
+        }
+    }
+
     if (instr_is_comptime(target)) {
         ZigValue *val = ir_resolve_const(ira, target, UndefBad);
         if (val == nullptr)
@@ -19578,16 +19590,6 @@ static IrInstGen *ir_analyze_instruction_truncate(IrAnalyze *ira, IrInstSrcTrunc
         IrInstGen *result = ir_const(ira, &instruction->base.base, dest_type);
         bigint_init_unsigned(&result->value->data.x_bigint, 0);
         return result;
-    }
-
-    if (src_type->data.integral.is_signed != dest_type->data.integral.is_signed) {
-        const char *sign_str = dest_type->data.integral.is_signed ? "signed" : "unsigned";
-        ir_add_error(ira, &target->base, buf_sprintf("expected %s integer type, found '%s'", sign_str, buf_ptr(&src_type->name)));
-        return ira->codegen->invalid_inst_gen;
-    } else if (src_type->data.integral.bit_count < dest_type->data.integral.bit_count) {
-        ir_add_error(ira, &target->base, buf_sprintf("type '%s' has fewer bits than destination type '%s'",
-                    buf_ptr(&src_type->name), buf_ptr(&dest_type->name)));
-        return ira->codegen->invalid_inst_gen;
     }
 
     return ir_build_truncate_gen(ira, &instruction->base.base, dest_type, target);
@@ -24366,8 +24368,8 @@ static IrInstGen *ir_analyze_instruction_base(IrAnalyze *ira, IrInstSrc *instruc
             return ir_analyze_instruction_enum_tag_name(ira, (IrInstSrcTagName *)instruction);
         case IrInstSrcIdFieldParentPtr:
             return ir_analyze_instruction_field_parent_ptr(ira, (IrInstSrcFieldParentPtr *)instruction);
-        case IrInstSrcIdByteOffsetOf:
-            return ir_analyze_instruction_byte_offset_of(ira, (IrInstSrcByteOffsetOf *)instruction);
+        case IrInstSrcIdOffsetOf:
+            return ir_analyze_instruction_offset_of(ira, (IrInstSrcOffsetOf *)instruction);
         case IrInstSrcIdBitOffsetOf:
             return ir_analyze_instruction_bit_offset_of(ira, (IrInstSrcBitOffsetOf *)instruction);
         case IrInstSrcIdTypeInfo:
@@ -24822,7 +24824,7 @@ bool ir_inst_src_has_side_effects(IrInstSrc *instruction) {
         case IrInstSrcIdTypeName:
         case IrInstSrcIdTagName:
         case IrInstSrcIdFieldParentPtr:
-        case IrInstSrcIdByteOffsetOf:
+        case IrInstSrcIdOffsetOf:
         case IrInstSrcIdBitOffsetOf:
         case IrInstSrcIdTypeInfo:
         case IrInstSrcIdType:

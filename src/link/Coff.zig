@@ -735,7 +735,7 @@ pub fn updateDeclExports(self: *Coff, module: *Module, decl: *Module.Decl, expor
     for (exports) |exp| {
         if (exp.options.section) |section_name| {
             if (!mem.eql(u8, section_name, ".text")) {
-                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
+                try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.count() + 1);
                 module.failed_exports.putAssumeCapacityNoClobber(
                     exp,
                     try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: ExportOptions.section", .{}),
@@ -746,7 +746,7 @@ pub fn updateDeclExports(self: *Coff, module: *Module, decl: *Module.Decl, expor
         if (mem.eql(u8, exp.options.name, "_start")) {
             self.entry_addr = decl.link.coff.getVAddr(self.*) - default_image_base;
         } else {
-            try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.items().len + 1);
+            try module.failed_exports.ensureCapacity(module.gpa, module.failed_exports.count() + 1);
             module.failed_exports.putAssumeCapacityNoClobber(
                 exp,
                 try Module.ErrorMsg.create(self.base.allocator, decl.srcLoc(), "Unimplemented: Exports other than '_start'", .{}),
@@ -861,8 +861,8 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         self.base.releaseLock();
 
         try man.addListOfFiles(self.base.options.objects);
-        for (comp.c_object_table.items()) |entry| {
-            _ = try man.addFile(entry.key.status.success.object_path, null);
+        for (comp.c_object_table.keys()) |key| {
+            _ = try man.addFile(key.status.success.object_path, null);
         }
         try man.addOptionalFile(module_obj_path);
         man.hash.addOptional(self.base.options.stack_size_override);
@@ -928,7 +928,7 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
                 break :blk self.base.options.objects[0];
 
             if (comp.c_object_table.count() != 0)
-                break :blk comp.c_object_table.items()[0].key.status.success.object_path;
+                break :blk comp.c_object_table.keys()[0].status.success.object_path;
 
             if (module_obj_path) |p|
                 break :blk p;
@@ -1026,8 +1026,8 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
 
         try argv.appendSlice(self.base.options.objects);
 
-        for (comp.c_object_table.items()) |entry| {
-            try argv.append(entry.key.status.success.object_path);
+        for (comp.c_object_table.keys()) |key| {
+            try argv.append(key.status.success.object_path);
         }
 
         if (module_obj_path) |p| {
@@ -1221,13 +1221,26 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
             try argv.append(comp.compiler_rt_static_lib.?.full_object_path);
         }
 
-        for (self.base.options.system_libs.items()) |entry| {
-            const lib_basename = try allocPrint(arena, "{s}.lib", .{entry.key});
+        try argv.ensureUnusedCapacity(self.base.options.system_libs.count());
+        for (self.base.options.system_libs.keys()) |key| {
+            const lib_basename = try allocPrint(arena, "{s}.lib", .{key});
             if (comp.crt_files.get(lib_basename)) |crt_file| {
-                try argv.append(crt_file.full_object_path);
-            } else {
-                try argv.append(lib_basename);
+                argv.appendAssumeCapacity(crt_file.full_object_path);
+                continue;
             }
+            if (try self.findLib(arena, lib_basename)) |full_path| {
+                argv.appendAssumeCapacity(full_path);
+                continue;
+            }
+            if (target.abi.isGnu()) {
+                const fallback_name = try allocPrint(arena, "lib{s}.dll.a", .{key});
+                if (try self.findLib(arena, fallback_name)) |full_path| {
+                    argv.appendAssumeCapacity(full_path);
+                    continue;
+                }
+            }
+            log.err("DLL import library for -l{s} not found", .{key});
+            return error.DllImportLibraryNotFound;
         }
 
         if (self.base.options.verbose_link) {
@@ -1307,6 +1320,18 @@ fn linkWithLLD(self: *Coff, comp: *Compilation) !void {
         // other processes clobbering it.
         self.base.lock = man.toOwnedLock();
     }
+}
+
+fn findLib(self: *Coff, arena: *Allocator, name: []const u8) !?[]const u8 {
+    for (self.base.options.lib_dirs) |lib_dir| {
+        const full_path = try fs.path.join(arena, &.{ lib_dir, name });
+        fs.cwd().access(full_path, .{}) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => |e| return e,
+        };
+        return full_path;
+    }
+    return null;
 }
 
 pub fn getDeclVAddr(self: *Coff, decl: *const Module.Decl) u64 {

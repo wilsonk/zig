@@ -206,13 +206,7 @@ pub const sockaddr = extern struct {
     data: [14]u8,
 };
 
-pub const sockaddr_storage = extern struct {
-    len: u8,
-    family: sa_family_t,
-    __pad1: [5]u8,
-    __align: i64,
-    __pad2: [112]u8,
-};
+pub const sockaddr_storage = std.x.os.Socket.Address.Native.Storage;
 
 pub const sockaddr_in = extern struct {
     len: u8 = @sizeOf(sockaddr_in),
@@ -735,8 +729,8 @@ pub const TIOCGSID = 0x40047463;
 pub const TIOCGPTN = 0x4004740f;
 pub const TIOCSIG = 0x2004745f;
 
-pub fn WEXITSTATUS(s: u32) u32 {
-    return (s & 0xff00) >> 8;
+pub fn WEXITSTATUS(s: u32) u8 {
+    return @intCast(u8, (s & 0xff00) >> 8);
 }
 pub fn WTERMSIG(s: u32) u32 {
     return s & 0x7f;

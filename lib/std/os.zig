@@ -41,7 +41,7 @@ pub const wasi = @import("os/wasi.zig");
 pub const windows = @import("os/windows.zig");
 
 comptime {
-    assert(@import("std") == std); // std lib tests require --override-lib-dir
+    assert(@import("std") == std); // std lib tests require --zig-lib-dir
 }
 
 test {
@@ -1279,6 +1279,16 @@ pub fn openatW(dir_fd: fd_t, file_path_w: []const u16, flags: u32, mode: mode_t)
         error.WouldBlock => unreachable,
         error.PipeBusy => unreachable,
         else => |e| return e,
+    };
+}
+
+pub fn dup(old_fd: fd_t) !fd_t {
+    const rc = system.dup(old_fd);
+    return switch (errno(rc)) {
+        0 => return @intCast(fd_t, rc),
+        EMFILE => error.ProcessFdQuotaExceeded,
+        EBADF => unreachable, // invalid file descriptor
+        else => |err| return unexpectedErrno(err),
     };
 }
 
@@ -3435,10 +3445,10 @@ pub const WaitPidResult = struct {
 };
 
 pub fn waitpid(pid: pid_t, flags: u32) WaitPidResult {
-    const Status = if (builtin.link_libc) c_uint else u32;
+    const Status = if (builtin.link_libc) c_int else u32;
     var status: Status = undefined;
     while (true) {
-        const rc = system.waitpid(pid, &status, flags);
+        const rc = system.waitpid(pid, &status, if (builtin.link_libc) @intCast(c_int, flags) else flags);
         switch (errno(rc)) {
             0 => return .{
                 .pid = @intCast(pid_t, rc),
@@ -4998,7 +5008,7 @@ pub fn sendmsg(
     flags: u32,
 ) SendMsgError!usize {
     while (true) {
-        const rc = system.sendmsg(sockfd, &msg, flags);
+        const rc = system.sendmsg(sockfd, @ptrCast(*const std.x.os.Socket.Message, &msg), @intCast(c_int, flags));
         if (builtin.os.tag == .windows) {
             if (rc == windows.ws2_32.SOCKET_ERROR) {
                 switch (windows.ws2_32.WSAGetLastError()) {
@@ -6121,7 +6131,7 @@ pub fn getrlimit(resource: rlimit_resource) GetrlimitError!rlimit {
     }
 }
 
-pub const SetrlimitError = error{PermissionDenied, LimitTooBig} || UnexpectedError;
+pub const SetrlimitError = error{ PermissionDenied, LimitTooBig } || UnexpectedError;
 
 pub fn setrlimit(resource: rlimit_resource, limits: rlimit) SetrlimitError!void {
     const setrlimit_sym = if (builtin.os.tag == .linux and builtin.link_libc)

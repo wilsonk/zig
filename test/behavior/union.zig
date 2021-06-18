@@ -107,11 +107,11 @@ test "union with specified enum tag" {
     comptime try doTest();
 }
 
-fn doTest() !void {
+fn doTest() error{TestUnexpectedResult}!void {
     try expect((try bar(Payload{ .A = 1234 })) == -10);
 }
 
-fn bar(value: Payload) !i32 {
+fn bar(value: Payload) error{TestUnexpectedResult}!i32 {
     try expect(@as(Letter, value) == Letter.A);
     return switch (value) {
         Payload.A => |x| return x - 1244,
@@ -776,7 +776,7 @@ test "@unionInit on union w/ tag but no fields" {
         };
 
         comptime {
-            try expect(@sizeOf(Data) != 0);
+            std.debug.assert(@sizeOf(Data) != 0);
         }
 
         fn doTheTest() !void {

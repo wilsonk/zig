@@ -135,9 +135,10 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
 
             const s = path.sep_str;
 
-            for (source_table.items()) |entry| {
-                const src_file = entry.key;
-                const ext = entry.value;
+            var it = source_table.iterator();
+            while (it.next()) |entry| {
+                const src_file = entry.key_ptr.*;
+                const ext = entry.value_ptr.*;
 
                 const dirname = path.dirname(src_file).?;
                 const basename = path.basename(src_file);
@@ -216,9 +217,7 @@ pub fn buildCRTFile(comp: *Compilation, crt_file: CRTFile) !void {
                 .self_exe_path = comp.self_exe_path,
                 .verbose_cc = comp.verbose_cc,
                 .verbose_link = comp.bin_file.options.verbose_link,
-                .verbose_tokenize = comp.verbose_tokenize,
-                .verbose_ast = comp.verbose_ast,
-                .verbose_ir = comp.verbose_ir,
+                .verbose_air = comp.verbose_air,
                 .verbose_llvm_ir = comp.verbose_llvm_ir,
                 .verbose_cimport = comp.verbose_cimport,
                 .verbose_llvm_cpu_features = comp.verbose_llvm_cpu_features,
