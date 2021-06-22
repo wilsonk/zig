@@ -280,9 +280,6 @@ pub const Tree = struct {
                     token_tags[parse_error.token].symbol(),
                 });
             },
-            .invalid_and => {
-                return stream.writeAll("`&&` is invalid; note that `and` is boolean AND");
-            },
             .invalid_bit_range => {
                 return stream.writeAll("bit range not allowed on slices and arrays");
             },
@@ -1869,7 +1866,7 @@ pub const Tree = struct {
     }
 
     fn fullStructInit(tree: Tree, info: full.StructInit.Ast) full.StructInit {
-        const token_tags = tree.tokens.items(.tag);
+        _ = tree;
         var result: full.StructInit = .{
             .ast = info,
         };
@@ -2412,7 +2409,6 @@ pub const Error = struct {
         extra_const_qualifier,
         extra_volatile_qualifier,
         ptr_mod_on_array_child_type,
-        invalid_and,
         invalid_bit_range,
         invalid_token,
         same_line_doc_comment,

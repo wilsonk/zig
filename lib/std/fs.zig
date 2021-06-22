@@ -3,6 +3,7 @@
 // This file is part of [zig](https://ziglang.org/), which is MIT licensed.
 // The MIT license requires this copyright notice to be included in all copies
 // and substantial portions of the software.
+const root = @import("root");
 const builtin = std.builtin;
 const std = @import("std.zig");
 const os = std.os;
@@ -47,7 +48,10 @@ pub const MAX_PATH_BYTES = switch (builtin.os.tag) {
     .windows => os.windows.PATH_MAX_WIDE * 3 + 1,
     // TODO work out what a reasonable value we should use here
     .wasi => 4096,
-    else => @compileError("Unsupported OS"),
+    else => if (@hasDecl(root, "os") and @hasDecl(root.os, "PATH_MAX"))
+        root.os.PATH_MAX
+    else
+        @compileError("PATH_MAX not implemented for " ++ @tagName(builtin.os.tag)),
 };
 
 pub const base64_alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".*;
@@ -473,7 +477,7 @@ pub const Dir = struct {
                     }
 
                     var stat_info: os.libc_stat = undefined;
-                    const rc2 = os.system._kern_read_stat(
+                    _ = os.system._kern_read_stat(
                         self.dir.fd,
                         &haiku_entry.d_name,
                         false,
@@ -1537,7 +1541,7 @@ pub const Dir = struct {
         self: Dir,
         target_path: []const u8,
         sym_link_path: []const u8,
-        flags: SymLinkFlags,
+        _: SymLinkFlags,
     ) !void {
         return os.symlinkatWasi(target_path, self.fd, sym_link_path);
     }
@@ -1875,6 +1879,7 @@ pub const Dir = struct {
     /// * NtDll prefixed
     /// TODO currently this ignores `flags`.
     pub fn accessW(self: Dir, sub_path_w: [*:0]const u16, flags: File.OpenFlags) AccessError!void {
+        _ = flags;
         return os.faccessatW(self.fd, sub_path_w, 0, 0);
     }
 
@@ -2434,7 +2439,7 @@ pub fn selfExePath(out_buffer: []u8) SelfExePathError![]u8 {
                     }) catch continue;
 
                     var real_path_buf: [MAX_PATH_BYTES]u8 = undefined;
-                    if (os.realpathZ(&resolved_path_buf, &real_path_buf)) |real_path| {
+                    if (os.realpathZ(resolved_path, &real_path_buf)) |real_path| {
                         // found a file, and hope it is the right file
                         if (real_path.len > out_buffer.len)
                             return error.NameTooLong;
