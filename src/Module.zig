@@ -27,6 +27,7 @@ const trace = @import("tracy.zig").trace;
 const AstGen = @import("AstGen.zig");
 const Sema = @import("Sema.zig");
 const target_util = @import("target.zig");
+const build_options = @import("build_options");
 
 /// General-purpose allocator. Used for both temporary and long-term storage.
 gpa: *Allocator,
@@ -1111,6 +1112,11 @@ pub const Scope = struct {
             return buf.toOwnedSliceSentinel(0);
         }
 
+        /// Returns the full path to this file relative to its package.
+        pub fn fullPath(file: File, ally: *Allocator) ![]u8 {
+            return file.pkg.root_src_directory.join(ally, &[_][]const u8{file.sub_file_path});
+        }
+
         pub fn dumpSrc(file: *File, src: LazySrcLoc) void {
             const loc = std.zig.findLineColumn(file.source.bytes, src);
             std.debug.print("{s}:{d}:{d}\n", .{ file.sub_file_path, loc.line + 1, loc.column + 1 });
@@ -1150,6 +1156,9 @@ pub const Scope = struct {
         runtime_index: u32 = 0,
 
         is_comptime: bool,
+
+        /// when null, it is determined by build mode, changed by @setRuntimeSafety
+        want_safety: ?bool = null,
 
         /// This `Block` maps a block ZIR instruction to the corresponding
         /// AIR instruction for break instruction analysis.
@@ -1195,12 +1204,12 @@ pub const Scope = struct {
                 .runtime_cond = parent.runtime_cond,
                 .runtime_loop = parent.runtime_loop,
                 .runtime_index = parent.runtime_index,
+                .want_safety = parent.want_safety,
             };
         }
 
         pub fn wantSafety(block: *const Block) bool {
-            // TODO take into account scope's safety overrides
-            return switch (block.sema.mod.optimizeMode()) {
+            return block.want_safety orelse switch (block.sema.mod.optimizeMode()) {
                 .Debug => true,
                 .ReleaseSafe => true,
                 .ReleaseFast => false,
@@ -2227,6 +2236,7 @@ pub fn astGenFile(mod: *Module, file: *Scope.File) !void {
     const want_local_cache = file.pkg == mod.root_pkg;
     const digest = hash: {
         var path_hash: Cache.HashHelper = .{};
+        path_hash.addBytes(build_options.version);
         if (!want_local_cache) {
             path_hash.addOptionalBytes(file.pkg.root_src_directory.path);
         }
@@ -2458,6 +2468,7 @@ pub fn astGenFile(mod: *Module, file: *Scope.File) !void {
         defer msg.deinit();
 
         const token_starts = file.tree.tokens.items(.start);
+        const token_tags = file.tree.tokens.items(.tag);
 
         try file.tree.renderError(parse_err, msg.writer());
         const err_msg = try gpa.create(ErrorMsg);
@@ -2469,6 +2480,15 @@ pub fn astGenFile(mod: *Module, file: *Scope.File) !void {
             },
             .msg = msg.toOwnedSlice(),
         };
+        if (token_tags[parse_err.token] == .invalid) {
+            const bad_off = @intCast(u32, file.tree.tokenSlice(parse_err.token).len);
+            const byte_abs = token_starts[parse_err.token] + bad_off;
+            try mod.errNoteNonLazy(.{
+                .file_scope = file,
+                .parent_decl_node = 0,
+                .lazy = .{ .byte_abs = byte_abs },
+            }, err_msg, "invalid byte: '{'}'", .{std.zig.fmtEscapes(source[byte_abs..][0..1])});
+        }
 
         {
             const lock = comp.mutex.acquire();
@@ -3184,6 +3204,9 @@ pub fn importFile(
 ) !ImportFileResult {
     if (cur_file.pkg.table.get(import_string)) |pkg| {
         return mod.importPkg(pkg);
+    }
+    if (!mem.endsWith(u8, import_string, ".zig")) {
+        return error.PackageNotFound;
     }
     const gpa = mod.gpa;
 

@@ -2040,8 +2040,12 @@ fn zirSetFloatMode(sema: *Sema, block: *Scope.Block, inst: Zir.Inst.Index) Inner
 
 fn zirSetRuntimeSafety(sema: *Sema, block: *Scope.Block, inst: Zir.Inst.Index) InnerError!void {
     const inst_data = sema.code.instructions.items(.data)[inst].un_node;
-    const src: LazySrcLoc = inst_data.src();
-    return sema.mod.fail(&block.base, src, "TODO: implement Sema.zirSetRuntimeSafety", .{});
+    const operand_src: LazySrcLoc = .{ .node_offset_builtin_call_arg0 = inst_data.src_node };
+
+    const op = try sema.resolveInst(inst_data.operand);
+    const op_coerced = try sema.coerce(block, Type.initTag(.bool), op, operand_src);
+    const b = (try sema.resolveConstValue(block, operand_src, op_coerced)).toBool();
+    block.want_safety = b;
 }
 
 fn zirBreakpoint(sema: *Sema, block: *Scope.Block, inst: Zir.Inst.Index) InnerError!void {
@@ -2562,8 +2566,19 @@ fn zirMergeErrorSets(sema: *Sema, block: *Scope.Block, inst: Zir.Inst.Index) Inn
     const src: LazySrcLoc = .{ .node_offset_bin_op = inst_data.src_node };
     const lhs_src: LazySrcLoc = .{ .node_offset_bin_lhs = inst_data.src_node };
     const rhs_src: LazySrcLoc = .{ .node_offset_bin_rhs = inst_data.src_node };
-    const lhs_ty = try sema.resolveType(block, lhs_src, extra.lhs);
-    const rhs_ty = try sema.resolveType(block, rhs_src, extra.rhs);
+    const lhs = try sema.resolveInst(extra.lhs);
+    const rhs = try sema.resolveInst(extra.rhs);
+    if (rhs.ty.zigTypeTag() == .Bool and lhs.ty.zigTypeTag() == .Bool) {
+        const msg = msg: {
+            const msg = try sema.mod.errMsg(&block.base, lhs_src, "expected error set type, found 'bool'", .{});
+            errdefer msg.destroy(sema.gpa);
+            try sema.mod.errNote(&block.base, src, msg, "'||' merges error sets; 'or' performs boolean OR", .{});
+            break :msg msg;
+        };
+        return sema.mod.failWithOwnedErrorMsg(&block.base, msg);
+    }
+    const rhs_ty = try sema.resolveAirAsType(block, rhs_src, rhs);
+    const lhs_ty = try sema.resolveAirAsType(block, lhs_src, lhs);
     if (rhs_ty.zigTypeTag() != .ErrorSet)
         return sema.mod.fail(&block.base, rhs_src, "expected error set type, found {}", .{rhs_ty});
     if (lhs_ty.zigTypeTag() != .ErrorSet)

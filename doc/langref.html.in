@@ -258,7 +258,7 @@ pub fn main() !void {
       <p>
         The code sample begins by adding Zig's Standard Library to the build using the {#link|@import#} builtin function.
         The {#syntax#}@import("std"){#endsyntax#} function call creates a structure to represent the Standard Library.
-        The code then makes a {#link|top-level declaration|Global Variables#} of a
+        The code then {#link|declares|Container Level Variables#} a
         {#link|constant identifier|Assignment#}, named <code>std</code>, for easy access to
         <a href="https://github.com/ziglang/zig/wiki/FAQ#where-is-the-documentation-for-the-zig-standard-library">Zig's standard library</a>.
       </p>
@@ -802,7 +802,7 @@ const hello_world_in_c =
 const x = 1234;
 
 fn foo() void {
-    // It works at global scope as well as inside functions.
+    // It works at file scope as well as inside functions.
     const y = 5678;
 
     // Once assigned, an identifier cannot be changed.
@@ -872,18 +872,18 @@ test "init with undefined" {
       {#syntax#}var{#endsyntax#} when declaring a variable. This causes less work for both
       humans and computers to do when reading code, and creates more optimization opportunities.
       </p>
-      {#header_open|Global Variables#}
+      {#header_open|Container Level Variables#}
       <p>
-      Global variables are considered to be a top level declaration, which means that they are
-      order-independent and lazily analyzed. The initialization value of global variables is implicitly
-      {#link|comptime#}. If a global variable is {#syntax#}const{#endsyntax#} then its value is
+      Container level variables have static lifetime and are order-independent and lazily analyzed.
+      The initialization value of container level variables is implicitly
+      {#link|comptime#}. If a container level variable is {#syntax#}const{#endsyntax#} then its value is
       {#syntax#}comptime{#endsyntax#}-known, otherwise it is runtime-known.
       </p>
-      {#code_begin|test|global_variables#}
+      {#code_begin|test|container_level_variables#}
 var y: i32 = add(10, x);
 const x: i32 = add(12, 34);
 
-test "global variables" {
+test "container level variables" {
     try expect(x == 46);
     try expect(y == 56);
 }
@@ -896,27 +896,51 @@ const std = @import("std");
 const expect = std.testing.expect;
       {#code_end#}
       <p>
-      Global variables may be declared inside a {#link|struct#}, {#link|union#}, or {#link|enum#}:
+      Container level variables may be declared inside a {#link|struct#}, {#link|union#}, or {#link|enum#}:
       </p>
-      {#code_begin|test|namespaced_global#}
+      {#code_begin|test|namespaced_container_level_variable#}
 const std = @import("std");
 const expect = std.testing.expect;
 
-test "namespaced global variable" {
+test "namespaced container level variable" {
     try expect(foo() == 1235);
     try expect(foo() == 1236);
 }
 
+const S = struct {
+    var x: i32 = 1234;
+};
+
 fn foo() i32 {
-    const S = struct {
-        var x: i32 = 1234;
-    };
     S.x += 1;
     return S.x;
 }
       {#code_end#}
+      {#header_close#}
+
+      {#header_open|Static Local Variables#}
       <p>
-      The {#syntax#}extern{#endsyntax#} keyword can be used to link against a variable that is exported
+        It is also possible to have local variables with static lifetime by using containers inside functions.
+      </p>
+      {#code_begin|test|static_local_variable#}
+  const std = @import("std");
+  const expect = std.testing.expect;
+  
+  test "static local variable" {
+      try expect(foo() == 1235);
+      try expect(foo() == 1236);
+  }
+  
+  fn foo() i32 {
+      const S = struct {
+          var x: i32 = 1234;
+      };
+      S.x += 1;
+      return S.x;
+  }
+      {#code_end#}
+      <p>
+      The {#syntax#}extern{#endsyntax#} keyword or {#link|@extern#} builtin function can be used to link against a variable that is exported
       from another object. The {#syntax#}export{#endsyntax#} keyword or {#link|@export#} builtin function
       can be used to make a variable available to other objects at link time. In both cases,
       the type of the variable must be C ABI compatible.
@@ -934,21 +958,21 @@ const assert = std.debug.assert;
 threadlocal var x: i32 = 1234;
 
 test "thread local storage" {
-    const thread1 = try std.Thread.spawn(testTls, {});
-    const thread2 = try std.Thread.spawn(testTls, {});
-    testTls({});
-    thread1.wait();
-    thread2.wait();
+    const thread1 = try std.Thread.spawn(.{}, testTls, .{});
+    const thread2 = try std.Thread.spawn(.{}, testTls, .{});
+    testTls();
+    thread1.join();
+    thread2.join();
 }
 
-fn testTls(context: void) void {
+fn testTls() void {
     assert(x == 1234);
     x += 1;
     assert(x == 1235);
 }
       {#code_end#}
       <p>
-      For {#link|Single Threaded Builds#}, all thread local variables are treated as {#link|Global Variables#}.
+      For {#link|Single Threaded Builds#}, all thread local variables are treated as regular {#link|Container Level Variables#}.
       </p>
       <p>
       Thread local variables may not be {#syntax#}const{#endsyntax#}.
@@ -2467,7 +2491,7 @@ test "dot product" {
     try expect(Vec3.dot(v1, v2) == 0.0);
 }
 
-// Structs can have global declarations.
+// Structs can have declarations.
 // Structs can have 0 fields.
 const Empty = struct {
     pub const PI = 3.14;
@@ -2478,6 +2502,8 @@ test "struct namespaced variable" {
 
     // you can still instantiate an empty struct
     const does_nothing = Empty {};
+
+    _ = does_nothing;
 }
 
 // struct field order is determined by the compiler for optimal performance.
@@ -2999,14 +3025,15 @@ test "@tagName" {
       </p>
       {#code_begin|obj_err|parameter of type 'Foo' not allowed in function with calling convention 'C'#}
 const Foo = enum { a, b, c };
-export fn entry(foo: Foo) void { }
+export fn entry(foo: Foo) void { _ = foo; }
       {#code_end#}
       <p>
-      For a C-ABI-compatible enum, use {#syntax#}extern enum{#endsyntax#}:
+      For a C-ABI-compatible enum, provide an explicit tag type to
+      the enum:
       </p>
       {#code_begin|obj#}
-const Foo = extern enum { a, b, c };
-export fn entry(foo: Foo) void { }
+const Foo = enum(c_int) { a, b, c };
+export fn entry(foo: Foo) void { _ = foo; }
       {#code_end#}
       {#header_close#}
 
@@ -3319,7 +3346,7 @@ test "call foo" {
       <p>
       Blocks are used to limit the scope of variable declarations:
       </p>
-      {#code_begin|test_err|undeclared identifier#}
+      {#code_begin|test_err|unused local variable#}
 test "access variable after block scope" {
     {
         var x: i32 = 1;
@@ -3350,7 +3377,7 @@ test "labeled break from labeled block expression" {
 
       {#header_open|Shadowing#}
       <p>It is never allowed for an identifier to "hide" another one by using the same name:</p>
-      {#code_begin|test_err|redefinition#}
+      {#code_begin|test_err|local shadows declaration#}
 const pi = 3.14;
 
 test "inside test block" {
@@ -3368,9 +3395,11 @@ test "inside test block" {
 test "separate scopes" {
     {
         const pi = 3.14;
+        _ = pi;
     }
     {
         var pi: bool = true;
+        _ = pi;
     }
 }
       {#code_end#}
@@ -3408,7 +3437,7 @@ test "switch simple" {
         // Switching on arbitrary expressions is allowed as long as the
         // expression is known at compile-time.
         zz => zz,
-        comptime blk: {
+        blk: {
             const d: u32 = 5;
             const e: u32 = 100;
             break :blk d + e;
@@ -3807,7 +3836,7 @@ test "for basics" {
     // To access the index of iteration, specify a second capture value.
     // This is zero-indexed.
     var sum2: i32 = 0;
-    for (items) |value, i| {
+    for (items) |_, i| {
         try expect(@TypeOf(i) == usize);
         sum2 += @intCast(i32, i);
     }
@@ -3960,7 +3989,7 @@ test "if optional" {
     }
 
     const b: ?u32 = null;
-    if (b) |value| {
+    if (b) |_| {
         unreachable;
     } else {
         try expect(true);
@@ -3997,11 +4026,13 @@ test "if error union" {
     if (a) |value| {
         try expect(value == 0);
     } else |err| {
+        _ = err;
         unreachable;
     }
 
     const b: anyerror!u32 = error.BadValue;
     if (b) |value| {
+        _ = value;
         unreachable;
     } else |err| {
         try expect(err == error.BadValue);
@@ -4021,13 +4052,13 @@ test "if error union" {
     var c: anyerror!u32 = 3;
     if (c) |*value| {
         value.* = 9;
-    } else |err| {
+    } else |_| {
         unreachable;
     }
 
     if (c) |value| {
         try expect(value == 9);
-    } else |err| {
+    } else |_| {
         unreachable;
     }
 }
@@ -4040,18 +4071,20 @@ test "if error union with optional" {
     if (a) |optional_value| {
         try expect(optional_value.? == 0);
     } else |err| {
+        _ = err;
         unreachable;
     }
 
     const b: anyerror!?u32 = null;
     if (b) |optional_value| {
         try expect(optional_value == null);
-    } else |err| {
+    } else |_| {
         unreachable;
     }
 
     const c: anyerror!?u32 = error.BadValue;
     if (c) |optional_value| {
+        _ = optional_value;
         unreachable;
     } else |err| {
         try expect(err == error.BadValue);
@@ -4063,13 +4096,13 @@ test "if error union with optional" {
         if (optional_value.*) |*value| {
             value.* = 9;
         }
-    } else |err| {
+    } else |_| {
         unreachable;
     }
 
     if (d) |optional_value| {
         try expect(optional_value.? == 9);
-    } else |err| {
+    } else |_| {
         unreachable;
     }
 }
@@ -4195,8 +4228,8 @@ test "type of unreachable" {
     comptime {
         // The type of unreachable is noreturn.
 
-        // However this assertion will still fail because
-        // evaluating unreachable at compile-time is a compile error.
+        // However this assertion will still fail to compile because
+        // unreachable expressions are compile errors.
 
         assert(@TypeOf(unreachable) == noreturn);
     }
@@ -4222,6 +4255,7 @@ test "type of unreachable" {
       {#code_begin|test#}
 fn foo(condition: bool, b: u32) void {
     const a = if (condition) b else return;
+    _ = a;
     @panic("do something with a");
 }
 test "noreturn" {
@@ -4550,7 +4584,7 @@ test "parse u64" {
       {#code_begin|syntax#}
 fn doAThing(str: []u8) void {
     const number = parseU64(str, 10) catch 13;
-    // ...
+    _ = number; // ...
 }
       {#code_end#}
       <p>
@@ -4565,7 +4599,7 @@ fn doAThing(str: []u8) void {
       {#code_begin|syntax#}
 fn doAThing(str: []u8) !void {
     const number = parseU64(str, 10) catch |err| return err;
-    // ...
+    _ = number; // ...
 }
       {#code_end#}
       <p>
@@ -4574,7 +4608,7 @@ fn doAThing(str: []u8) !void {
       {#code_begin|syntax#}
 fn doAThing(str: []u8) !void {
     const number = try parseU64(str, 10);
-    // ...
+    _ = number; // ...
 }
       {#code_end#}
       <p>
@@ -4998,7 +5032,7 @@ extern fn malloc(size: size_t) ?*u8;
 
 fn doAThing() ?*Foo {
     const ptr = malloc(1234) orelse return null;
-    // ...
+    _ = ptr; // ...
 }
       {#code_end#}
       <p>
@@ -5111,6 +5145,7 @@ test "optional pointers" {
 test "type coercion - variable declaration" {
     var a: u8 = 1;
     var b: u16 = a;
+    _ = b;
 }
 
 test "type coercion - function call" {
@@ -5118,11 +5153,14 @@ test "type coercion - function call" {
     foo(a);
 }
 
-fn foo(b: u16) void {}
+fn foo(b: u16) void {
+    _ = b;
+}
 
 test "type coercion - @as builtin" {
     var a: u8 = 1;
     var b = @as(u16, a);
+    _ = b;
 }
       {#code_end#}
       <p>
@@ -5150,7 +5188,7 @@ test "type coercion - const qualification" {
     foo(b);
 }
 
-fn foo(a: *const i32) void {}
+fn foo(_: *const i32) void {}
       {#code_end#}
       <p>
       In addition, pointers coerce to const optional pointers:
@@ -5219,6 +5257,7 @@ test "float widening" {
 // Compile time coercion of float to int
 test "implicit cast to comptime_int" {
     var f: f32 = 54.0 / 5;
+    _ = f;
 }
       {#code_end#}
       {#header_close#}
@@ -5400,7 +5439,7 @@ test "coercion between unions and enums" {
 test "coercion of zero bit types" {
     var x: void = {};
     var y: *void = x;
-    //var z: void = y; // TODO
+    _ = y;
 }
       {#code_end#}
       {#header_close#}
@@ -5684,7 +5723,7 @@ test "@intToPtr for pointer to zero bit type" {
 
       {#header_open|usingnamespace#}
       <p>
-      {#syntax#}usingnamespace{#endsyntax#} is a top level declaration that imports all the public declarations of
+      {#syntax#}usingnamespace{#endsyntax#} is a declaration that imports all the public declarations of
       the operand, which must be a {#link|struct#}, {#link|union#}, or {#link|enum#}, into the current scope:
       </p>
       {#code_begin|test|usingnamespace#}
@@ -5692,6 +5731,19 @@ usingnamespace @import("std");
 
 test "using std namespace" {
     try testing.expect(true);
+}
+      {#code_end#}
+      <p>
+      {#syntax#}usingnamespace{#endsyntax#} can also be used in containers:
+      </p>
+      {#code_begin|test|usingnamespace_inside_struct#}
+test "using namespace inside struct" {
+    const L = struct {
+        usingnamespace struct {
+            pub fn f() void {}
+        };
+    };
+    L.f();
 }
       {#code_end#}
       <p>
@@ -5766,6 +5818,7 @@ fn foo(condition: bool) void {
         if (condition) f32 else u64,
         1234,
         5678);
+    _ = result;
 }
       {#code_end#}
       <p>
@@ -6044,7 +6097,7 @@ test "fibonacci" {
       </p>
 
       <p>
-      In the global scope (outside of any function), all expressions are implicitly
+      At container level (outside of any function), all expressions are implicitly
       {#syntax#}comptime{#endsyntax#} expressions. This means that we can use functions to
       initialize complex static data. For example:
       </p>
@@ -6262,7 +6315,7 @@ pub fn printValue(self: *Writer, value: anytype) !void {
       <p>
       And now, what happens if we give too many arguments to {#syntax#}printf{#endsyntax#}?
       </p>
-      {#code_begin|test_err|Unused argument in "here is a string: '{s}' here is a number: {}#}
+      {#code_begin|test_err|Unused argument in 'here is a string: '{s}' here is a number: {}#}
 const print = @import("std").debug.print;
 
 const a_number: i32 = 1234;
@@ -6462,7 +6515,7 @@ volatile (
 
       {#header_open|Global Assembly#}
       <p>
-      When an assembly expression occurs in a top level {#link|comptime#} block, this is
+      When an assembly expression occurs in a container level {#link|comptime#} block, this is
       <strong>global assembly</strong>.
       </p>
       <p>
@@ -6532,6 +6585,7 @@ var x: i32 = 1;
 test "suspend with no resume" {
     var frame = async func();
     try expect(x == 2);
+    _ = frame;
 }
 
 fn func() void {
@@ -6763,6 +6817,7 @@ fn amain() !void {
 
 var global_download_frame: anyframe = undefined;
 fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
+    _ = url; // this is just an example, we don't actually do it!
     const result = try std.mem.dupe(allocator, u8, "this is the downloaded url contents");
     errdefer allocator.free(result);
     suspend {
@@ -6774,6 +6829,7 @@ fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
 
 var global_file_frame: anyframe = undefined;
 fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
+    _ = filename; // this is just an example, we don't actually do it!
     const result = try std.mem.dupe(allocator, u8, "this is the file contents");
     errdefer allocator.free(result);
     suspend {
@@ -6832,6 +6888,7 @@ fn amain() !void {
 }
 
 fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
+    _ = url; // this is just an example, we don't actually do it!
     const result = try std.mem.dupe(allocator, u8, "this is the downloaded url contents");
     errdefer allocator.free(result);
     std.debug.print("fetchUrl returning\n", .{});
@@ -6839,6 +6896,7 @@ fn fetchUrl(allocator: *Allocator, url: []const u8) ![]u8 {
 }
 
 fn readFile(allocator: *Allocator, filename: []const u8) ![]u8 {
+    _ = filename; // this is just an example, we don't actually do it!
     const result = try std.mem.dupe(allocator, u8, "this is the file contents");
     errdefer allocator.free(result);
     std.debug.print("readFile returning\n", .{});
@@ -7533,10 +7591,10 @@ test "main" {
       <code>declaration</code> must be one of two things:
       </p>
       <ul>
-        <li>An identifier ({#syntax#}x{#endsyntax#}) identifying a {#link|function|Functions#} or
-          {#link|global variable|Global Variables#}.</li>
-        <li>Field access ({#syntax#}x.y{#endsyntax#}) looking up a {#link|function|Functions#} or
-          {#link|global variable|Global Variables#}.</li>
+        <li>An identifier ({#syntax#}x{#endsyntax#}) identifying a {#link|function|Functions#} or a
+          {#link|variable|Container Level Variables#}.</li>
+        <li>Field access ({#syntax#}x.y{#endsyntax#}) looking up a {#link|function|Functions#} or a
+          {#link|variable|Container Level Variables#}.</li>
       </ul>
       <p>
       This builtin can be called from a {#link|comptime#} block to conditionally export symbols.
@@ -8123,7 +8181,7 @@ pub const FloatMode = enum {
       {#header_close#}
 
       {#header_open|@setRuntimeSafety#}
-      <pre>{#syntax#}@setRuntimeSafety(safety_on: bool){#endsyntax#}</pre>
+      <pre>{#syntax#}@setRuntimeSafety(safety_on: bool) void{#endsyntax#}</pre>
       <p>
       Sets whether runtime safety checks are enabled for the scope that contains the function call.
       </p>
@@ -8529,7 +8587,7 @@ fn List(comptime T: type) type {
 }
       {#code_end#}
       <p>
-      When {#syntax#}@This(){#endsyntax#} is used at global scope, it returns a reference to the
+      When {#syntax#}@This(){#endsyntax#} is used at file scope, it returns a reference to the
       struct that corresponds to the current file.
       </p>
       {#header_close#}
@@ -8547,6 +8605,7 @@ fn List(comptime T: type) type {
 test "integer cast panic" {
     var a: u16 = 0xabcd;
     var b: u8 = @intCast(u8, a);
+    _ = b;
 }
       {#code_end#}
       <p>
@@ -8744,7 +8803,7 @@ pub fn build(b: *Builder) void {
       {#header_open|Single Threaded Builds#}
       <p>Zig has a compile option <code>--single-threaded</code> which has the following effects:</p>
       <ul>
-        <li>All {#link|Thread Local Variables#} are treated as {#link|Global Variables#}.</li>
+        <li>All {#link|Thread Local Variables#} are treated as regular {#link|Container Level Variables#}.</li>
         <li>The overhead of {#link|Async Functions#} becomes equivalent to function call overhead.</li>
         <li>The {#syntax#}@import("builtin").single_threaded{#endsyntax#} becomes {#syntax#}true{#endsyntax#}
           and therefore various userland APIs which read this variable become more efficient.
@@ -8796,12 +8855,14 @@ pub fn main() void {
 comptime {
     const array: [5]u8 = "hello".*;
     const garbage = array[5];
+    _ = garbage;
 }
       {#code_end#}
       <p>At runtime:</p>
       {#code_begin|exe_err#}
 pub fn main() void {
     var x = foo("hello");
+    _ = x;
 }
 
 fn foo(x: []const u8) u8 {
@@ -8815,6 +8876,7 @@ fn foo(x: []const u8) u8 {
 comptime {
     const value: i32 = -1;
     const unsigned = @intCast(u32, value);
+    _ = unsigned;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -8837,6 +8899,7 @@ pub fn main() void {
 comptime {
     const spartan_count: u16 = 300;
     const byte = @intCast(u8, spartan_count);
+    _ = byte;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -8970,6 +9033,7 @@ test "wraparound addition and subtraction" {
       {#code_begin|test_err|operation caused overflow#}
 comptime {
     const x = @shlExact(@as(u8, 0b01010101), 2);
+    _ = x;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -8988,6 +9052,7 @@ pub fn main() void {
       {#code_begin|test_err|exact shift shifted out 1 bits#}
 comptime {
     const x = @shrExact(@as(u8, 0b10101010), 2);
+    _ = x;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9008,6 +9073,7 @@ comptime {
     const a: i32 = 1;
     const b: i32 = 0;
     const c = a / b;
+    _ = c;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9029,6 +9095,7 @@ comptime {
     const a: i32 = 10;
     const b: i32 = 0;
     const c = a % b;
+    _ = c;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9050,6 +9117,7 @@ comptime {
     const a: u32 = 10;
     const b: u32 = 3;
     const c = @divExact(a, b);
+    _ = c;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9070,6 +9138,7 @@ pub fn main() void {
 comptime {
     const optional_number: ?i32 = null;
     const number = optional_number.?;
+    _ = number;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9103,6 +9172,7 @@ pub fn main() void {
       {#code_begin|test_err|caught unexpected error 'UnableToReturnNumber'#}
 comptime {
     const number = getNumberOrFail() catch unreachable;
+    _ = number;
 }
 
 fn getNumberOrFail() !i32 {
@@ -9150,6 +9220,7 @@ comptime {
     const err = error.AnError;
     const number = @errorToInt(err) + 10;
     const invalid_err = @intToError(number);
+    _ = invalid_err;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9160,7 +9231,7 @@ pub fn main() void {
     var err = error.AnError;
     var number = @errorToInt(err) + 500;
     var invalid_err = @intToError(number);
-    std.debug.print("value: {}\n", .{number});
+    std.debug.print("value: {}\n", .{invalid_err});
 }
       {#code_end#}
       {#header_close#}
@@ -9175,6 +9246,7 @@ const Foo = enum {
 comptime {
     const a: u2 = 3;
     const b = @intToEnum(Foo, a);
+    _ = b;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9238,6 +9310,7 @@ fn foo(set1: Set1) void {
 comptime {
     const ptr = @intToPtr(*align(1) i32, 0x1);
     const aligned = @alignCast(4, ptr);
+    _ = aligned;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9352,6 +9425,7 @@ fn bar(f: *Foo) void {
 comptime {
     const opt_ptr: ?*i32 = null;
     const ptr = @ptrCast(*i32, opt_ptr);
+    _ = ptr;
 }
       {#code_end#}
       <p>At runtime:</p>
@@ -9359,6 +9433,7 @@ comptime {
 pub fn main() void {
     var opt_ptr: ?*i32 = null;
     var ptr = @ptrCast(*i32, opt_ptr);
+    _ = ptr;
 }
       {#code_end#}
       {#header_close#}
@@ -9486,7 +9561,9 @@ pub fn main() !void {
       This is why it is an error to pass a string literal to a mutable slice, like this:
       </p>
       {#code_begin|test_err|expected type '[]u8'#}
-fn foo(s: []u8) void {}
+fn foo(s: []u8) void {
+    _ = s;
+}
 
 test "string literal to mutable slice" {
     foo("hello");
@@ -9494,7 +9571,9 @@ test "string literal to mutable slice" {
       {#code_end#}
       <p>However if you make the slice constant, then it works:</p>
       {#code_begin|test|strlit#}
-fn foo(s: []const u8) void {}
+fn foo(s: []const u8) void {
+    _ = s;
+}
 
 test "string literal to constant slice" {
     foo("hello");
@@ -9528,10 +9607,7 @@ test "string literal to constant slice" {
       </p>
       <p>
       There are many example allocators to look at for inspiration. Look at std/heap.zig and
-      at this
-      <a href="https://github.com/andrewrk/zig-general-purpose-allocator/">work-in-progress general purpose allocator</a>.
-      TODO: once <a href="https://github.com/ziglang/zig/issues/21">#21</a> is done, link to the docs
-      here.
+      {#syntax#}std.heap.GeneralPurposeAllocator{#endsyntax#}.
       </p>
       {#header_close#}
 
@@ -9847,7 +9923,6 @@ lib.addCSourceFile("src/lib.c", &[_][]const u8{
       </ul>
       {#see_also|Primitive Types#}
       {#header_close#}
-
       {#header_open|Import from C Header File#}
       <p>
       The {#syntax#}@cImport{#endsyntax#} builtin function can be used
@@ -9885,6 +9960,165 @@ const c = @cImport({
 });
       {#code_end#}
       {#see_also|@cImport|@cInclude|@cDefine|@cUndef|@import#}
+      {#header_close#}
+
+      {#header_open|C Translation CLI#}
+      Zig's C translation capability is available as a CLI tool via <code class="shell">zig translate-c</code>.
+      It requires a single filename as an argument. It may also take a set of optional flags that are
+      forwarded to clang. It writes the translated file to stdout.
+      {#header_open|Command line flags#}
+      <ul>
+        <li>
+          <code class="shell">-I</code>:
+          Specify a search directory for include files. May be used multiple times. Equivalent to
+          <a href="https://releases.llvm.org/12.0.0/tools/clang/docs/ClangCommandLineReference.html#cmdoption-clang-i-dir">
+          clang's <code>-I</code> flag</a>. The current directory is <em>not</em> included by default;
+          use <code>-I.</code> to include it.
+        </li>
+        <li>
+          <code class="shell">-D</code>: Define a preprocessor macro. Equivalent to
+          <a href="https://releases.llvm.org/12.0.0/tools/clang/docs/ClangCommandLineReference.html#cmdoption-clang-d-macro">
+          clang's <code>-D</code> flag</a>.
+        </li>
+        <li>
+          <code class="shell">-cflags [flags] --</code>: Pass arbitrary additional
+          <a href="https://releases.llvm.org/12.0.0/tools/clang/docs/ClangCommandLineReference.html">command line
+          flags</a> to clang. Note: the list of flags must end with <code>--</code>
+        </li>
+        <li>
+          <code class="shell">-target</code>: The {#link|target triple|Targets#} for the translated Zig code.
+          If no target is specified, the current host target will be used.
+        </li>
+      </ul>
+      {#header_close#}
+      {#header_open|Using -target and -cflags#}
+      <p>
+        <strong>Important!</strong> When translating C code with <code class="shell">zig translate-c</code>,
+        you <strong>must</strong> use the same <code>-target</code> triple that you will use when compiling
+        the translated code. In addition, you <strong>must</strong> ensure that the <code>-cflags</code> used,
+        if any, match the cflags used by code on the target system. Using the incorrect <code>-target</code>
+        or <code>-cflags</code> could result in clang or Zig parse failures, or subtle ABI incompatibilities
+        when linking with C code.
+      </p>
+      <p class="file">varytarget.h</p>
+      <pre><code class="c">long FOO = __LONG_MAX__;</code></pre>
+      <pre><code class="shell">$ zig translate-c -target <strong>thumb-freestanding-gnueabihf</strong> varytarget.h|grep FOO
+pub export var FOO: c_long = <strong>2147483647</strong>;</code></pre>
+      <pre><code class="shell">$ zig translate-c -target <strong>x86_64-macos-gnu</strong> varytarget.h|grep FOO
+pub export var FOO: c_long = <strong>9223372036854775807</strong>;</code></pre>
+      <p class="file">varycflags.h</p>
+      <pre><code class="c">enum FOO { BAR };
+int do_something(enum FOO foo);</code></pre>
+      <pre><code class="shell">$ zig translate-c varycflags.h|grep -B1 do_something
+pub const enum_FOO = <strong>c_uint</strong>;
+pub extern fn do_something(foo: enum_FOO) c_int;</code></pre>
+      <pre><code class="shell">$ zig translate-c <strong>-cflags -fshort-enums --</strong> varycflags.h|grep -B1 do_something
+pub const enum_FOO = <strong>u8</strong>;
+pub extern fn do_something(foo: enum_FOO) c_int;</code></pre>
+      {#header_close#}
+      {#header_open|@cImport vs translate-c#}
+      <p>{#syntax#}@cImport{#endsyntax#} and <code class="shell">zig translate-c</code> use the same underlying
+      C translation functionality, so on a technical level they are equivalent. In practice,
+      {#syntax#}@cImport{#endsyntax#} is useful as a way to quickly and easily access numeric constants, typedefs,
+      and record types without needing any extra setup. If you need to pass {#link|cflags|Using -target and -cflags#}
+      to clang, or if you would like to edit the translated code, it is recommended to use
+      <code class="shell">zig translate-c</code> and save the results to a file. Common reasons for editing
+      the generated code include: changing {#syntax#}anytype{#endsyntax#} parameters in function-like macros to more
+      specific types; changing {#syntax#}[*c]T{#endsyntax#} pointers to {#syntax#}[*]T{#endsyntax#} or
+      {#syntax#}*T{#endsyntax#} pointers for improved type safety; and
+      {#link|enabling or disabling runtime safety|@setRuntimeSafety#} within specific functions.
+      </p>
+      {#header_close#}
+      {#see_also|Targets|C Type Primitives|Pointers|C Pointers|Import from C Header File|@cInclude|@cImport|@setRuntimeSafety#}
+      {#header_close#}
+      {#header_open|C Translation Caching#}
+      <p>
+        The C translation feature (whether used via <code class="shell">zig translate-c</code> or
+        {#syntax#}@cImport{#endsyntax#}) integrates with the Zig caching system. Subsequent runs with
+        the same source file, target, and cflags will use the cache instead of repeatedly translating
+        the same code.
+      </p>
+      <p>
+        To see where the cached files are stored when compiling code that uses {#syntax#}@cImport{#endsyntax#},
+        use the <code class="shell">--verbose-cimport</code> flag:
+      </p>
+      {#code_begin|exe|verbose#}
+      {#link_libc#}
+      {#code_verbose_cimport#}
+const c = @cImport({
+    @cDefine("_NO_CRT_STDIO_INLINE", "1");
+    @cInclude("stdio.h");
+});
+pub fn main() void {
+    _ = c;
+}
+      {#code_end#}
+      <p>
+        <code class="shell">cimport.h</code> contains the file to translate (constructed from calls to
+        {#syntax#}@cInclude{#endsyntax#}, {#syntax#}@cDefine{#endsyntax#}, and {#syntax#}@cUndef{#endsyntax#}),
+        <code class="shell">cimport.h.d</code> is the list of file dependencies, and
+        <code class="shell">cimport.zig</code> contains the translated output.
+      </p>
+      {#see_also|Import from C Header File|C Translation CLI|@cInclude|@cImport#}
+      {#header_close#}
+      {#header_open|Translation failures#}
+      <p>
+        Some C constructs cannot be translated to Zig - for example, <em>goto</em>,
+        structs with bitfields, and token-pasting macros. Zig employs <em>demotion</em> to allow translation
+        to continue in the face of non-translateable entities.
+      </p>
+      <p>
+        Demotion comes in three varieties - {#link|opaque#}, <em>extern</em>, and
+        {#syntax#}@compileError{#endsyntax#}.
+
+        C structs and unions that cannot be translated correctly will be translated as {#syntax#}opaque{}{#endsyntax#}.
+        Functions that contain opaque types or code constructs that cannot be translated will be demoted
+        to {#syntax#}extern{#endsyntax#} declarations.
+
+        Thus, non-translateable types can still be used as pointers, and non-translateable functions
+        can be called so long as the linker is aware of the compiled function.
+      </p>
+      <p>
+        {#syntax#}@compileError{#endsyntax#} is used when top-level definitions (global variables,
+        function prototypes, macros) cannot be translated or demoted. Since Zig uses lazy analysis for
+        top-level declarations, untranslateable entities will not cause a compile error in your code unless
+        you actually use them.
+      </p>
+      {#see_also|opaque|extern|@compileError#}
+      {#header_close#}
+      {#header_open|C Macros#}
+      <p>
+        C Translation makes a best-effort attempt to translate function-like macros into equivalent
+        Zig functions. Since C macros operate at the level of lexical tokens, not all C macros
+        can be translated to Zig. Macros that cannot be translated will be be demoted to
+        {#syntax#}@compileError{#endsyntax#}. Note that C code which <em>uses</em> macros will be
+        translated without any additional issues (since Zig operates on the pre-processed source
+        with macros expanded). It is merely the macros themselves which may not be translateable to
+        Zig.
+      </p>
+      <p>Consider the following example:</p>
+      <p class="file">macro.c</p>
+      <pre><code class="c">#define MAKELOCAL(NAME, INIT) int NAME = INIT
+int foo(void) {
+   MAKELOCAL(a, 1);
+   MAKELOCAL(b, 2);
+   return a + b;
+}</code></pre>
+<pre><code class="shell">$ zig translate-c macro.c > macro.zig
+</code></pre>
+      <p class="file">macro.zig</p>
+      <pre>{#syntax#}pub export fn foo() c_int {
+    var a: c_int = 1;
+    var b: c_int = 2;
+    return a + b;
+}
+pub const MAKELOCAL = @compileError("unable to translate C expr: unexpected token .Equal"); // macro.c:1:9{#endsyntax#}</pre>
+      <p>Note that {#syntax#}foo{#endsyntax#} was translated correctly despite using a non-translateable
+        macro. {#syntax#}MAKELOCAL{#endsyntax#} was demoted to {#syntax#}@compileError{#endsyntax#} since
+        it cannot be expressed as a Zig function; this simply means that you cannot directly use
+        {#syntax#}MAKELOCAL{#endsyntax#} from Zig.
+      </p>
+      {#see_also|@compileError#}
       {#header_close#}
 
       {#header_open|C Pointers#}
@@ -10439,7 +10673,7 @@ coding style.
       </p>
       {#header_close#}
       {#header_open|Examples#}
-      {#code_begin|syntax#}
+      <pre>{#syntax#}
 const namespace_name = @import("dir_name/file_name.zig");
 const TypeName = @import("dir_name/TypeName.zig");
 var global_var: i32 = undefined;
@@ -10483,10 +10717,18 @@ const XmlParser = struct {
 
 // The initials BE (Big Endian) are just another word in Zig identifier names.
 fn readU32Be() u32 {}
-      {#code_end#}
+      {#endsyntax#}</pre>
       <p>
       See the Zig Standard Library for more examples.
       </p>
+      {#header_close#}
+      {#header_open|Doc Comment Guidance#}
+      <ul>
+        <li>Omit any information that is redundant based on the name of the thing being documented.</li>
+        <li>Duplicating information onto multiple similar functions is encouraged because it helps IDEs and other tools provide better help text.</li>
+        <li>Use the word <strong>assume</strong> to indicate invariants that cause {#link|Undefined Behavior#} when violated.</li>
+        <li>Use the word <strong>assert</strong> to indicate invariants that cause <em>safety-checked</em> {#link|Undefined Behavior#} when violated.</li>
+      </ul>
       {#header_close#}
       {#header_close#}
       {#header_open|Source Encoding#}

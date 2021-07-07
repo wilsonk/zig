@@ -67,6 +67,12 @@ const Scope = struct {
         mangle_count: u32 = 0,
         label: ?[]const u8 = null,
 
+        /// By default all variables are discarded, since we do not know in advance if they
+        /// will be used. This maps the variable's name to the Discard payload, so that if
+        /// the variable is subsequently referenced we can indicate that the discard should
+        /// be skipped during the intermediate AST -> Zig AST render step.
+        variable_discards: std.StringArrayHashMap(*ast.Payload.Discard),
+
         /// When the block corresponds to a function, keep track of the return type
         /// so that the return expression can be cast, if necessary
         return_type: ?clang.QualType = null,
@@ -84,6 +90,7 @@ const Scope = struct {
                 },
                 .statements = std.ArrayList(Node).init(c.gpa),
                 .variables = AliasList.init(c.gpa),
+                .variable_discards = std.StringArrayHashMap(*ast.Payload.Discard).init(c.gpa),
             };
             if (labeled) {
                 blk.label = try blk.makeMangledName(c, "blk");
@@ -94,6 +101,7 @@ const Scope = struct {
         fn deinit(self: *Block) void {
             self.statements.deinit();
             self.variables.deinit();
+            self.variable_discards.deinit();
             self.* = undefined;
         }
 
@@ -150,6 +158,13 @@ const Scope = struct {
             if (scope.localContains(name))
                 return true;
             return scope.base.parent.?.contains(name);
+        }
+
+        fn discardVariable(scope: *Block, c: *Context, name: []const u8) Error!void {
+            const name_node = try Tag.identifier.create(c.arena, name);
+            const discard = try Tag.discard.create(c.arena, .{ .should_skip = false, .value = name_node });
+            try scope.statements.append(discard);
+            try scope.variable_discards.putNoClobber(name, discard.castTag(.discard).?);
         }
     };
 
@@ -263,6 +278,24 @@ const Scope = struct {
                 },
                 else => scope = scope.parent.?,
             }
+        }
+    }
+
+    fn skipVariableDiscard(inner: *Scope, name: []const u8) void {
+        var scope = inner;
+        while (true) {
+            switch (scope.id) {
+                .root => return,
+                .block => {
+                    const block = @fieldParentPtr(Block, "base", scope);
+                    if (block.variable_discards.get(name)) |discard| {
+                        discard.data.should_skip = true;
+                        return;
+                    }
+                },
+                else => {},
+            }
+            scope = scope.parent.?;
         }
     }
 };
@@ -625,6 +658,7 @@ fn visitFnDecl(c: *Context, fn_decl: *const clang.FunctionDecl) Error!void {
             const redecl_node = try Tag.arg_redecl.create(c.arena, .{ .actual = mangled_param_name, .mangled = arg_name });
             try block_scope.statements.append(redecl_node);
         }
+        try block_scope.discardVariable(c, mangled_param_name);
 
         param_id += 1;
     }
@@ -827,6 +861,9 @@ fn transTypeDef(c: *Context, scope: *Scope, typedef_decl: *const clang.TypedefNa
         try addTopLevelDecl(c, name, node);
     } else {
         try scope.appendNode(node);
+        if (node.tag() != .pub_var_simple) {
+            try bs.discardVariable(c, name);
+        }
     }
 }
 
@@ -1070,13 +1107,16 @@ fn transRecordDecl(c: *Context, scope: *Scope, record_decl: *const clang.RecordD
             .init = init_node,
         },
     };
-
+    const node = Node.initPayload(&payload.base);
     if (toplevel) {
-        try addTopLevelDecl(c, name, Node.initPayload(&payload.base));
+        try addTopLevelDecl(c, name, node);
         if (!is_unnamed)
             try c.alias_list.append(.{ .alias = bare_name, .name = name });
     } else {
-        try scope.appendNode(Node.initPayload(&payload.base));
+        try scope.appendNode(node);
+        if (node.tag() != .pub_var_simple) {
+            try bs.discardVariable(c, name);
+        }
     }
 }
 
@@ -1100,27 +1140,39 @@ fn transEnumDecl(c: *Context, scope: *Scope, enum_decl: *const clang.EnumDecl) E
         }
         name = try std.fmt.allocPrint(c.arena, "enum_{s}", .{bare_name});
     }
-    if (!toplevel) _ = try bs.makeMangledName(c, name);
+    if (!toplevel) name = try bs.makeMangledName(c, name);
     try c.decl_table.putNoClobber(c.gpa, @ptrToInt(enum_decl.getCanonicalDecl()), name);
 
-    const is_pub = toplevel and !is_unnamed;
-    var redecls = std.ArrayList(Tag.enum_redecl.Data()).init(c.gpa);
-    defer redecls.deinit();
-
-    const init_node = if (enum_decl.getDefinition()) |enum_def| blk: {
-        var pure_enum = true;
+    const enum_type_node = if (enum_decl.getDefinition()) |enum_def| blk: {
         var it = enum_def.enumerator_begin();
-        var end_it = enum_def.enumerator_end();
+        const end_it = enum_def.enumerator_end();
         while (it.neq(end_it)) : (it = it.next()) {
             const enum_const = it.deref();
-            if (enum_const.getInitExpr()) |_| {
-                pure_enum = false;
-                break;
+            var enum_val_name: []const u8 = try c.str(@ptrCast(*const clang.NamedDecl, enum_const).getName_bytes_begin());
+            if (!toplevel) {
+                enum_val_name = try bs.makeMangledName(c, enum_val_name);
+            }
+
+            const enum_const_qt = @ptrCast(*const clang.ValueDecl, enum_const).getType();
+            const enum_const_loc = @ptrCast(*const clang.Decl, enum_const).getLocation();
+            const enum_const_type_node: ?Node = transQualType(c, scope, enum_const_qt, enum_const_loc) catch |err| switch (err) {
+                error.UnsupportedType => null,
+                else => |e| return e,
+            };
+
+            const enum_const_def = try Tag.enum_constant.create(c.arena, .{
+                .name = enum_val_name,
+                .is_public = toplevel,
+                .type = enum_const_type_node,
+                .value = try transCreateNodeAPInt(c, enum_const.getInitVal()),
+            });
+            if (toplevel)
+                try addTopLevelDecl(c, enum_val_name, enum_const_def)
+            else {
+                try scope.appendNode(enum_const_def);
+                try bs.discardVariable(c, enum_val_name);
             }
         }
-
-        var fields = std.ArrayList(ast.Payload.Enum.Field).init(c.gpa);
-        defer fields.deinit();
 
         const int_type = enum_decl.getIntegerType();
         // The underlying type may be null in case of forward-declared enum
@@ -1128,81 +1180,38 @@ fn transEnumDecl(c: *Context, scope: *Scope, enum_decl: *const clang.EnumDecl) E
         // default to the usual integer type used for all the enums.
 
         // default to c_int since msvc and gcc default to different types
-        const init_arg_expr = if (int_type.ptr != null)
+        break :blk if (int_type.ptr != null)
             transQualType(c, scope, int_type, enum_loc) catch |err| switch (err) {
                 error.UnsupportedType => {
-                    return failDecl(c, enum_loc, name, "unable to translate enum tag type", .{});
+                    return failDecl(c, enum_loc, name, "unable to translate enum integer type", .{});
                 },
                 else => |e| return e,
             }
         else
             try Tag.type.create(c.arena, "c_int");
-
-        it = enum_def.enumerator_begin();
-        end_it = enum_def.enumerator_end();
-        while (it.neq(end_it)) : (it = it.next()) {
-            const enum_const = it.deref();
-            const enum_val_name = try c.str(@ptrCast(*const clang.NamedDecl, enum_const).getName_bytes_begin());
-
-            const field_name = if (!is_unnamed and mem.startsWith(u8, enum_val_name, bare_name))
-                enum_val_name[bare_name.len..]
-            else
-                enum_val_name;
-
-            const int_node = if (!pure_enum)
-                try transCreateNodeAPInt(c, enum_const.getInitVal())
-            else
-                null;
-
-            try fields.append(.{
-                .name = field_name,
-                .value = int_node,
-            });
-
-            // In C each enum value is in the global namespace. So we put them there too.
-            // At this point we can rely on the enum emitting successfully.
-            try redecls.append(.{
-                .enum_val_name = enum_val_name,
-                .field_name = field_name,
-                .enum_name = name,
-            });
-        }
-
-        break :blk try Tag.@"enum".create(c.arena, .{
-            .int_type = init_arg_expr,
-            .fields = try c.arena.dupe(ast.Payload.Enum.Field, fields.items),
-        });
     } else blk: {
         try c.opaque_demotes.put(c.gpa, @ptrToInt(enum_decl.getCanonicalDecl()), {});
         break :blk Tag.opaque_literal.init();
     };
 
+    const is_pub = toplevel and !is_unnamed;
     const payload = try c.arena.create(ast.Payload.SimpleVarDecl);
     payload.* = .{
         .base = .{ .tag = ([2]Tag{ .var_simple, .pub_var_simple })[@boolToInt(is_pub)] },
         .data = .{
+            .init = enum_type_node,
             .name = name,
-            .init = init_node,
         },
     };
-
+    const node = Node.initPayload(&payload.base);
     if (toplevel) {
-        try addTopLevelDecl(c, name, Node.initPayload(&payload.base));
+        try addTopLevelDecl(c, name, node);
         if (!is_unnamed)
             try c.alias_list.append(.{ .alias = bare_name, .name = name });
     } else {
-        try scope.appendNode(Node.initPayload(&payload.base));
-    }
-
-    for (redecls.items) |redecl| {
-        if (toplevel) {
-            try addTopLevelDecl(c, redecl.field_name, try Tag.pub_enum_redecl.create(c.arena, redecl));
-        } else {
-            try scope.appendNode(try Tag.enum_redecl.create(c.arena, .{
-                .enum_val_name = try bs.makeMangledName(c, redecl.enum_val_name),
-                .field_name = redecl.field_name,
-                .enum_name = redecl.enum_name,
-            }));
+        try scope.appendNode(node);
+        if (node.tag() != .pub_var_simple) {
+            try bs.discardVariable(c, name);
         }
     }
 }
@@ -1388,11 +1397,10 @@ fn makeShuffleMask(c: *Context, scope: *Scope, expr: *const clang.ShuffleVectorE
         init.* = converted_index;
     }
 
-    const mask_init = try Tag.array_init.create(c.arena, .{
+    return Tag.array_init.create(c.arena, .{
         .cond = mask_type,
         .cases = init_list,
     });
-    return Tag.@"comptime".create(c.arena, mask_init);
 }
 
 /// @typeInfo(@TypeOf(vec_node)).Vector.<field>
@@ -1802,6 +1810,7 @@ fn transDeclStmtOne(
                 node = try Tag.static_local_var.create(c.arena, .{ .name = mangled_name, .init = node });
             }
             try block_scope.statements.append(node);
+            try block_scope.discardVariable(c, mangled_name);
 
             const cleanup_attr = var_decl.getCleanupAttribute();
             if (cleanup_attr) |fn_decl| {
@@ -1813,7 +1822,7 @@ fn transDeclStmtOne(
                 args[0] = try Tag.address_of.create(c.arena, varname);
 
                 const cleanup_call = try Tag.call.create(c.arena, .{ .lhs = fn_id, .args = args });
-                const discard = try Tag.discard.create(c.arena, cleanup_call);
+                const discard = try Tag.discard.create(c.arena, .{ .should_skip = false, .value = cleanup_call });
                 const deferred_cleanup = try Tag.@"defer".create(c.arena, discard);
 
                 try block_scope.statements.append(deferred_cleanup);
@@ -1868,6 +1877,7 @@ fn transDeclRefExpr(
             });
         }
     }
+    scope.skipVariableDiscard(mangled_name);
     return ref_expr;
 }
 
@@ -2098,8 +2108,7 @@ fn finishBoolExpr(
         },
         .Enum => {
             // node != 0
-            const int_val = try Tag.enum_to_int.create(c.arena, node);
-            return Tag.not_equal.create(c.arena, .{ .lhs = int_val, .rhs = Tag.zero_literal.init() });
+            return Tag.not_equal.create(c.arena, .{ .lhs = node, .rhs = Tag.zero_literal.init() });
         },
         .Elaborated => {
             const elaborated_ty = @ptrCast(*const clang.ElaboratedType, ty);
@@ -2312,21 +2321,22 @@ fn transCCast(
     if (dst_type.eq(src_type)) return expr;
     if (qualTypeIsPtr(dst_type) and qualTypeIsPtr(src_type))
         return transCPtrCast(c, scope, loc, dst_type, src_type, expr);
+    if (cIsEnum(dst_type)) return transCCast(c, scope, loc, cIntTypeForEnum(dst_type), src_type, expr);
+    if (cIsEnum(src_type)) return transCCast(c, scope, loc, dst_type, cIntTypeForEnum(src_type), expr);
 
     const dst_node = try transQualType(c, scope, dst_type, loc);
-    if (cIsInteger(dst_type) and (cIsInteger(src_type) or cIsEnum(src_type))) {
+    if (cIsInteger(dst_type) and cIsInteger(src_type)) {
         // 1. If src_type is an enum, determine the underlying signed int type
         // 2. Extend or truncate without changing signed-ness.
         // 3. Bit-cast to correct signed-ness
-        const src_int_type = if (cIsInteger(src_type)) src_type else cIntTypeForEnum(src_type);
-        const src_type_is_signed = cIsSignedInteger(src_int_type);
-        var src_int_expr = if (cIsInteger(src_type)) expr else try Tag.enum_to_int.create(c.arena, expr);
+        const src_type_is_signed = cIsSignedInteger(src_type);
+        var src_int_expr = expr;
 
         if (isBoolRes(src_int_expr)) {
             src_int_expr = try Tag.bool_to_int.create(c.arena, src_int_expr);
         }
 
-        switch (cIntTypeCmp(dst_type, src_int_type)) {
+        switch (cIntTypeCmp(dst_type, src_type)) {
             .lt => {
                 // @truncate(SameSignSmallerInt, src_int_expr)
                 const ty_node = try transQualTypeIntWidthOf(c, dst_type, src_type_is_signed);
@@ -2378,14 +2388,6 @@ fn transCCast(
         // instead of @as
         const bool_to_int = try Tag.bool_to_int.create(c.arena, expr);
         return Tag.as.create(c.arena, .{ .lhs = dst_node, .rhs = bool_to_int });
-    }
-    if (cIsEnum(dst_type)) {
-        // import("std").meta.cast(dest_type, val)
-        return Tag.helpers_cast.create(c.arena, .{ .lhs = dst_node, .rhs = expr });
-    }
-    if (cIsEnum(src_type) and !cIsEnum(dst_type)) {
-        // @enumToInt(val)
-        return Tag.enum_to_int.create(c.arena, expr);
     }
     // @as(dest_type, val)
     return Tag.as.create(c.arena, .{ .lhs = dst_node, .rhs = expr });
@@ -2510,7 +2512,9 @@ fn transInitListExprRecord(
             .value = try transExpr(c, scope, elem_expr, .used),
         });
     }
-
+    if (ty_node.castTag(.identifier)) |ident_node| {
+        scope.skipVariableDiscard(ident_node.data);
+    }
     return Tag.container_init.create(c.arena, .{
         .lhs = ty_node,
         .inits = try c.arena.dupe(ast.Payload.ContainerInit.Initializer, field_inits.items),
@@ -3902,7 +3906,7 @@ fn maybeSuppressResult(
 ) TransError!Node {
     _ = scope;
     if (used == .used) return result;
-    return Tag.discard.create(c.arena, result);
+    return Tag.discard.create(c.arena, .{ .should_skip = false, .value = result });
 }
 
 fn addTopLevelDecl(c: *Context, name: []const u8, decl_node: Node) !void {
@@ -4947,6 +4951,10 @@ fn transMacroDefine(c: *Context, m: *MacroCtx) ParseError!void {
     const scope = &c.global_scope.base;
 
     const init_node = try parseCExpr(c, m, scope);
+    if (init_node.castTag(.identifier)) |ident_node| {
+        if (mem.eql(u8, "_", ident_node.data))
+            return m.fail(c, "unable to translate C expr: illegal identifier _", .{});
+    }
     const last = m.next().?;
     if (last != .Eof and last != .Nl)
         return m.fail(c, "unable to translate C expr: unexpected token .{s}", .{@tagName(last)});
@@ -4977,7 +4985,7 @@ fn transMacroFnDefine(c: *Context, m: *MacroCtx) ParseError!void {
             .name = mangled_name,
             .type = Tag.@"anytype".init(),
         });
-
+        try block_scope.discardVariable(c, mangled_name);
         if (m.peek().? != .Comma) break;
         _ = m.next();
     }
@@ -5032,7 +5040,7 @@ fn parseCExpr(c: *Context, m: *MacroCtx, scope: *Scope) ParseError!Node {
     var last = node;
     while (true) {
         // suppress result
-        const ignore = try Tag.discard.create(c.arena, last);
+        const ignore = try Tag.discard.create(c.arena, .{ .should_skip = false, .value = last });
         try block_scope.statements.append(ignore);
 
         last = try parseCCondExpr(c, m, scope);
@@ -5331,7 +5339,9 @@ fn parseCPrimaryExprInner(c: *Context, m: *MacroCtx, scope: *Scope) ParseError!N
                 try m.fail(c, "TODO implement function '{s}' in std.c.builtins", .{mangled_name});
                 return error.ParseError;
             }
-            return Tag.identifier.create(c.arena, builtin_typedef_map.get(mangled_name) orelse mangled_name);
+            const identifier = try Tag.identifier.create(c.arena, builtin_typedef_map.get(mangled_name) orelse mangled_name);
+            scope.skipVariableDiscard(identifier.castTag(.identifier).?.data);
+            return identifier;
         },
         .LParen => {
             const inner_node = try parseCExpr(c, m, scope);
@@ -5975,7 +5985,6 @@ fn getContainer(c: *Context, node: Node) ?Node {
     switch (node.tag()) {
         .@"union",
         .@"struct",
-        .@"enum",
         .address_of,
         .bit_not,
         .not,

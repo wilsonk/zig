@@ -11,6 +11,7 @@ const mem = std.mem;
 const reloc = @import("reloc.zig");
 
 const Allocator = mem.Allocator;
+const Arch = std.Target.Cpu.Arch;
 const Relocation = reloc.Relocation;
 const Symbol = @import("Symbol.zig");
 const parseName = @import("Zld.zig").parseName;
@@ -18,7 +19,7 @@ const parseName = @import("Zld.zig").parseName;
 usingnamespace @import("commands.zig");
 
 allocator: *Allocator,
-arch: ?std.Target.Cpu.Arch = null,
+arch: ?Arch = null,
 header: ?macho.mach_header_64 = null,
 file: ?fs.File = null,
 file_offset: ?u32 = null,
@@ -93,7 +94,7 @@ pub const Section = struct {
 
     pub fn isCode(self: Section) bool {
         const attr = self.sectionAttrs();
-        return attr & macho.S_ATTR_PURE_INSTRUCTIONS != 0 and attr & macho.S_ATTR_SOME_INSTRUCTIONS != 0;
+        return attr & macho.S_ATTR_PURE_INSTRUCTIONS != 0 or attr & macho.S_ATTR_SOME_INSTRUCTIONS != 0;
     }
 
     pub fn isDebug(self: Section) bool {
@@ -173,10 +174,36 @@ const DebugInfo = struct {
     }
 };
 
-pub fn init(allocator: *Allocator) Object {
-    return .{
-        .allocator = allocator,
+pub fn createAndParseFromPath(allocator: *Allocator, arch: Arch, path: []const u8) !?*Object {
+    const file = fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => |e| return e,
     };
+    errdefer file.close();
+
+    const object = try allocator.create(Object);
+    errdefer allocator.destroy(object);
+
+    const name = try allocator.dupe(u8, path);
+    errdefer allocator.free(name);
+
+    object.* = .{
+        .allocator = allocator,
+        .arch = arch,
+        .name = name,
+        .file = file,
+    };
+
+    object.parse() catch |err| switch (err) {
+        error.EndOfStream, error.NotObject => {
+            object.deinit();
+            allocator.destroy(object);
+            return null;
+        },
+        else => |e| return e,
+    };
+
+    return object;
 }
 
 pub fn deinit(self: *Object) void {
@@ -220,14 +247,14 @@ pub fn parse(self: *Object) !void {
         try reader.context.seekTo(offset);
     }
 
-    self.header = try reader.readStruct(macho.mach_header_64);
+    const header = try reader.readStruct(macho.mach_header_64);
 
-    if (self.header.?.filetype != macho.MH_OBJECT) {
-        log.err("invalid filetype: expected 0x{x}, found 0x{x}", .{ macho.MH_OBJECT, self.header.?.filetype });
-        return error.MalformedObject;
+    if (header.filetype != macho.MH_OBJECT) {
+        log.debug("invalid filetype: expected 0x{x}, found 0x{x}", .{ macho.MH_OBJECT, header.filetype });
+        return error.NotObject;
     }
 
-    const this_arch: std.Target.Cpu.Arch = switch (self.header.?.cputype) {
+    const this_arch: Arch = switch (header.cputype) {
         macho.CPU_TYPE_ARM64 => .aarch64,
         macho.CPU_TYPE_X86_64 => .x86_64,
         else => |value| {
@@ -239,6 +266,8 @@ pub fn parse(self: *Object) !void {
         log.err("mismatched cpu architecture: expected {s}, found {s}", .{ self.arch.?, this_arch });
         return error.MismatchedCpuArchitecture;
     }
+
+    self.header = header;
 
     try self.readLoadCommands(reader);
     try self.parseSymbols();
@@ -532,10 +561,4 @@ pub fn parseDataInCode(self: *Object) !void {
         };
         try self.data_in_code_entries.append(self.allocator, dice);
     }
-}
-
-pub fn isObject(file: fs.File) !bool {
-    const header = try file.reader().readStruct(macho.mach_header_64);
-    try file.seekTo(0);
-    return header.filetype == macho.MH_OBJECT;
 }

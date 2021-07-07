@@ -84,17 +84,35 @@ pub const Regular = struct {
 pub const Proxy = struct {
     base: Symbol,
 
+    /// Dynamic binding info - spots within the final
+    /// executable where this proxy is referenced from.
+    bind_info: std.ArrayListUnmanaged(struct {
+        segment_id: u16,
+        address: u64,
+    }) = .{},
+
     /// Dylib where to locate this symbol.
-    dylib: ?*Dylib = null,
+    /// null means self-reference.
+    file: ?*Dylib = null,
 
     pub const base_type: Symbol.Type = .proxy;
+
+    pub fn deinit(proxy: *Proxy, allocator: *Allocator) void {
+        proxy.bind_info.deinit(allocator);
+    }
+
+    pub fn dylibOrdinal(proxy: *Proxy) u16 {
+        const dylib = proxy.file orelse return 0;
+        return dylib.ordinal.?;
+    }
 };
 
 pub const Unresolved = struct {
     base: Symbol,
 
     /// File where this symbol was referenced.
-    file: *Object,
+    /// null means synthetic, e.g., dyld_stub_binder.
+    file: ?*Object = null,
 
     pub const base_type: Symbol.Type = .unresolved;
 };
@@ -116,6 +134,10 @@ pub const Tentative = struct {
 
 pub fn deinit(base: *Symbol, allocator: *Allocator) void {
     allocator.free(base.name);
+    switch (base.@"type") {
+        .proxy => @fieldParentPtr(Proxy, "base", base).deinit(allocator),
+        else => {},
+    }
 }
 
 pub fn cast(base: *Symbol, comptime T: type) ?*T {

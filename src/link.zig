@@ -38,6 +38,8 @@ pub const Options = struct {
     /// Not every Compilation compiles .zig code! For example you could do `zig build-exe foo.o`.
     module: ?*Module,
     dynamic_linker: ?[]const u8,
+    /// The root path for the dynamic linker and system libraries (as well as frameworks on Darwin)
+    sysroot: ?[]const u8,
     /// Used for calculating how much space to reserve for symbols in case the binary file
     /// does not already have a symbol table.
     symbol_count_hint: u64 = 32,
@@ -59,9 +61,6 @@ pub const Options = struct {
     /// other objects.
     /// Otherwise (depending on `use_lld`) this link code directly outputs and updates the final binary.
     use_llvm: bool,
-    /// Darwin-only. If this is true, `use_llvm` is true, and `is_native_os` is true, this link code will
-    /// use system linker `ld` instead of the LLD.
-    system_linker_hack: bool,
     link_libc: bool,
     link_libcpp: bool,
     link_libunwind: bool,
@@ -93,6 +92,7 @@ pub const Options = struct {
     each_lib_rpath: bool,
     disable_lld_caching: bool,
     is_test: bool,
+    use_stage1: bool,
     major_subsystem_version: ?u32,
     minor_subsystem_version: ?u32,
     gc_sections: ?bool = null,
@@ -104,8 +104,6 @@ pub const Options = struct {
     llvm_cpu_features: ?[*:0]const u8,
     /// Extra args passed directly to LLD. Ignored when not linking with LLD.
     extra_lld_args: []const []const u8,
-    /// Darwin-only. Set the root path to the system libraries and frameworks.
-    syslibroot: ?[]const u8,
 
     objects: []const []const u8,
     framework_dirs: []const []const u8,
@@ -119,7 +117,7 @@ pub const Options = struct {
     libc_installation: ?*const LibCInstallation,
 
     /// WASI-only. Type of WASI execution model ("command" or "reactor").
-    wasi_exec_model: ?wasi_libc.CRTFile = null,
+    wasi_exec_model: std.builtin.WasiExecModel = undefined,
 
     pub fn effectiveOutputMode(options: Options) std.builtin.OutputMode {
         return if (options.use_lld) .Obj else options.output_mode;
@@ -184,7 +182,7 @@ pub const File = struct {
     /// rewriting it. A malicious file is detected as incremental link failure
     /// and does not cause Illegal Behavior. This operation is not atomic.
     pub fn openPath(allocator: *Allocator, options: Options) !*File {
-        const use_stage1 = build_options.is_stage1 and options.use_llvm;
+        const use_stage1 = build_options.is_stage1 and options.use_stage1;
         if (use_stage1 or options.emit == null) {
             return switch (options.object_format) {
                 .coff, .pe => &(try Coff.createEmpty(allocator, options)).base,
@@ -510,7 +508,7 @@ pub const File = struct {
         // If there is no Zig code to compile, then we should skip flushing the output file because it
         // will not be part of the linker line anyway.
         const module_obj_path: ?[]const u8 = if (base.options.module) |module| blk: {
-            const use_stage1 = build_options.is_stage1 and base.options.use_llvm;
+            const use_stage1 = build_options.is_stage1 and base.options.use_stage1;
             if (use_stage1) {
                 const obj_basename = try std.zig.binNameAlloc(arena, .{
                     .root_name = base.options.root_name,
