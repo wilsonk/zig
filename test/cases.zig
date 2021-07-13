@@ -20,6 +20,7 @@ pub fn addCases(ctx: *TestContext) !void {
     try @import("stage2/wasm.zig").addCases(ctx);
     try @import("stage2/darwin.zig").addCases(ctx);
     try @import("stage2/riscv64.zig").addCases(ctx);
+    try @import("stage2/plan9.zig").addCases(ctx);
 
     {
         var case = ctx.exe("hello world with updates", linux_x64);
@@ -903,7 +904,7 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = S;
             \\}
         ,
-            &.{":4:13: error: invalid 'try' outside function scope"},
+            &.{":4:13: error: 'try' outside function scope"},
         );
     }
     {
@@ -1506,6 +1507,39 @@ pub fn addCases(ctx: *TestContext) !void {
             \\    _ = x;
             \\}
         , &[_][]const u8{":4:27: error: expected type, found comptime_int"});
+        case.addError(
+            \\const S = struct {
+            \\    comptime {
+            \\        asm volatile (
+            \\            \\zig_moment:
+            \\            \\syscall
+            \\        );
+            \\    }
+            \\};
+            \\pub fn main() void {
+            \\    _ = S;
+            \\}
+        , &.{":3:13: error: volatile is meaningless on global assembly"});
+        case.addError(
+            \\pub fn main() void {
+            \\    var bruh: u32 = 1;
+            \\    asm (""
+            \\        :
+            \\        : [bruh] "{rax}" (4)
+            \\        : "memory"
+            \\    );
+            \\}
+        , &.{":3:5: error: assembly expression with no output must be marked volatile"});
+        case.addError(
+            \\pub fn main() void {}
+            \\comptime {
+            \\    asm (""
+            \\        :
+            \\        : [bruh] "{rax}" (4)
+            \\        : "memory"
+            \\    );
+            \\}
+        , &.{":3:5: error: global assembly cannot have inputs, outputs, or clobbers"});
     }
     {
         var case = ctx.exe("comptime var", linux_x64);

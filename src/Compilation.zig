@@ -3402,7 +3402,14 @@ fn detectLibCIncludeDirs(
 
     // If zig can't build the libc for the target and we are targeting the
     // native abi, fall back to using the system libc installation.
-    if (is_native_abi) {
+    // On windows, instead of the native (mingw) abi, we want to check
+    // for the MSVC abi as a fallback.
+    const use_system_abi = if (std.Target.current.os.tag == .windows)
+        target.abi == .msvc
+    else
+        is_native_abi;
+
+    if (use_system_abi) {
         const libc = try arena.create(LibCInstallation);
         libc.* = try LibCInstallation.findNative(.{ .allocator = arena, .verbose = true });
         return detectLibCFromLibCInstallation(arena, target, libc);
@@ -3556,6 +3563,8 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) Alloc
         \\pub const zig_is_stage2 = {};
         \\/// Temporary until self-hosted supports the `cpu.arch` value.
         \\pub const stage2_arch: std.Target.Cpu.Arch = .{};
+        \\/// Temporary until self-hosted supports the `os.tag` value.
+        \\pub const stage2_os: std.Target.Os.Tag = .{};
         \\
         \\pub const output_mode = std.builtin.OutputMode.{};
         \\pub const link_mode = std.builtin.LinkMode.{};
@@ -3571,6 +3580,7 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: *Allocator) Alloc
         build_options.version,
         !use_stage1,
         std.zig.fmtId(@tagName(target.cpu.arch)),
+        std.zig.fmtId(@tagName(target.os.tag)),
         std.zig.fmtId(@tagName(comp.bin_file.options.output_mode)),
         std.zig.fmtId(@tagName(comp.bin_file.options.link_mode)),
         comp.bin_file.options.is_test,
